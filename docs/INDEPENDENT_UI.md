@@ -142,7 +142,9 @@ Deleting a Gmail API user label requires typing `confirm` exactly. Messages and
 child labels remain. Undo cancels during a disclosed 30-second delay before any
 provider deletion; it cannot restore label memberships after removal. Pending
 deletions pause on restart and can be cancelled. Failed or uncertain writes are
-never repeated automatically. If recovery storage cannot be read, folder writes
+never repeated automatically. A changed mailbox connection cancels a saved
+intent only while it is proven to be pre-write; older running or uncertain
+records remain visible for provider inspection. If recovery storage cannot be read, folder writes
 and deletion Undo are disabled while browsing remains available. IMAP, Outlook,
 Yahoo and legacy Gmail IMAP deletion stay disabled until genuine server recovery
 can be proven. No irreversible delete is substituted. Local Folders keeps its

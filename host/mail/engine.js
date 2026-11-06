@@ -140,9 +140,10 @@ let localStore = null;
 let mboxImporter = null;
 let folderJournal = null;
 let folderManager = null;
-function managedFolders() {
-  if (!folderManager) {
-    const access = createFolderAccess({ accountById: db.accountById, bindAccount, assertAccountCurrent,
+let folderAccess = null;
+function ownedFolderAccess() {
+  if (!folderAccess) {
+    folderAccess = createFolderAccess({ accountById: db.accountById, bindAccount, assertAccountCurrent,
       generation: id => accountEpochs.get(id) || 0, revision: id => secrets.revision(id),
       googleClient: () => oauthConfig.loadGoogleClient()?.clientId || null, secretFor, withMailClient, exclusive,
       blocked: id => db.folderWriteBlockers(id) > 0,
@@ -152,6 +153,12 @@ function managedFolders() {
         // Gmail's existing reconciler retains old cached label copies safely.
         db.replaceFolders(account.id, result.folders, result.delimiter); check(); emitAccounts();
       } });
+  }
+  return folderAccess;
+}
+function managedFolders() {
+  if (!folderManager) {
+    const access = ownedFolderAccess();
     folderManager = createFolderManager({ ...access, gate: updateGate,
       journal(write) {
         const file = path.join(path.dirname(dataFile()), "folder-recovery.sqlite");
@@ -4691,15 +4698,17 @@ function answer(channel, args, event) {
         }));
         const plan = db.planImapPathMove(records, sourceId, destinationId, delimiter);
         if (!plan.ok) return fail(plan.code || "invalid", plan.message);
-        let listed = null;
+        let listed = null, checkOwner = null;
         try {
-          await exclusive(account.id, async () => {
-            const password = await secretFor(account);
-            await withMailClient(account, password, async (client) => {
-              await remote.renameBox(client, plan.source, plan.next);
-              listed = await remote.listFolderRecords(client);
-            });
-          });
+          const access = ownedFolderAccess(), proof = access.owner(account.id);
+          await access.withAccount(account.id, async managed => {
+            checkOwner = managed.check;
+            managed.check();
+            await remote.renameBox(managed.transport, plan.source, plan.next); managed.check();
+            listed = await remote.listFolderRecords(managed.transport); managed.check();
+          }, proof);
+          // IMAP logout can also await account replacement after the callback.
+          checkOwner();
         } catch (error) {
           return fail("PROVIDER_ERROR", remote.explain(error));
         }
@@ -4743,15 +4752,17 @@ function answer(channel, args, event) {
         const delimiter = account.delimiter || "/";
         const folderPath = parent ? `${parent}${delimiter}${name}` : name;
         if (db.folderByPath(account.id, folderPath)) return fail("DUPLICATE_NAME", "A folder with that name already exists.");
+        let checkOwner = null;
         try {
-          await exclusive(account.id, async () => {
-            const password = await secretFor(account);
-            await withMailClient(account, password, async (client) => {
-              await remote.createBox(client, folderPath);
-              const listed = await remote.listFolderRecords(client);
-              db.replaceFolders(account.id, listed.folders, listed.delimiter);
-            });
-          });
+          const access = ownedFolderAccess(), proof = access.owner(account.id);
+          await access.withAccount(account.id, async managed => {
+            checkOwner = managed.check;
+            managed.check();
+            await remote.createBox(managed.transport, folderPath); managed.check();
+            const listed = await remote.listFolderRecords(managed.transport); managed.check();
+            db.replaceFolders(account.id, listed.folders, listed.delimiter); managed.check();
+          }, proof);
+          checkOwner();
         } catch (error) {
           return fail("PROVIDER_ERROR", remote.explain(error));
         }

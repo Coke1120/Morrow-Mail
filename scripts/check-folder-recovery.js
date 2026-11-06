@@ -139,6 +139,32 @@ test("restart leaves pending deletion paused until cancelled; it never rearms", 
   assert.equal((await again.answer({ action: "undo", accountId: "a", operationId: result.id })).phase, "cancelled");
 });
 
+test("obsolete-binding pre-write intents retire safely and cannot permanently block a label", async t => {
+  const f = fixture(t), result = await f.remove(await f.review()); f.changeOwner();
+  f.setTime(GRACE_MS); await f.runTimers(); assert.equal(f.journal.read(result.id).phase, "paused");
+  const status = await f.manager.answer({ action: "list", accountId: "a" });
+  assert.equal(f.journal.read(result.id).phase, "cancelled"); assert.equal(f.writes, 0);
+  assert.equal(status.operations.length, 0); assert.equal(status.folders[0].deletion.enabled, true);
+  assert.ok((await f.review()).reviewId);
+});
+
+test("explicit Undo can cancel an obsolete connection's proven pre-write local intent", async t => {
+  const f = fixture(t), result = await f.remove(await f.review()); f.changeOwner();
+  assert.equal((await f.manager.answer({ action: "undo", accountId: "a", operationId: result.id })).phase, "cancelled");
+  f.setTime(GRACE_MS); await f.runTimers(); assert.equal(f.writes, 0);
+});
+
+test("obsolete-binding running and uncertain writes remain visible and protected", async t => {
+  const f = fixture(t, { write() { throw new Error("synthetic unknown outcome"); } }), result = await f.remove(await f.review());
+  f.setTime(GRACE_MS); await f.runTimers(); assert.equal(f.writes, 1); f.changeOwner();
+  const view = await f.manager.answer({ action: "list", accountId: "a" });
+  assert.equal(view.operations[0].phase, "uncertain"); assert.equal(view.operations[0].canUndo, false);
+  assert.match(view.operations[0].name, /previous connection/); assert.match(view.operations[0].reason, /will not replay/);
+  assert.equal(view.folders[0].deletion.enabled, false);
+  await assert.rejects(f.manager.answer({ action: "undo", accountId: "a", operationId: result.id }), /window ended/);
+  assert.equal(f.journal.read(result.id).phase, "uncertain"); assert.equal(f.writes, 1);
+});
+
 test("ambiguous write failure becomes uncertain and is never automatically replayed", async t => {
   const f = fixture(t, { write() { throw new Error("synthetic connection loss"); } }), result = await f.remove(await f.review());
   f.setTime(GRACE_MS); await f.runTimers(); assert.equal(f.writes, 1); assert.equal(f.journal.read(result.id).phase, "uncertain");

@@ -47,6 +47,41 @@ async function fixture() {
       mailboxCreate: async () => { throw new Error("not requested in this protocol fixture"); } });
   const invoke = (accountId, action, extra = {}) => engine.answer("mail:folderManagement", [{ accountId, action, expectedEpoch: 0, ...extra }]);
   try {
+    // Retained folder nesting and old internal creation use the same proof as
+    // the new common browser, including after a delayed IMAP login/logout.
+    const normalClient = remote.withClient;
+    for (const channel of ["mail:moveFolder", "mail:createFolder"]) {
+      for (const change of ["remove", "credential", "endpoint", "none", "logout-replace"]) {
+        const id = channel.slice(5) + "-" + change; seed(id, "custom");
+        db.replaceFolders(id, [{ path: "Source", name: "Source", wellKnown: null }, { path: "Destination", name: "Destination", wellKnown: null }], "/");
+        let release, entered, writes = 0;
+        const heldConnection = new Promise(resolve => { release = resolve; }), connected = new Promise(resolve => { entered = resolve; });
+        let boxes = [{ path: "Source", delimiter: "/" }, { path: "Destination", delimiter: "/" }];
+        remote.withClient = async (account, secret, work, options) => {
+          if (account.id !== id) return normalClient(account, secret, work, options);
+          const client = { list: async () => boxes,
+            mailboxRename: async (from, to) => { writes++; boxes = boxes.map(box => box.path === from ? { ...box, path: to } : box); },
+            mailboxCreate: async name => { writes++; boxes.push({ path: name, delimiter: "/" }); } };
+          if (change !== "logout-replace") { entered(); await heldConnection; }
+          const result = await work(client);
+          if (change === "logout-replace") { entered(); await heldConnection; }
+          return result;
+        };
+        const task = engine.answer(channel, [{ accountId: id, folderId: "Source", destinationId: "Destination", folderName: "Created" }]);
+        await connected;
+        if (change === "remove" || change === "logout-replace") {
+          assert.equal((await engine.answer("mail:removeAccount", [{ accountId: id }])).success, true);
+          if (change === "logout-replace") seed(id, "custom");
+        } else if (change === "credential") secrets.setPassword(id, "replacement synthetic password");
+        else if (change === "endpoint") db.updateAccountLogin(id, { username: id + "@fixture.invalid", profile: "custom", imapHost: "replacement.fixture.invalid",
+          imapPort: 993, imapTls: true, smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
+        release(); const result = await task;
+        assert.equal(writes, change === "none" || change === "logout-replace" ? 1 : 0, channel + " " + change + " provider writes");
+        assert.equal(result.success, change === "none", channel + " " + change + " result");
+        if (change === "logout-replace") assert.equal(db.foldersFor(id).length, 0, "old callback cannot populate replacement account cache");
+        remote.withClient = normalClient;
+      }
+    }
     assert.equal((await invoke("gmail", "list", { expectedEpoch: undefined })).success, false);
     assert.equal(requests.length, 0);
     for (const accountId of ["outlook", "yahoo", "custom", "legacy"]) {

@@ -39,8 +39,11 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
     return value;
   }
   function ownedOperation(accountId, id) {
-    const operation = store()?.read(id), current = currentOwner(accountId);
-    if (!operation || operation.accountId !== accountId || operation.owner !== current.binding) throw conflict("This recovery action belongs to a different mailbox connection.");
+    currentOwner(accountId);
+    const operation = store()?.read(id);
+    // Cancellation only edits a proven pre-write local record. It can safely
+    // cancel an obsolete connection's intent without using that connection.
+    if (!operation || operation.accountId !== accountId) throw conflict("This recovery action belongs to a different mailbox.");
     return operation;
   }
   function publicOperation(operation) {
@@ -53,12 +56,21 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
   function operations(accountId) {
     const current = currentOwner(accountId);
     const journal = store();
-    return (journal?.list(accountId) || []).filter(operation => operation.owner === current.binding).map(operation => {
+    return (journal?.list(accountId) || []).map(operation => {
+      if (operation.owner !== current.binding && operation.mode === "label-grace" && ["pending", "paused"].includes(operation.phase)) {
+        const runtime = pending.get(operation.id);
+        if (runtime) { runtime.paused = true; clearTimer(runtime.timer); pending.delete(operation.id); }
+        operation = journal.update(operation.id, ["pending", "paused"], { phase: "cancelled", reason: "connection_changed_before_write", updatedAt: now() });
+      }
       // A transient storage failure may have prevented saving the timer's
       // paused outcome. Once storage is readable again, expose cancellation
       // of that orphaned intent; never reconstruct or rearm its timer.
       if (operation.phase === "pending" && !pending.has(operation.id)) operation = journal.update(operation.id, "pending", { phase: "paused", reason: "timer_not_active", updatedAt: now() });
-      return publicOperation(operation);
+      return operation;
+    }).filter(operation => operation.owner === current.binding || ACTIVE.has(operation.phase)).map(operation => {
+      const value = publicOperation(operation);
+      return operation.owner === current.binding ? value : { ...value, name: "Folder action from a previous connection", canUndo: false,
+        reason: "This previous connection's write may already have reached its provider. Inspect that mailbox before any new action; it will not replay or reverse automatically." };
     });
   }
   function requireOwner(ticket, client) {
@@ -77,7 +89,7 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
       ? "Gmail IMAP uses labels. Recoverable label deletion requires a Gmail API mailbox; no generic folder delete is available."
       : "Folder deletion is unavailable until moving the folder and its mail to Trash and restoring the same folder can be verified for this server. No irreversible delete is available." };
     if (folder.type !== "user" || folder.editable !== true) return { enabled: false, reason: "Only a verified Gmail user label can be deleted." };
-    if ((savedOperations || store()?.list(client.accountId) || []).some(operation => operation.id !== operationId && operation.sourceId === folder.id && ACTIVE.has(operation.phase))) {
+    if ((savedOperations || operations(client.accountId)).some(operation => operation.id !== operationId && operation.sourceId === folder.id && ACTIVE.has(operation.phase))) {
       return { enabled: false, reason: "This label already has a pending or uncertain folder action. Review its saved status before another deletion." };
     }
     if (client.blocked?.(folder.id)) return { enabled: false, reason: "Finish pending mail writes and draft edits before deleting a label." };
@@ -103,7 +115,7 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
     return withAccount(accountId, async client => {
       const model = listing(await client.list()); client.check();
       let savedOperations = [], activeOperations = [], recoveryAvailable = true;
-      try { activeOperations = store()?.list(accountId) || []; savedOperations = operations(accountId); } catch { recoveryAvailable = false; }
+      try { savedOperations = operations(accountId); activeOperations = store()?.list(accountId) || []; } catch { recoveryAvailable = false; }
       const recoveryError = recoveryAvailable ? "" : "Folder recovery storage is unavailable. Folder writes and deletion Undo are disabled; browsing remains available. Keep its files for recovery.";
       return { accountId, backend: client.backend, delimiter: model.delimiter, recoveryAvailable, recoveryError,
         canCreate: recoveryAvailable && canCreate(client, model, null), folders: model.folders.map(folder => ({ ...folder,

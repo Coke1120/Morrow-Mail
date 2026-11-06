@@ -17,6 +17,10 @@ journal. The timer uses monotonic time. A process restart pauses pending intent;
 an interrupted write becomes uncertain. Neither state is automatically replayed.
 Paused intent can be cancelled. An unknown provider outcome must be inspected
 at the provider. A failed storage/proof check never authorizes a provider write.
+When the mailbox binding changes, only journal-proven pending/paused label
+intent is cancelled locally. It cannot permanently block that label under a new
+connection. Older running or uncertain writes remain visible without an Undo
+claim, with provider inspection required. They are never retired as unwritten.
 
 One-use, expiring host reviews bind the exact folder, account incarnation,
 endpoint/transport, credential revision and Google client. Proofs are checked
@@ -24,6 +28,8 @@ before credential reads, after lane/connection waits, after provider awaits and
 before submission. The renderer also retires reviews after mailbox/navigation
 changes. Account switching cannot redirect an old confirmation to a new mailbox.
 System and virtual folders are independently protected by the host.
+Retained legacy folder creation/nesting also uses this transport ownership proof,
+including after login and logout waits, before touching provider or cache state.
 
 IMAP/Outlook/Yahoo folder deletion remains unavailable. A universal recoverable
 subtree move cannot be promised from LIST alone, and Gmail over legacy IMAP must

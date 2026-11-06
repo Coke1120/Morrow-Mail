@@ -6005,7 +6005,7 @@ function paintFolderManagement() {
     const selected = data.folders.find(folder => folder.id === current.selectedId);
     if (selected) appendManagedFolderActions(root, account, selected, !!current.loading || !!current.error);
     const limits = document.createElement("p"); limits.className = "hint folder-management-limits";
-    limits.textContent = data.backend === "gmail" ? "Deleting a user label keeps messages and child labels. Undo only cancels the pending removal during its 30-second grace period; original memberships cannot be restored afterward. Pending removals pause after restart and can be cancelled." : "Folder hierarchy, server delimiters and read-only/container restrictions are preserved. Delete is disabled for IMAP, Outlook and Yahoo until genuine recovery can be verified; no irreversible deletion is substituted.";
+    limits.textContent = data.backend === "gmail" ? "Deleting a user label keeps messages and child labels. Undo only cancels the pending removal during its 30-second grace period; original memberships cannot be restored afterward. Pending removals pause after restart and can be cancelled. Changing the connection cancels an intent that has not started; uncertain writes still need provider review." : "Folder hierarchy, server delimiters and read-only/container restrictions are preserved. Delete is disabled for IMAP, Outlook and Yahoo until genuine recovery can be verified; no irreversible deletion is substituted.";
     root.appendChild(limits);
   }
   if (focused) root.querySelectorAll("[data-managed-folder]").forEach(node => { if (node.dataset.managedFolder === focused) node.focus(); });

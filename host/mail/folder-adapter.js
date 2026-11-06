@@ -84,7 +84,7 @@ function createAccess({ accountById, bindAccount, assertAccountCurrent, generati
       return withMailClient(account, secret, async transport => {
         ticketCurrent();
         const gmail = transport.gmail;
-        const client = { accountId, label: account.email || account.username || account.name || accountId,
+        const client = { accountId, transport, label: account.email || account.username || account.name || accountId,
           backend: gmail ? "gmail" : "imap", gmailImap: !gmail && account.profile === "gmail", recoverableRename: false,
           binding: captured.binding, generation: captured.generation, get revision() { check(); return pinned; }, check,
           blocked: () => blocked(accountId),
