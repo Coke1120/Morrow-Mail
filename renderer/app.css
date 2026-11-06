@@ -5851,6 +5851,7 @@ textarea { min-height: 140px; resize: vertical; }
 #provider-panel .folder-root { color: var(--ink); border-color: var(--line); }
 #provider-panel .drop-target .name { color: var(--ink); text-shadow: none; }
 #provider-content { max-width: 900px; }
+#local-transfer-move-capability { padding: 8px 10px; border-left: 3px solid var(--accent-ink); background: var(--hover); border-radius: 4px; overflow-wrap: anywhere; }
 #provider-account { max-width: 100%; }
 
 /* Fixed list chrome leaves one scroll surface for message rows. */

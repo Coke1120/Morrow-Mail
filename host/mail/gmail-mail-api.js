@@ -167,6 +167,12 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
   }
   async function trash(messageId, options = {}) {
     const prior = await getMessage(messageId, { format: "metadata" });
+    alive();
+    if (options.validatePrior) {
+      const result = options.validatePrior(prior);
+      if (result && typeof result.then === "function") throw Object.assign(new Error("Trash validation must finish synchronously before submission."), { operationIssued: false });
+    }
+    alive();
     const result = writeResult(await request(`/messages/${id(messageId)}/trash`, { operation: "messages.trash", method: "POST", beforeSubmit: options.beforeSubmit }));
     return { message: result, undo: { messageId, priorLabelIds: Array.isArray(prior.labelIds) ? prior.labelIds : [] } };
   }

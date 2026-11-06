@@ -7,10 +7,13 @@ const { digest } = require("./copy-recovery");
 const LIMITS = Object.freeze({ messages: 50, rawBytes: bytes.MAX_BYTES, batchBytes: 256 * 1024 * 1024, reviews: 32, reviewMs: 120000 });
 const problem = (code, message) => Object.assign(new Error(message), { code, operationIssued: false });
 const UNKNOWN = "The destination copy could not be fully verified. The source was retained. Check the destination before retrying; this upload will not be repeated automatically.";
+const receiptProof = receipt => digest(JSON.stringify([receipt.id, receipt.key, receipt.sourceKey, receipt.destinationKey, receipt.rawSha,
+  receipt.sourceBinding, receipt.destinationBinding, receipt.folderProof, receipt.expected,
+  receipt.destination && [receipt.destination.accountId, receipt.destination.folderId, receipt.destination.providerId, receipt.destination.uid, receipt.destination.uidValidity]]));
 
 function createService({ access, journal, gate, now = Date.now, clock = () => performance.now() } = {}) {
   const reviews = new Map();
-  let pendingReviews = 0;
+  let pendingReviews = 0, privateVerifications = 0;
   function store() { return typeof journal === "function" ? journal() : journal; }
   function prune() { for (const [id, review] of reviews) if (!review.running && (review.cancelled || review.expires <= clock())) reviews.delete(id); }
   function validateItems(params) {
@@ -20,14 +23,14 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
       if (!item || typeof item.emailId !== "string" || !item.emailId || typeof item.accountId !== "string" || !item.accountId || ids.has(item.emailId)) throw problem("copy_review", "Review each exact source message once.");
       ids.add(item.emailId);
     }
-    if (params.mode && params.mode !== "copy") throw problem("unsupported", "Move into a connected mailbox is unavailable until verified Copy and recoverable source Trash have been reviewed separately.");
+    if (params.mode && params.mode !== "copy") throw problem("unsupported", "Copy never authorizes source removal. Gmail API Move requires its separate source Trash review after verified Copy.");
   }
   async function destinations(params) {
     validateItems(params);
     const ticket = access.capture(params);
     const result = await access.destinations(ticket);
     return { ...result, maxBytes: LIMITS.rawBytes, maxMessages: LIMITS.messages, maxTotalBytes: LIMITS.batchBytes,
-      moveEnabled: false, moveReason: "Remote Move is not enabled in the Copy phase. Your source messages stay in place." };
+      moveEnabled: false, moveReason: "Copy retains every source. Check the separate Gmail API source Move capability and Trash review before any source removal." };
   }
   async function review(params) {
     validateItems(params); prune();
@@ -130,7 +133,41 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
     }
     throw problem("copy_review", "Choose a supported mailbox Copy action.");
   }
-  return { answer, limits: LIMITS, get active() { return [...reviews.values()].some(value => value.running); } };
+  // Private host-only extension: neither a receipt ID nor a Copy review grants
+  // source-removal authority. This path never calls upload or changes a receipt.
+  async function verifyExistingOnly(ticket, source, destination, work, authority = {}) {
+    privateVerifications++;
+    try {
+      const run = () => access.withCopy(ticket, source, destination, async session => {
+        authority.check?.(); session.check();
+        const snapshot = await session.readSource(); session.check();
+        const proof = bytes.inspect(snapshot.raw), expected = session.expected(snapshot);
+        const sourceKey = session.sourceKey(snapshot), destinationKey = session.destinationKey();
+        const key = digest(JSON.stringify([sourceKey, destinationKey])), ledger = store(), receipt = ledger.find(key);
+        if (!receipt || receipt.phase !== "verified" || !receipt.destination || receipt.sourceKey !== sourceKey || receipt.destinationKey !== destinationKey
+          || receipt.rawSha !== proof.rawSha || receipt.sourceBinding !== session.sourceBinding || receipt.destinationBinding !== session.destinationBinding
+          || receipt.folderProof !== session.folderProof || JSON.stringify(receipt.expected) !== JSON.stringify(expected)) {
+          throw problem("copy_unverified", "Complete and verify Copy for this exact source and destination before reviewing source removal. No source was removed.");
+        }
+        const fingerprint = receiptProof(receipt);
+        const assertReceipt = () => {
+          session.check(); const current = ledger.read(receipt.id);
+          if (!current || current.phase !== "verified" || receiptProof(current) !== fingerprint) throw problem("copy_unverified", "The verified Copy receipt changed. The source was retained.");
+        };
+        assertReceipt();
+        const saved = await session.readDestination(receipt.destination); assertReceipt();
+        bytes.verify(snapshot.raw, saved.raw, { gmail: session.backend === "gmail" }); session.verifyState(saved, expected);
+        if (session.backend === "gmail" && saved.labelIds?.some(label => ["TRASH", "SPAM", "DRAFT"].includes(label))) {
+          throw problem("copy_unverified", "The receiving copy is in a protected or auto-purged Gmail view. The source was retained.");
+        }
+        assertReceipt();
+        authority.check?.();
+        return work({ session, snapshot, receipt, expected, proof, assertReceipt, receiptProof: fingerprint, verifiedAt: clock() });
+      }, authority);
+      return gate ? await gate.run(run) : await run();
+    } finally { privateVerifications--; }
+  }
+  return { answer, verifyExistingOnly, limits: LIMITS, get active() { return privateVerifications > 0 || [...reviews.values()].some(value => value.running); } };
 }
 
-module.exports = { createService, LIMITS, UNKNOWN };
+module.exports = { createService, LIMITS, UNKNOWN, receiptProof };

@@ -7,6 +7,7 @@ const publicOwner = require("../../shared/mail-context-owner");
 const { ACCOUNT_ID: LOCAL_ID } = require("./local-folders");
 const { imapListing, gmailListing } = require("./folder-adapter");
 const { persistentSelection } = require("./copy-imap-selection");
+const { createSource: createGmailMoveSource } = require("./gmail-source-move");
 const conflict = () => Object.assign(new Error("The reviewed message, folder or mailbox connection changed. Review Copy again; no source was removed."), { code: "copy_conflict", operationIssued: false });
 const unsupported = reason => Object.assign(new Error(reason), { code: "copy_unsupported", operationIssued: false });
 const positive = value => (typeof value === "number" || typeof value === "bigint" || typeof value === "string" && /^[1-9]\d{0,9}$/.test(value))
@@ -171,9 +172,12 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
     if (expected && (expected.proof !== proof || expected.uidValidity !== uidValidity)) throw conflict();
     return { id, label: folder.name || id, backend, proof, uidValidity, permanentFlags, notices: notices(backend) };
   }
-  async function review(ticket, id) {
+  async function review(ticket, id, authority = {}) {
     if (typeof id !== "string" || !id) throw unsupported("Choose a receiving folder or label.");
-    const selectedFolder = await lock([ticket.destination.accountId], () => connect(ticket.destination, () => check(ticket), transport => selected(transport, () => check(ticket), id)));
+    const checked = () => { authority.check?.(); check(ticket); };
+    checked();
+    const selectedFolder = await lock([ticket.destination.accountId], () => connect(ticket.destination, checked, transport => selected(transport, checked, id)));
+    checked();
     if (ticket.sources.some(source => source.local)) selectedFolder.notices = [...selectedFolder.notices,
       "Local Folders uses its archived message date. The original server receiving time may not be available."];
     return selectedFolder;
@@ -211,17 +215,19 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
     checked(); const value = await transport.gmail.api.raw(providerId); checked(); transport.gmail.alive();
     if (value.id !== providerId || !Buffer.isBuffer(value.source) || !value.source.length || value.source.length > messageBytes.MAX_BYTES
       || !Array.isArray(value.labelIds) || !Number.isSafeInteger(Number(value.internalDate)) || Number(value.internalDate) < 0) throw unsupported("Gmail did not return a complete original message and its state.");
+    let full;
     if (validateParts) {
-      checked(); const full = await transport.gmail.api.getMessage(providerId); checked();
+      checked(); full = await transport.gmail.api.getMessage(providerId); checked();
       if (full.id !== providerId || !Array.isArray(full.labelIds)
         || JSON.stringify([...full.labelIds].sort()) !== JSON.stringify([...value.labelIds].sort())) throw conflict();
       await messageBytes.verifyGmailSource(value.source, full.payload, attachmentId => transport.gmail.api.attachment(providerId, attachmentId), checked); checked();
     }
-    return { raw: value.source, date: Number(value.internalDate), unread: value.labelIds.includes("UNREAD"), starred: value.labelIds.includes("STARRED"), labelIds: value.labelIds, providerId };
+    return { raw: value.source, date: Number(value.internalDate), unread: value.labelIds.includes("UNREAD"), starred: value.labelIds.includes("STARRED"), labelIds: value.labelIds, providerId,
+      ...(full ? { providerData: full } : {}) };
   }
-  async function withCopy(ticket, source, destination, work) {
+  async function withCopy(ticket, source, destination, work, authority = {}) {
     const ids = [...new Set([ticket.destination.accountId, ...(source.local ? [] : [source.accountId])])].sort();
-    const checked = () => check(ticket, source);
+    const checked = () => { authority.check?.(); check(ticket, source); };
     return lock(ids, async () => {
       checked();
       return connect(ticket.destination, checked, destinationTransport => {
@@ -232,7 +238,8 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
           const sourceLocator = source.local ? { localId: source.id } : { folderId: source.row.folder_path, uid: Number(source.row.uid), uidValidity: Number(source.row.uid_validity) };
           const sourceBinding = source.local ? source.binding : source.owner.binding;
           const destinationBinding = ticket.destination.binding;
-          const session = { backend: live.backend, sourceBinding, destinationBinding, folderProof: live.proof, check: checked,
+          const session = { backend: live.backend, sourceBackend: sourceTransport?.gmail && source.owner?.account.mail_transport === "gmail_api" ? "gmail" : "unsupported",
+            sourceBinding, destinationBinding, folderProof: live.proof, check: checked,
             async readSource() {
               checked(); let snapshot;
               if (source.local) {
@@ -295,6 +302,48 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
                 || live.backend === "gmail" && !saved.labelIds?.includes(live.id)) throw unsupported("Destination readback did not preserve the reviewed folder, date and read/star state. The source was retained.");
             },
           };
+          if (session.sourceBackend === "gmail") {
+            let confirmedTrash;
+            const mover = createGmailMoveSource({ api: sourceTransport.gmail.api, accountId: source.accountId, check: checked,
+              async readRaw(providerId) {
+                const saved = await gmailSnapshot(sourceTransport, providerId, checked, true); checked();
+                confirmedTrash = saved; return saved;
+              },
+              async folder() {
+                checked(); const cached = db.folderByPath(source.accountId, source.row.folder_path);
+                if (!cached?.provider_id) throw conflict();
+                if (cached.provider_id === "__gmail_all__" && cached.well_known === "all") return {
+                  id: cached.provider_id, all: true, proof: digest(JSON.stringify(["gmail-all", cached.path, sourceBinding])) };
+                const model = await listing(sourceTransport, checked), folder = model.folders.find(row => row.id === cached.provider_id); checked();
+                if (!folder || ["TRASH", "DRAFT"].includes(folder.id) || folder.type === "user" && ![cached.path, cached.name].includes(folder.name)) throw conflict();
+                return { id: folder.id, all: false, proof: folderIdentity(model, folder) };
+              } });
+            session.reviewSourceMove = snapshot => mover.review(snapshot);
+            session.trashSource = (snapshot, sourceProof, beforeSubmit) => {
+              confirmedTrash = null; return mover.trash(snapshot, sourceProof, beforeSubmit);
+            };
+            // Called only after source_trashed is durable. Adopt the exact full
+            // provider readback, never a guessed folder_path or RFC-id match.
+            session.adoptSourceTrash = async trash => {
+              checked();
+              if (trash?.accountId !== source.accountId || trash.providerId !== sourceProviderId
+                || confirmedTrash?.providerId !== trash.providerId || !confirmedTrash.labelIds.includes("TRASH")
+                || !confirmedTrash.providerData || Number(confirmedTrash.providerData.internalDate) !== confirmedTrash.date
+                || messageBytes.inspect(confirmedTrash.raw).rawSha !== trash.rawSha) throw conflict();
+              const mappingProof = () => JSON.stringify(db.foldersFor(source.accountId).map(folderGeneration).sort());
+              const mappings = mappingProof();
+              if (!db.foldersFor(source.accountId).some(folder => folder.provider_id === "TRASH" && folder.well_known === "deleteditems")) throw conflict();
+              const cacheOwner = () => {
+                authority.check?.(); checkAccount(ticket.destination); checkAccount(source.owner);
+                if (mappingProof() !== mappings || folderGeneration(db.folderByPath(source.accountId, source.row.folder_path)) !== source.folderGeneration) throw conflict();
+              };
+              // normalize/adopt retain the original row proof through awaits.
+              // The synchronous commit intentionally prunes that row; its final
+              // fence checks original owners/folder without requiring it back.
+              await sourceTransport.gmail.adopt(confirmedTrash.providerData, { full: true, canonicalId: sourceProviderId, committed: cacheOwner });
+              cacheOwner();
+            };
+          }
           return work(session);
         });
       });

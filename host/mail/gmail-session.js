@@ -152,15 +152,21 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
       htmlBody: presented.htmlBody, textBody: presented.textBody, decoding: decodedQuality, bodyComplete: complete, bodyWarning };
   }
-  async function adopt(data, { full = false, after = null, cache = true, committed } = {}) {
+  async function adopt(data, { full = false, after = null, cache = true, committed, canonicalId } = {}) {
+    const canonical = canonicalId !== undefined;
+    if (canonical && (typeof canonicalId !== "string" || data.id !== canonicalId || !db.gmailMap(account.id, canonicalId))) throw ambiguous();
     const value = await normalize(data, full);
-    const legacy = db.gmailLegacy(account.id, value.rfcMessageId);
+    // A confirmed canonical operation must never infer ownership of other
+    // cached messages from a duplicate Message-ID. Existing sync keeps its
+    // separately verified legacy migration behavior.
+    const legacy = canonical ? [] : db.gmailLegacy(account.id, value.rfcMessageId);
     if (legacy.some(row => !row.draft_pending)) {
       if (await uniqueRfc(value.rfcMessageId) !== value.providerId) throw ambiguous();
       value.legacyVerified = true;
     }
     alive();
     return db.transaction(() => {
+      if (canonical && !db.gmailMap(account.id, canonicalId)) throw ambiguous();
       const mapping = db.rememberGmail(account.id, value);
       const paths = pathsFor(value.labelIds);
       // The download horizon follows provider receipt time, as IMAP SINCE does.
