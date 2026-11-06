@@ -94,6 +94,102 @@ test("connected Copy reviews captured clicked owners and uses one ticket for eac
   assert.equal(f.rows("cancelReview").length, 1);
 });
 
+test("count refresh after the first of two copies keeps both exact sources on the same reviewed ticket", async t => {
+  for (const field of ["unreadCount", "totalCount"]) {
+    const f = fixture(t); await f.open("[state.emails[0],state.emails[2]]"); await f.choose();
+    f.ui.run(`hook=async params=>{if(params.action==='copy'){state.accounts[1].folders.primary[1].${field}=42;return reply(params)}}`);
+    await f.ui.run("commitLocalTransfer()");
+    assert.deepEqual(f.rows("copy").map(row => row.params), [
+      { action: "copy", reviewId: "review-1", emailId: "clicked", accountId: "a" },
+      { action: "copy", reviewId: "review-1", emailId: "second", accountId: "a" },
+    ], field);
+    assert.match(f.status(), /2 copied.*0 not confirmed or not attempted/, field);
+  }
+});
+
+test("count/cache publications and unrelated folders across every await keep the selected destination review", async t => {
+  for (const phase of ["destinations", "review", "confirmation", "copy"]) {
+    const f = fixture(t); await f.open("[state.emails[0],state.emails[2]]");
+    if (phase !== "destinations") await f.choose();
+    f.ui.run(`globalThis.publishCounts=()=>{
+      state.accounts=state.accounts.map(account=>({...account,unreadCount:20,totalCount:100,folders:{...account.folders,
+        primary:account.folders.primary.map(folder=>({...folder,unreadCount:42,totalCount:100,messageCount:90,
+          children:[{id:'cached-child',unreadCount:2}]}))}}));
+      state.accounts[1].folders.primary.find(folder=>folder.id==='Trash').name='Unrelated renamed folder';
+      state.accounts[1].folders.primary.reverse();
+      if(localTransfer.capabilities) {
+        localTransfer.capabilities.folders.forEach(folder=>{folder.unreadCount=21;folder.totalCount=91});
+        localTransfer.capabilities.folders.reverse();
+      }
+    }`);
+    if (phase === "confirmation") f.ui.run("askConfirm=async copy=>{confirmations.push(copy);publishCounts();return {ok:true}}");
+    else f.ui.run(`hook=async params=>{if(params.action===${JSON.stringify(phase)}){publishCounts();return reply(params)}}`);
+    if (phase === "destinations") await f.choose();
+    await f.ui.run("commitLocalTransfer()");
+    assert.equal(f.rows("copy").length, 2, phase);
+    assert.match(f.status(), /2 copied.*0 not confirmed or not attempted/, phase);
+  }
+});
+
+function destinationHierarchy(f) {
+  f.ui.run(`
+    state.accounts[1].delimiter='/';
+    Object.assign(state.accounts[1].folders.primary[1],{path:'Projects/2026',parentId:'Projects',providerId:'archive-provider',
+      delimiter:'/',flags:['\\\\HasNoChildren'],readOnly:false,selectable:true,uidValidity:17,type:'user'});
+    state.accounts[1].folders.more.push({id:'Projects',path:'Projects',name:'Projects',providerId:'projects-provider',
+      flags:['\\\\HasChildren'],readOnly:false,selectable:true,uidValidity:8,type:'user'});
+  `);
+}
+
+test("selected destination identity, permissions, UID and ancestor changes still stop the remaining batch", async t => {
+  const changes = {
+    "provider id": "state.accounts[1].folders.primary[1].providerId='new-provider-id'",
+    "path": "state.accounts[1].folders.primary[1].path='Projects/2027'",
+    "parent": "state.accounts[1].folders.primary[1].parentId='Other'",
+    "delimiter": "state.accounts[1].delimiter='.'",
+    "folder delimiter": "state.accounts[1].folders.primary[1].delimiter='.'",
+    "UID validity": "state.accounts[1].folders.primary[1].uidValidity=18",
+    "persistent UID support": "state.accounts[1].folders.primary[1].uidNotSticky=true",
+    "NoSelect flag": "state.accounts[1].folders.primary[1].flags.push('\\\\NoSelect')",
+    "NoSelect attribute": "state.accounts[1].folders.primary[1].attributes=['\\\\NoSelect']",
+    "NoSelect field": "state.accounts[1].folders.primary[1].noSelect=true",
+    "read-only": "state.accounts[1].folders.primary[1].readOnly=true",
+    "selectability": "state.accounts[1].folders.primary[1].selectable=false",
+    "type": "state.accounts[1].folders.primary[1].type='system'",
+    "permanent flags": "state.accounts[1].folders.primary[1].permanentFlags=['\\\\Seen']",
+    "ancestor name": "state.accounts[1].folders.more[0].name='Changed projects'",
+    "ancestor provider id": "state.accounts[1].folders.more[0].providerId='replacement-parent'",
+    "ancestor UID": "state.accounts[1].folders.more[0].uidValidity=9",
+    "ancestor NoSelect": "state.accounts[1].folders.more[0].flags.push('\\\\NoSelect')",
+    "ancestor removed": "state.accounts[1].folders.more=[]",
+    "host Copy capability": "localTransfer.capabilities.copyEnabled=false",
+    "host selected folder capability": "localTransfer.capabilities.folders[0].enabled=false",
+  };
+  for (const [label, change] of Object.entries(changes)) {
+    const f = fixture(t); destinationHierarchy(f); await f.open("[state.emails[0],state.emails[2]]"); await f.choose();
+    f.ui.run(`hook=async params=>{if(params.action==='copy'){${change};return reply(params)}}`);
+    await f.ui.run("commitLocalTransfer()");
+    assert.equal(f.rows("copy").length, 1, label);
+    assert.match(f.status(), /changed during Copy.*Remaining messages were not copied/, label);
+  }
+});
+
+test("selected ancestors stay captured across capability, review, confirmation and copy awaits", async t => {
+  for (const phase of ["destinations", "review", "confirmation", "copy"]) {
+    for (const explicitParent of [true, false]) {
+      const f = fixture(t); destinationHierarchy(f);
+      if (!explicitParent) f.ui.run("delete state.accounts[1].folders.primary[1].parentId");
+      await f.open("[state.emails[0],state.emails[2]]"); if (phase !== "destinations") await f.choose();
+      if (phase === "confirmation") f.ui.run("askConfirm=copy=>{confirmations.push(copy);return new Promise(resolve=>globalThis.release=resolve)}");
+      else f.ui.run(`hook=params=>params.action===${JSON.stringify(phase)}?new Promise(resolve=>globalThis.release=()=>resolve(reply(params))):undefined`);
+      const pending = phase === "destinations" ? f.choose() : f.ui.run("commitLocalTransfer()"); await tick();
+      f.ui.run("state.accounts[1].folders.more[0].name='Renamed during await'");
+      f.ui.run(phase === "confirmation" ? "release({ok:true})" : "release()"); await pending;
+      assert.equal(f.rows("copy").length, phase === "copy" ? 1 : 0, `${phase}; explicit parent: ${explicitParent}`);
+    }
+  }
+});
+
 test("Local source Copy sends only remote context owners and preserves existing local Copy/Move paths", async t => {
   const f = fixture(t);
   await f.open("[{id:'local-one',accountId:LOCAL_ACCOUNT_ID,folderId:'local-folder:archive',subject:'Local original'}]");

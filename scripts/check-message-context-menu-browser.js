@@ -166,6 +166,42 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require("node:os").tmpd
       }
     }
 
+    for (const hardAncestorChange of [false, true]) {
+      await page.evaluate(() => {
+        resetCrossFixture();crossPhase="copy";state.accounts[1].delimiter="/";
+        Object.assign(state.accounts[1].folders.primary[1],{parentId:"Projects",path:"Projects/2026",providerId:"archive-provider",uidValidity:17,
+          flags:["\\HasNoChildren"],selectable:true,readOnly:false});
+        state.accounts[1].folders.more.push({id:"Projects",path:"Projects",name:"Projects",providerId:"projects-provider",flags:["\\HasChildren"],readOnly:false});
+        return openLocalTransfer([state.emails[0],{...state.emails[0],id:"second"}],"copy");
+      });
+      const before = await page.evaluate(() => menuCalls.filter(row=>row.params?.action==="copy").length);
+      await page.locator("#local-transfer-account").selectOption("b"); await page.locator("#local-transfer-ok").click();
+      await page.locator("#confirm").waitFor({state:"visible"}); await page.locator("#confirm-ok").click();
+      await page.waitForFunction(() => typeof releaseCross==="function");
+      await page.evaluate(hardChange => {
+        const destination=state.accounts[1];
+        destination.folders.primary[1].unreadCount=42;destination.folders.primary[1].totalCount=99;
+        destination.folders.more[0].unreadCount=21;destination.folders.more[0].totalCount=60;
+        destination.folders.primary[2].name="Unrelated renamed folder";
+        if(hardChange) destination.folders.more[0].flags.push("\\NoSelect");
+        releaseCross();
+      },hardAncestorChange);
+      if (!hardAncestorChange) {
+        await page.waitForFunction(count => menuCalls.filter(row=>row.params?.action==="copy").length===count+2,before);
+        await page.waitForFunction(() => typeof releaseCross==="function");
+        await page.evaluate(() => releaseCross());
+      }
+      await page.waitForFunction(() => !localTransfer?.running);
+      assert.equal(await page.evaluate(() => menuCalls.filter(row=>row.params?.action==="copy").length),before+(hardAncestorChange?1:2));
+      assert.match(await page.locator("#local-transfer-status").textContent(),hardAncestorChange?/changed during Copy.*Remaining messages were not copied/:/2 copied.*0 not confirmed or not attempted/);
+      if (!hardAncestorChange) {
+        const copied = await page.evaluate(count => menuCalls.filter(row=>row.params?.action==="copy").slice(count).map(row=>row.params),before);
+        assert.deepEqual(copied.map(row=>row.emailId),["clicked","second"]); assert.equal(copied[0].reviewId,copied[1].reviewId);
+        await page.screenshot({path:path.join(output,"cross-mailbox-count-refresh.png")});
+      }
+      await page.locator("#local-transfer-cancel").click(); await dialog.waitFor({state:"hidden"});
+    }
+
     for (const phase of ["destinations", "review", "confirmation"]) {
       await page.evaluate(() => {resetCrossFixture();return openLocalTransfer([state.emails[0]],"copy")});
       if (phase === "destinations") await page.evaluate(() => {crossPhase="destinations"});
@@ -229,6 +265,6 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require("node:os").tmpd
     assert.match(await page.locator("#cli-unavailable").textContent(), /cross-mailbox Copy\/Move.*no bot or CLI command/);
     await page.screenshot({path:path.join(output,"cross-mailbox-features.png")});
     assert.deepEqual(errors, []);
-    console.log("message-context-browser-ok: clicked identity, keyboard/focus, Local paths, connected capability/review/confirmation, 36 source/destination/folder/mode await races, late reopen callbacks, unknown/no replay, Escape stop, narrow bounds and rendered Features/CLI; synthetic IPC only");
+    console.log("message-context-browser-ok: clicked identity, keyboard/focus, Local paths, connected capability/review/confirmation, 36 source/destination/folder/mode await races, two-source count refresh, hard ancestor change, late reopen callbacks, unknown/no replay, Escape stop, narrow bounds and rendered Features/CLI; synthetic IPC only");
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

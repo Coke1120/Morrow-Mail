@@ -632,6 +632,59 @@ function transferFolderProof(account, folderId) {
   return folder ? JSON.stringify([folder.id, folder.name, folder.path, folder.parentId, folder.wellKnownName, folder.uidValidity]) : "";
 }
 
+function transferFolderFlags(value) {
+  if (value == null) return null;
+  const flags = typeof value === "string" ? [value] : typeof value[Symbol.iterator] === "function" ? [...value] : Object.keys(value).filter(key => value[key]);
+  return [...new Set(flags.map(flag => String(flag).toLowerCase()))].sort();
+}
+
+function transferDestinationFolderIndex(account) {
+  const byId = new Map(), byPath = new Map();
+  for (const folder of foldersOf(account)) {
+    if (!byId.has(folder.id)) byId.set(folder.id, folder);
+    if (!byPath.has(folder.path)) byPath.set(folder.path, folder);
+  }
+  return { delimiter: account?.delimiter ?? "/", byId, byPath };
+}
+
+function transferDestinationFolderProof(account, folderId, index = transferDestinationFolderIndex(account)) {
+  const { delimiter, byId, byPath } = index, chain = [], visited = new Set();
+  let folder = byId.get(folderId);
+  if (!folder) return JSON.stringify([delimiter, folderId, null]);
+  while (folder) {
+    if (visited.has(folder.id) || chain.length >= 64) { chain.push(["invalid-parent", folder.id]); break; }
+    visited.add(folder.id);
+    // Counts, cached children and other presentation state do not identify a receiving folder.
+    chain.push([folder.id, folder.path, folder.providerId, folder.provider_id, folder.name, folder.parentId,
+      folder.delimiter, folder.wellKnownName, folder.wellKnown, folder.well_known, folder.specialUse, folder.type,
+      folder.selectable, folder.readOnly, folder.readonly, folder.noSelect, folder.NoSelect, folder.noselect,
+      folder.uidValidity, folder.uid_validity, folder.uidNotSticky, folder.mailboxId, folder.mailbox_id,
+      transferFolderFlags(folder.flags), transferFolderFlags(folder.attributes), transferFolderFlags(folder.permanentFlags),
+      folder.enabled, folder.reason, !!folder.missing]);
+    const path = String(folder.path ?? folder.id), separator = folder.delimiter ?? delimiter;
+    const boundary = separator ? path.lastIndexOf(separator) : -1;
+    const parentId = folder.parentId || (boundary > 0 ? path.slice(0, boundary) : "");
+    if (!parentId) break;
+    folder = byId.get(parentId) || byPath.get(parentId)
+      || { id: parentId, path: parentId, missing: true };
+  }
+  return JSON.stringify([delimiter, folderId, chain]);
+}
+
+function transferDestinationCapabilityProof(session, folderId) {
+  const capabilities = session.capabilities;
+  const folder = capabilities?.folders.find(row => row.id === folderId);
+  return JSON.stringify([capabilities?.accountId, capabilities?.copyEnabled, capabilities?.copyReason,
+    capabilities?.moveEnabled, capabilities?.moveReason, capabilities?.maxBytes, capabilities?.maxMessages,
+    capabilities?.maxTotalBytes, capabilities?.notices, folder && transferDestinationFolderProof({ folders: { primary: capabilities.folders } }, folderId)]);
+}
+
+function captureTransferFolderChoice(session) {
+  const folderId = $("local-transfer-folder").value;
+  session.folderProof = transferFolderProof(state.localAccount, folderId);
+  session.folderCapabilityProof = transferDestinationCapabilityProof(session, folderId);
+}
+
 function retireCrossMailboxReview(session, reviewId = session?.reviewId) {
   if (session && session.reviewId === reviewId) { session.reviewId = null; session.review = null; }
   if (!reviewId) return;
@@ -660,7 +713,10 @@ function transferChoiceCurrent(session, generation, folderId, mode) {
   }
   const account = state.accounts.find(row => row.id === destination.accountId);
   return !!destination.owner?.connection && contextAccountProof(destination.accountId) === destination.owner.connection
-    && JSON.stringify(foldersOf(account)) === destination.foldersProof;
+    && (account?.delimiter ?? "/") === destination.delimiter
+    && (folderId === undefined || transferDestinationFolderProof(account, folderId) === (destination.folderProofs.get(folderId)
+      || JSON.stringify([destination.delimiter, folderId, null]))
+      && transferDestinationCapabilityProof(session, folderId) === session.folderCapabilityProof);
 }
 
 function crossMailboxTransferParams(session, action, folderId) {
@@ -676,7 +732,7 @@ function changeLocalTransferChoice() {
   session.generation++; session.reviewing = false; session.stop = false;
   retireCrossMailboxReview(session);
   session.mode = $("local-transfer-mode").value;
-  session.folderProof = transferFolderProof(state.localAccount, $("local-transfer-folder").value);
+  captureTransferFolderChoice(session);
   $("local-transfer-status").textContent = "";
   paintLocalTransferMode();
 }
@@ -694,8 +750,9 @@ async function chooseLocalTransferAccount() {
   const account = state.accounts.find(row => row.id === accountId);
   // Capture the receiving mailbox now, before capability discovery. Never rebind it after an await.
   const connection = window.morrowMailContextOwner?.connection(account) || "";
+  const folderIndex = transferDestinationFolderIndex(account);
   session.destination = { accountId, owner: { accountId, bodyEpoch: account?.bodyEpoch, connection },
-    foldersProof: JSON.stringify(foldersOf(account)) };
+    delimiter: folderIndex.delimiter, folderProofs: new Map([...folderIndex.byId.keys()].map(id => [id, transferDestinationFolderProof(account, id, folderIndex)])) };
   if (session.mode === "move") { session.mode = "copy"; $("local-transfer-mode").value = "copy"; }
   $("local-transfer-folder").replaceChildren();
   $("local-transfer-notices").replaceChildren();
@@ -721,6 +778,11 @@ async function chooseLocalTransferAccount() {
     if (result?.accountId !== accountId || !Array.isArray(result.folders)) throw new Error("The receiving mailbox returned an invalid capability result.");
     session.capabilities = result;
     paintLocalTransferFolders();
+    if ($("local-transfer-folder").value && !transferChoiceCurrent(session, generation, $("local-transfer-folder").value, mode)) {
+      session.capabilities = null; $("local-transfer-folder").replaceChildren();
+      $("local-transfer-capability").textContent = "The receiving folder or its parent changed while checking support. Choose the mailbox again to review it.";
+      return;
+    }
     $("local-transfer-capability").textContent = [result.copyEnabled ? "Copy is available for enabled folders." : result.copyReason || "Verified Copy is unavailable for this mailbox.",
       result.moveReason || "Move to a connected mailbox is unavailable. Copy keeps every source message.", "Maximum 50 messages; 32 MiB per original message; 256 MiB total per review."].join(" ");
     $("local-transfer-notices").replaceChildren(...(result.notices || []).map(detail => { const row = document.createElement("li"); row.textContent = String(detail); return row; }));
@@ -752,7 +814,7 @@ function paintLocalTransferFolders() {
   }
   if ([...select.options].some(row => row.value === previous && !row.disabled)) select.value = previous;
   else select.value = [...select.options].find(row => !row.disabled)?.value || "";
-  session.folderProof = transferFolderProof(state.localAccount, select.value);
+  captureTransferFolderChoice(session);
 }
 
 async function openLocalTransfer(messages, mode) {
