@@ -6,9 +6,11 @@ const messageBytes = require("./copy-message");
 const publicOwner = require("../../shared/mail-context-owner");
 const { ACCOUNT_ID: LOCAL_ID } = require("./local-folders");
 const { imapListing, gmailListing } = require("./folder-adapter");
+const { persistentSelection } = require("./copy-imap-selection");
 const conflict = () => Object.assign(new Error("The reviewed message, folder or mailbox connection changed. Review Copy again; no source was removed."), { code: "copy_conflict", operationIssued: false });
 const unsupported = reason => Object.assign(new Error(reason), { code: "copy_unsupported", operationIssued: false });
-const positive = value => Number.isSafeInteger(Number(value)) && Number(value) > 0 && Number(value) <= 0xffffffff;
+const positive = value => (typeof value === "number" || typeof value === "bigint" || typeof value === "string" && /^[1-9]\d{0,9}$/.test(value))
+  && Number.isSafeInteger(Number(value)) && Number(value) > 0 && Number(value) <= 0xffffffff;
 const sourceFields = ["id", "account_id", "folder_path", "uid", "uid_validity", "gmail_id", "rfc_message_id", "draft_pending", "is_draft", "unread", "starred", "date_iso", "date_source"];
 const same = (left, right, fields) => !!left && !!right && fields.every(key => left[key] === right[key]);
 const localIdentity = value => JSON.stringify([value.id, value.folderId, value.unread, value.isStarred, value.date, value.dateSource, value.attachments]);
@@ -36,17 +38,23 @@ function permission(folder, backend) {
 }
 const folderGeneration = folder => folder && JSON.stringify([folder.path, folder.provider_id, folder.uid_validity, folder.well_known]);
 
-function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAccount, secretFor, withMailClient, exclusive, localArchive, identityReady } = {}) {
+function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAccount, secretFor, withMailClient, exclusive, localArchive, identityReady, googleClient = () => null } = {}) {
+  function owned(accountId) {
+    const current = owner(accountId), account = db.accountById(accountId);
+    if (!current || !account) return null;
+    const client = account.profile === "gmail" && account.auth_kind === "oauth2" ? googleClient() : null;
+    return { ...current, binding: digest(JSON.stringify([current.binding, client])) };
+  }
   function accountSnapshot(accountId, hint) {
     const account = bindAccount(db.accountById(accountId));
-    const current = owner(accountId);
+    const current = owned(accountId);
     if (!current || !hint || hint.accountId !== accountId || hint.bodyEpoch !== publicAccount(account).bodyEpoch
       || hint.connection !== publicOwner.connection(publicAccount(account))) throw conflict();
     return { accountId, account, ...current, pinned: current.revision };
   }
   function checkAccount(snapshot, allowOwnRevision = false) {
     assertAccountCurrent(snapshot.account);
-    const current = owner(snapshot.accountId);
+    const current = owned(snapshot.accountId);
     if (!current || current.binding !== snapshot.binding || current.generation !== snapshot.generation
       || !allowOwnRevision && current.revision !== snapshot.pinned) throw conflict();
     return current;
@@ -153,7 +161,7 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
     const fingerprint = folderIdentity(model, folder);
     let uidValidity = null, permanentFlags = null;
     if (!transport.gmail) {
-      checked(); const mailbox = await transport.mailboxOpen(id, { readOnly: false }); checked();
+      checked(); const mailbox = await persistentSelection(transport, () => transport.mailboxOpen(id, { readOnly: false }), checked); checked();
       const opened = transport.mailbox || mailbox;
       if (!opened || opened.readOnly !== false || !positive(opened.uidValidity) || opened.uidNotSticky) throw unsupported("This destination cannot prove writable persistent message identities.");
       uidValidity = Number(opened.uidValidity);
@@ -169,7 +177,7 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
   }
   async function imapSnapshot(transport, locator, checked) {
     checked();
-    const held = await transport.getMailboxLock(locator.folderId, { readOnly: true });
+    const held = await persistentSelection(transport, () => transport.getMailboxLock(locator.folderId, { readOnly: true }), checked);
     let content;
     try {
       checked();
@@ -192,7 +200,8 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
       }
       checked();
       if (size !== metadata.size || Number(transport.mailbox?.uidValidity) !== locator.uidValidity) throw unsupported("The MIME download was incomplete or its folder identity changed. The source was retained.");
-      return { raw: Buffer.concat(chunks), date, unread: !metadata.flags.has("\\Seen"), starred: metadata.flags.has("\\Flagged") };
+      const flags = new Set([...metadata.flags].map(flag => String(flag).toLowerCase()));
+      return { raw: Buffer.concat(chunks), date, unread: !flags.has("\\seen"), starred: flags.has("\\flagged") };
     } finally { content?.destroy?.(); held.release(); }
   }
   async function gmailSnapshot(transport, providerId, checked, validateParts) {
@@ -239,8 +248,8 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
               const date = live.backend === "gmail" ? messageBytes.dateHeader(snapshot.raw) : snapshot.date;
               if (!Number.isSafeInteger(date) || date < 0) throw unsupported("The original message date could not be preserved at this destination.");
               if (live.backend === "imap") {
-                const flags = live.permanentFlags;
-                if (flags && ((!snapshot.unread && !flags.includes("\\Seen")) || (snapshot.starred && !flags.includes("\\Flagged")))) throw unsupported("This destination cannot preserve the original read/star flags.");
+                const flags = live.permanentFlags?.map(flag => String(flag).toLowerCase());
+                if (flags && ((!snapshot.unread && !flags.includes("\\seen")) || (snapshot.starred && !flags.includes("\\flagged")))) throw unsupported("This destination cannot preserve the original read/star flags.");
                 const appendLimit = destinationTransport.capabilities?.get?.("APPENDLIMIT");
                 if (typeof appendLimit === "number" && snapshot.raw.length > appendLimit) throw unsupported("The complete original exceeds this server's APPENDLIMIT.");
               }

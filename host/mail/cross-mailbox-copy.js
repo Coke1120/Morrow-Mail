@@ -10,6 +10,7 @@ const UNKNOWN = "The destination copy could not be fully verified. The source wa
 
 function createService({ access, journal, gate, now = Date.now, clock = () => performance.now() } = {}) {
   const reviews = new Map();
+  let pendingReviews = 0;
   function store() { return typeof journal === "function" ? journal() : journal; }
   function prune() { for (const [id, review] of reviews) if (!review.running && (review.cancelled || review.expires <= clock())) reviews.delete(id); }
   function validateItems(params) {
@@ -30,15 +31,18 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
   }
   async function review(params) {
     validateItems(params); prune();
-    if (reviews.size >= LIMITS.reviews) throw problem("copy_limit", "Close an earlier copy review before opening another.");
-    const ticket = access.capture(params);
-    const destination = await access.review(ticket, params.folderId);
-    const id = "copy-review:" + crypto.randomUUID();
-    reviews.set(id, { id, ticket, destination, expires: clock() + LIMITS.reviewMs, used: new Set(), running: false, cancelled: false, bytes: 0 });
-    return { reviewId: id, accountId: ticket.destination.accountId, folderId: destination.id,
+    if (reviews.size + pendingReviews >= LIMITS.reviews) throw problem("copy_limit", "Close an earlier copy review before opening another.");
+    pendingReviews++;
+    try {
+      const ticket = access.capture(params);
+      const destination = await access.review(ticket, params.folderId);
+      const id = "copy-review:" + crypto.randomUUID();
+      reviews.set(id, { id, ticket, destination, expires: clock() + LIMITS.reviewMs, used: new Set(), running: false, cancelled: false, bytes: 0 });
+      return { reviewId: id, accountId: ticket.destination.accountId, folderId: destination.id,
       sourceCount: ticket.sources.length, sourceLabels: [...new Set(ticket.sources.map(source => source.label))],
       destinationLabel: destination.label, notices: destination.notices || [], expiresAt: now() + LIMITS.reviewMs,
       maxBytes: LIMITS.rawBytes, maxMessages: LIMITS.messages, maxTotalBytes: LIMITS.batchBytes };
+    } finally { pendingReviews--; }
   }
   function result(receipt, status, detail) {
     return { status, receiptId: receipt.id, detail, destination: receipt.destination
@@ -70,7 +74,7 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
             const saved = await session.readDestination(receipt.destination); session.check();
             bytes.verify(snapshot.raw, saved.raw, { gmail: session.backend === "gmail" });
             session.verifyState(saved, expected);
-            receipt = ledger.update(receipt.id, receipt.phase, { phase: "verified", updatedAt: now(), detail: "Destination content and state freshly verified." });
+            receipt = ledger.update(receipt.id, receipt.phase, { phase: "verified", expected, updatedAt: now(), detail: "Destination content and state freshly verified." });
             return result(receipt, "reused", "A previous complete copy was freshly verified. No message was uploaded again; the source stayed in place.");
           } catch {
             receipt = ledger.update(receipt.id, receipt.phase, { phase: "unknown", updatedAt: now(), detail: UNKNOWN });

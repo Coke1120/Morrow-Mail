@@ -37,6 +37,38 @@ function createJournal(file, { database = Database } = {}) {
       try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
     }
   } catch (error) { sql.close(); throw error.code === "copy_recovery" ? error : corrupt(); }
+  let poisoned = false, observedVersion = null, observedStamp = null;
+  const identity = fs.lstatSync(file);
+  function stamp() {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > LIMITS.fileBytes
+      || stat.dev !== identity.dev || stat.ino !== identity.ino || stat.birthtimeMs !== identity.birthtimeMs) throw corrupt();
+    return JSON.stringify([stat.size, stat.mtimeMs, stat.ctimeMs]);
+  }
+  function assertIntegrity(force = false) {
+    if (poisoned) throw corrupt();
+    try {
+      const version = sql.pragma("data_version", { simple: true }), currentStamp = stamp();
+      if (force || version !== observedVersion || currentStamp !== observedStamp) {
+        if (sql.pragma("quick_check", { simple: true }) !== "ok") throw corrupt();
+        const rows = sql.prepare("SELECT * FROM mailbox_copies").all();
+        if (rows.length > LIMITS.records) throw corrupt();
+        for (const row of rows) decode(row);
+      }
+      observedVersion = version; observedStamp = currentStamp;
+    } catch { poisoned = true; throw corrupt(); }
+  }
+  function guarded(work) {
+    assertIntegrity();
+    try {
+      const value = work();
+      observedVersion = sql.pragma("data_version", { simple: true }); observedStamp = stamp();
+      return value;
+    } catch (error) {
+      if (["copy_exists", "copy_limit", "copy_conflict"].includes(error.code)) throw error;
+      poisoned = true; throw corrupt();
+    }
+  }
 
   function decode(row) {
     if (!row || typeof row.body !== "string" || Buffer.byteLength(row.body) > LIMITS.recordBytes || digest(row.body) !== row.sha) throw corrupt();
@@ -52,30 +84,28 @@ function createJournal(file, { database = Database } = {}) {
     return { body, sha: digest(body) };
   }
   function find(key) {
-    const row = sql.prepare("SELECT * FROM mailbox_copies WHERE copy_key=?").get(key);
-    return row ? decode(row) : null;
+    return guarded(() => { const row = sql.prepare("SELECT * FROM mailbox_copies WHERE copy_key=?").get(key); return row ? decode(row) : null; });
   }
   function read(id) {
-    const row = sql.prepare("SELECT * FROM mailbox_copies WHERE id=?").get(id);
-    return row ? decode(row) : null;
+    return guarded(() => { const row = sql.prepare("SELECT * FROM mailbox_copies WHERE id=?").get(id); return row ? decode(row) : null; });
   }
   function list() {
-    const rows = sql.prepare("SELECT * FROM mailbox_copies ORDER BY updated_at,id").all();
+    return guarded(() => { const rows = sql.prepare("SELECT * FROM mailbox_copies ORDER BY updated_at,id").all();
     if (rows.length > LIMITS.records) throw corrupt();
-    return rows.map(decode);
+    return rows.map(decode); });
   }
   function insert(value) {
-    return sql.transaction(() => {
+    return guarded(() => sql.transaction(() => {
       if (find(value.key)) throw Object.assign(new Error("This source and destination already have a copy receipt. Review its result first."), { code: "copy_exists", operationIssued: false });
       if (sql.prepare("SELECT COUNT(*) n FROM mailbox_copies").get().n >= LIMITS.records) throw Object.assign(new Error("Copy recovery storage is full. Retain existing receipts; no new upload was started."), { code: "copy_limit", operationIssued: false });
       const encoded = encode(value);
       sql.prepare("INSERT INTO mailbox_copies VALUES(?,?,?,?,?,?,?,?)").run(value.id, value.key, value.sourceKey,
         value.destinationKey, value.phase, value.updatedAt, encoded.body, encoded.sha);
       return read(value.id);
-    })();
+    })());
   }
   function update(id, expected, patch) {
-    return sql.transaction(() => {
+    return guarded(() => sql.transaction(() => {
       const value = read(id);
       if (!value || !(Array.isArray(expected) ? expected : [expected]).includes(value.phase)) throw Object.assign(new Error("This copy receipt changed. Review its result again."), { code: "copy_conflict", operationIssued: false });
       const next = { ...value, ...patch, id: value.id, key: value.key, sourceKey: value.sourceKey, destinationKey: value.destinationKey };
@@ -83,7 +113,7 @@ function createJournal(file, { database = Database } = {}) {
       sql.prepare("UPDATE mailbox_copies SET phase=?,updated_at=?,body=?,sha=? WHERE id=?")
         .run(next.phase, next.updatedAt, encoded.body, encoded.sha, id);
       return read(id);
-    })();
+    })());
   }
   function recover(now = Date.now()) {
     for (const value of list()) {
@@ -92,7 +122,7 @@ function createJournal(file, { database = Database } = {}) {
       // Unknown outcomes, including a durable pre-submit intent, stay unknown.
     }
   }
-  return { file, find, read, list, insert, update, recover, close() { sql.close(); } };
+  return { file, find, read, list, insert, update, recover, assertIntegrity, close() { sql.close(); } };
 }
 
 module.exports = { createJournal, digest, LIMITS, PHASES };

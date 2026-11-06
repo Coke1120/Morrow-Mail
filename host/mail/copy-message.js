@@ -41,13 +41,13 @@ function verify(source, destination, { gmail = false } = {}) {
   } else {
     // Gmail may prepend transport/authentication trace fields. Every original
     // field, including duplicates, and the entire MIME body must still match.
-    const remaining = after.headers.slice();
-    for (const header of before.headers) {
-      const at = remaining.findIndex(value => value.name === header.name && value.value === header.value);
-      if (at < 0) throw invalid("Gmail readback did not retain all original headers. The source was retained.");
-      remaining.splice(at, 1);
+    let original = 0;
+    for (const header of after.headers) {
+      const expected = before.headers[original];
+      if (expected && expected.name === header.name && expected.value === header.value) original++;
+      else if (!TRACE.has(header.name)) throw invalid("Gmail changed original headers or their order. The source was retained.");
     }
-    if (remaining.some(value => !TRACE.has(value.name))) throw invalid("Gmail changed message content or headers that could not be verified. The source was retained.");
+    if (original !== before.headers.length) throw invalid("Gmail readback did not retain all original headers in order. The source was retained.");
   }
   return { rawSha: before.rawSha, fingerprint: before.fingerprint, size: before.size };
 }
@@ -67,7 +67,7 @@ async function decodedParts(raw) {
   inspect(raw);
   const splitter = new Splitter();
   const streamer = new Streamer(node => !String(node.contentType).startsWith("multipart/"));
-  const pending = [], parts = [];
+  const pending = [], parts = []; let failed;
   streamer.on("node", ({ node, decoder, done }) => {
     const reading = (async () => {
       const hash = crypto.createHash("sha256"); let size = 0;
@@ -81,11 +81,13 @@ async function decodedParts(raw) {
         if (parts.length > 200) throw invalid("This message has too many MIME parts for verified mailbox copy.");
       } finally { done(); }
     })();
-    pending.push(reading);
+    pending.push(reading.catch(error => { failed ||= error; }));
   });
   streamer.resume();
-  await pipeline(Readable.from([raw]), splitter, streamer);
+  try { await pipeline(Readable.from([raw]), splitter, streamer); }
+  catch { failed ||= invalid("The complete MIME structure could not be verified. The source was retained."); }
   await Promise.all(pending);
+  if (failed) throw failed;
   if (!parts.length) throw invalid("The complete MIME structure could not be verified.");
   return parts;
 }

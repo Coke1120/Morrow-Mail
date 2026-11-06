@@ -18,7 +18,7 @@ function fixture(t, options = {}) {
   const access = {
     capture(params) { if (!valid) throw failure(); return { sources: params.items.map(item => ({id:item.emailId,accountId:item.accountId,label:item.accountId})), destination:{accountId:"destination"} }; },
     async destinations() { return {accountId:"destination",copyEnabled:true,copyReason:"",folders:[{id:"Archive",name:"Archive",enabled:true}],notices:[]}; },
-    async review() { if (!valid) throw failure(); return {id:"Archive",label:"Destination / Archive",proof:folderProof,backend:options.gmail?"gmail":"imap"}; },
+    async review() { if (!valid) throw failure(); await options.reviewWait?.(); return {id:"Archive",label:"Destination / Archive",proof:folderProof,backend:options.gmail?"gmail":"imap"}; },
     async withCopy(ticket, source, reviewed, work) {
       const checked = () => { if (!valid || reviewed.proof !== folderProof) throw failure(); };
       const session = {check:checked,backend:options.gmail?"gmail":"imap",sourceBinding:digest("source-binding"),destinationBinding:digest("destination-binding"),folderProof,
@@ -27,7 +27,8 @@ function fixture(t, options = {}) {
         sourceKey() { return digest(options.sameIdentity?"canonical-provider-id":source.id); }, destinationKey() { return digest("destination-Archive"); },
         async upload(snapshot, expected, beforeSubmit) {
           await state.beforeWrite?.(); checked(); beforeSubmit();
-          assert.equal(ledger.list().at(-1).phase,"unknown","durable uncertainty must precede upload");
+          const key=digest(JSON.stringify([session.sourceKey(),session.destinationKey()]));
+          assert.equal(ledger.find(key).phase,"unknown","this exact receipt must be durably uncertain before upload");
           state.uploads++;
           const destination={accountId:"destination",folderId:"Archive",uid:100+state.uploads,uidValidity:1};
           state.destinations.set(destination.uid,{raw:state.destinationRaw||snapshot.raw,unread:state.unread,starred:state.starred,date:state.date});
@@ -114,11 +115,28 @@ test("expired reviews, duplicate selection, Move and over-limit selections canno
   await assert.rejects(f.review(Array.from({length:51},(_,i)=>String(i))),/1–50/);
   await assert.rejects(f.service.answer({action:"review",...f.params(),mode:"move"}),/Move/);assert.equal(f.state.uploads,0);
 });
+test("pending async reviews reserve bounded capacity and release it after failure or cancellation",async t=>{
+  let release,entered=0;
+  const held=new Promise(resolve=>{release=resolve});
+  const f=fixture(t,{reviewWait:async()=>{entered++;await held}});
+  const pending=Array.from({length:32},()=>f.review());
+  assert.equal(entered,32);await assert.rejects(f.review(),/Close an earlier/);
+  release();const reviews=await Promise.all(pending);assert.equal(reviews.length,32);await assert.rejects(f.review(),/Close an earlier/);
+  await f.service.answer({action:"cancelReview",reviewId:reviews[0].reviewId});assert.ok((await f.review()).reviewId);
+  let failed=true;
+  const retry=fixture(t,{reviewWait:()=>{if(failed)throw new Error("Synthetic review failure")}});
+  for(let i=0;i<33;i++)await assert.rejects(retry.review(),/Synthetic review failure/);
+  failed=false;assert.ok((await retry.review()).reviewId,"failed awaits release reservations");
+});
 test("MIME verification permits only additional Gmail trace headers and keeps every original body/header byte",async()=>{
   const prefixed=Buffer.concat([Buffer.from("Received: synthetic trace\r\n"),RAW]);
   assert.equal(mime.verify(RAW,prefixed,{gmail:true}).rawSha,mime.digest(RAW));
   assert.throws(()=>mime.verify(RAW,prefixed),/match/);
   assert.throws(()=>mime.verify(RAW,Buffer.concat([Buffer.from("Subject: injected\r\n"),RAW]),{gmail:true}),/headers/);
+  const duplicate=Buffer.concat([Buffer.from("Subject: first\r\nSubject: second\r\n"),RAW]);
+  const reordered=Buffer.concat([Buffer.from("Subject: second\r\nSubject: first\r\n"),RAW]);
+  assert.throws(()=>mime.verify(duplicate,reordered,{gmail:true}),/order|headers/);
+  assert.equal(mime.verify(duplicate,Buffer.concat([Buffer.from("Received: allowed trace\r\n"),duplicate]),{gmail:true}).rawSha,mime.digest(duplicate));
   const parts=await mime.decodedParts(RAW);assert.equal(parts.length,2);assert.equal(parts.find(p=>p.type==="application/octet-stream").size,3);
   assert.equal(mime.dateHeader(RAW),DATE);
   await mime.verifyGmailSource(RAW,{parts:[{mimeType:"text/plain",body:{size:14,data:Buffer.from("Synthetic body").toString("base64url")}},
@@ -131,6 +149,16 @@ test("SQLite abrupt exit preserves pre-upload uncertainty and never permits auto
   const program=`const j=require(${JSON.stringify(require.resolve("../host/mail/copy-recovery"))}).createJournal(process.argv[1]);const d='a'.repeat(64);j.insert({id:'crashed',key:d,sourceKey:d,destinationKey:d,phase:'prepared',updatedAt:1});j.update('crashed','prepared',{phase:'unknown',updatedAt:2});process.exit(77);`;
   const child=spawnSync(process.execPath,["-e",program,file],{encoding:"utf8",timeout:10000});assert.equal(child.status,77,child.stderr);
   const ledger=createJournal(file);try{ledger.recover();assert.equal(ledger.read("crashed").phase,"unknown");}finally{ledger.close();}
+});
+test("external corruption poisons the open recovery handle and blocks unrelated keys and later repair attempts",t=>{
+  const f=fixture(t),value={id:"existing",key:digest("existing"),sourceKey:digest("s"),destinationKey:digest("d"),phase:"unknown",updatedAt:1};
+  f.ledger.insert(value);
+  const Database=require("better-sqlite3"),external=new Database(f.file);
+  external.prepare("UPDATE mailbox_copies SET body=? WHERE id=?").run('{"corrupt":true}',value.id);external.close();
+  assert.throws(()=>f.ledger.find(digest("unrelated")),/recovery storage/);
+  const repaired=new Database(f.file),body=JSON.stringify(value);
+  repaired.prepare("UPDATE mailbox_copies SET body=?,sha=? WHERE id=?").run(body,digest(body),value.id);repaired.close();
+  assert.throws(()=>f.ledger.insert({...value,id:"new",key:digest("new")}),/recovery storage/);
 });
 
 module.exports={RAW,DATE};

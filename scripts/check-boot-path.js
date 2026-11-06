@@ -217,7 +217,7 @@ const sidebarAccounts = spawnSync(process.execPath, [path.join(__dirname, "check
 assert.ifError(sidebarAccounts.error);
 assert.strictEqual(sidebarAccounts.status, 0, "per-account sidebar expansion failed");
 
-for (const name of ["check-cross-mailbox-copy.js", "check-cross-mailbox-copy-ui.js", "check-message-context-owner.js", "check-message-context-menu.js", "check-local-folders.js", "check-local-folders-ui.js", "check-mbox-import.js", "check-mbox-import-ui.js", "check-mbox-import-host.js"]) {
+for (const name of ["check-cross-mailbox-copy.js", "check-cross-mailbox-protocol.js", "check-cross-mailbox-engine.js", "check-cross-mailbox-copy-ui.js", "check-message-context-owner.js", "check-message-context-menu.js", "check-local-folders.js", "check-local-folders-ui.js", "check-mbox-import.js", "check-mbox-import-ui.js", "check-mbox-import-host.js"]) {
   // MBOX runs 25 serial MIME/restart/SQLite/fsync cases. Windows reached 21
   // healthy cases before the old 30s aggregate deadline; allow bounded I/O
   // headroom for this process only. Per-message worker and import budgets stay.

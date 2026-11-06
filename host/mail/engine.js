@@ -186,16 +186,21 @@ let folderManager = null;
 let folderAccess = null;
 let mailboxCopyJournal = null;
 let mailboxCopyService = null;
+let mailboxCopyStorageFailed = false;
 function ownedMailboxCopies() {
+  if (mailboxCopyStorageFailed) throw Object.assign(new Error("Copy recovery storage could not be verified. Copy is disabled; retain its files and restart after recovery."), { code: "copy_recovery" });
   const file = path.join(path.dirname(dataFile()), "mailbox-copy-recovery.sqlite");
   if (mailboxCopyJournal && mailboxCopyJournal.file !== file) throw new Error("Finish mailbox copies before changing the mail profile.");
   if (!mailboxCopyJournal) {
-    mailboxCopyJournal = createCopyJournal(file);
-    mailboxCopyJournal.recover();
+    const opened = createCopyJournal(file);
+    try { opened.recover(); mailboxCopyJournal = opened; }
+    catch (error) { opened.close(); throw error; }
   }
+  mailboxCopyJournal.assertIntegrity();
   if (!mailboxCopyService) {
     const access = createMailboxCopyAccess({ db, bindAccount, assertAccountCurrent,
       owner: id => ownedFolderAccess().owner(id), publicAccount: account => accountView(account, 0),
+      googleClient: () => oauthConfig.loadGoogleClient()?.clientId || null,
       secretFor, withMailClient, exclusive, localArchive, identityReady: id => actions.assertIdentityReady(id) });
     mailboxCopyService = createMailboxCopyService({ access, journal: mailboxCopyJournal, gate: updateGate });
   }
@@ -203,7 +208,10 @@ function ownedMailboxCopies() {
 }
 async function crossMailboxCopyAnswer(params) {
   try { return ok(await ownedMailboxCopies().answer(params)); }
-  catch (error) { return fail(error.code || "mailbox_copy", error.message); }
+  catch (error) {
+    if (error.code === "copy_recovery") mailboxCopyStorageFailed = true;
+    return fail(error.code || "mailbox_copy", error.message);
+  }
 }
 function ownedFolderAccess() {
   if (!folderAccess) {
@@ -5104,7 +5112,7 @@ actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast,
 module.exports = {
   closeMailboxCopyForTest() {
     if (mailboxCopyService?.active) throw new Error("Finish mailbox copies before closing recovery storage.");
-    mailboxCopyJournal?.close(); mailboxCopyJournal = null; mailboxCopyService = null;
+    mailboxCopyJournal?.close(); mailboxCopyJournal = null; mailboxCopyService = null; mailboxCopyStorageFailed = false;
   },
   async stopLocalImports() { folderManager?.pause(); await mboxImporter?.stop(); mboxImporter = null; },
   closeLocalArchiveForTest() { if (mboxImporter) throw new Error("Stop imports before closing the local archive."); localStore?.close(); localStore = null; },
