@@ -619,6 +619,7 @@ async function closeMboxImport() {
 }
 
 let localTransfer = null;
+let localTransferOpenGeneration = 0;
 function localFolderPath(folder, folders, visited = new Set()) {
   if (!folder || visited.has(folder.id)) return "";
   visited.add(folder.id);
@@ -626,99 +627,390 @@ function localFolderPath(folder, folders, visited = new Set()) {
   return (parent ? localFolderPath(parent, folders, visited) + " / " : "") + folder.name;
 }
 
+function transferFolderProof(account, folderId) {
+  const folder = foldersOf(account).find(row => row.id === folderId);
+  return folder ? JSON.stringify([folder.id, folder.name, folder.path, folder.parentId, folder.wellKnownName, folder.uidValidity]) : "";
+}
+
+function transferFolderFlags(value) {
+  if (value == null) return null;
+  const flags = typeof value === "string" ? [value] : typeof value[Symbol.iterator] === "function" ? [...value] : Object.keys(value).filter(key => value[key]);
+  return [...new Set(flags.map(flag => String(flag).toLowerCase()))].sort();
+}
+
+function transferDestinationFolderIndex(account) {
+  const byId = new Map(), byPath = new Map();
+  for (const folder of foldersOf(account)) {
+    if (!byId.has(folder.id)) byId.set(folder.id, folder);
+    if (!byPath.has(folder.path)) byPath.set(folder.path, folder);
+  }
+  return { delimiter: account?.delimiter ?? "/", byId, byPath };
+}
+
+function transferDestinationFolderProof(account, folderId, index = transferDestinationFolderIndex(account)) {
+  const { delimiter, byId, byPath } = index, chain = [], visited = new Set();
+  let folder = byId.get(folderId);
+  if (!folder) return JSON.stringify([delimiter, folderId, null]);
+  while (folder) {
+    if (visited.has(folder.id) || chain.length >= 64) { chain.push(["invalid-parent", folder.id]); break; }
+    visited.add(folder.id);
+    // Counts, cached children and other presentation state do not identify a receiving folder.
+    chain.push([folder.id, folder.path, folder.providerId, folder.provider_id, folder.name, folder.parentId,
+      folder.delimiter, folder.wellKnownName, folder.wellKnown, folder.well_known, folder.specialUse, folder.type,
+      folder.selectable, folder.readOnly, folder.readonly, folder.noSelect, folder.NoSelect, folder.noselect,
+      folder.uidValidity, folder.uid_validity, folder.uidNotSticky, folder.mailboxId, folder.mailbox_id,
+      transferFolderFlags(folder.flags), transferFolderFlags(folder.attributes), transferFolderFlags(folder.permanentFlags),
+      folder.enabled, folder.reason, !!folder.missing]);
+    const path = String(folder.path ?? folder.id), separator = folder.delimiter ?? delimiter;
+    const boundary = separator ? path.lastIndexOf(separator) : -1;
+    const parentId = folder.parentId || (boundary > 0 ? path.slice(0, boundary) : "");
+    if (!parentId) break;
+    folder = byId.get(parentId) || byPath.get(parentId)
+      || { id: parentId, path: parentId, missing: true };
+  }
+  return JSON.stringify([delimiter, folderId, chain]);
+}
+
+function transferDestinationCapabilityProof(session, folderId) {
+  const capabilities = session.capabilities;
+  const folder = capabilities?.folders.find(row => row.id === folderId);
+  return JSON.stringify([capabilities?.accountId, capabilities?.copyEnabled, capabilities?.copyReason,
+    capabilities?.moveEnabled, capabilities?.moveReason, capabilities?.maxBytes, capabilities?.maxMessages,
+    capabilities?.maxTotalBytes, capabilities?.notices, folder && transferDestinationFolderProof({ folders: { primary: capabilities.folders } }, folderId)]);
+}
+
+function captureTransferFolderChoice(session) {
+  const folderId = $("local-transfer-folder").value;
+  session.folderProof = transferFolderProof(state.localAccount, folderId);
+  session.folderCapabilityProof = transferDestinationCapabilityProof(session, folderId);
+}
+
+function retireCrossMailboxReview(session, reviewId = session?.reviewId) {
+  if (session && session.reviewId === reviewId) { session.reviewId = null; session.review = null; }
+  if (!reviewId) return;
+  if (session) {
+    session.retiredReviews ||= new Set();
+    if (session.retiredReviews.has(reviewId)) return;
+    session.retiredReviews.add(reviewId);
+  }
+  // Cancellation retires an unused ticket only. It never retries or recalls an upload.
+  return call("mail:crossMailboxCopy", { action: "cancelReview", reviewId }).catch(() => {});
+}
+
+function transferSessionCurrent(session, generation = session?.generation) {
+  return !!session && localTransfer === session && session.generation === generation && !session.closed
+    && $("local-transfer").open && $("local-transfer").dataset.closing !== "1";
+}
+
+function transferChoiceCurrent(session, generation, folderId, mode) {
+  if (!transferSessionCurrent(session, generation) || !session.current()
+    || $("local-transfer-account").value !== session.destination?.accountId
+    || $("local-transfer-mode").value !== mode || session.mode !== mode
+    || (folderId !== undefined && $("local-transfer-folder").value !== folderId)) return false;
+  const destination = session.destination;
+  if (destination.accountId === LOCAL_ACCOUNT_ID) {
+    return folderId === undefined || transferFolderProof(state.localAccount, folderId) === session.folderProof;
+  }
+  const account = state.accounts.find(row => row.id === destination.accountId);
+  return !!destination.owner?.connection && contextAccountProof(destination.accountId) === destination.owner.connection
+    && (account?.delimiter ?? "/") === destination.delimiter
+    && (folderId === undefined || transferDestinationFolderProof(account, folderId) === (destination.folderProofs.get(folderId)
+      || JSON.stringify([destination.delimiter, folderId, null]))
+      && transferDestinationCapabilityProof(session, folderId) === session.folderCapabilityProof);
+}
+
+function crossMailboxTransferParams(session, action, folderId) {
+  return { action, items: session.messages.map(row => ({ emailId: row.id, accountId: row.accountId })),
+    contextOwners: session.messages.filter(row => !isLocalMail(row)).map(row => ({ ...row.contextOwner })),
+    destinationAccountId: session.destination.accountId, destinationOwner: { ...session.destination.owner },
+    ...(folderId === undefined ? {} : { folderId }) };
+}
+
+function changeLocalTransferChoice() {
+  const session = localTransfer;
+  if (!session || session.running || session.finished) return;
+  session.generation++; session.reviewing = false; session.stop = false;
+  retireCrossMailboxReview(session);
+  session.mode = $("local-transfer-mode").value;
+  captureTransferFolderChoice(session);
+  $("local-transfer-status").textContent = "";
+  paintLocalTransferMode();
+}
+
+async function chooseLocalTransferAccount() {
+  const session = localTransfer;
+  if (!session || session.running || session.finished) return;
+  changeLocalTransferChoice();
+  const accountId = $("local-transfer-account").value;
+  session.capabilities = null; session.loading = false;
+  if (accountId === LOCAL_ACCOUNT_ID) {
+    session.destination = { accountId };
+    paintLocalTransferFolders(); paintLocalTransferMode(); return;
+  }
+  const account = state.accounts.find(row => row.id === accountId);
+  // Capture the receiving mailbox now, before capability discovery. Never rebind it after an await.
+  const connection = window.morrowMailContextOwner?.connection(account) || "";
+  const folderIndex = transferDestinationFolderIndex(account);
+  session.destination = { accountId, owner: { accountId, bodyEpoch: account?.bodyEpoch, connection },
+    delimiter: folderIndex.delimiter, folderProofs: new Map([...folderIndex.byId.keys()].map(id => [id, transferDestinationFolderProof(account, id, folderIndex)])) };
+  if (session.mode === "move") { session.mode = "copy"; $("local-transfer-mode").value = "copy"; }
+  $("local-transfer-folder").replaceChildren();
+  $("local-transfer-notices").replaceChildren();
+  $("local-transfer-folder-reasons").replaceChildren();
+  if (!connection || !session.current()) {
+    $("local-transfer-capability").textContent = "The source or destination mailbox changed. Close this dialog and review the messages again.";
+    paintLocalTransferMode(); return;
+  }
+  if (session.messages.length > 50) {
+    $("local-transfer-capability").textContent = "Connected mailbox Copy supports up to 50 messages and 32 MiB per original message, with 256 MiB total per review. Choose fewer messages, or use Local Folders (up to 200).";
+    paintLocalTransferMode(); return;
+  }
+  const generation = session.generation, mode = session.mode;
+  session.loading = true;
+  $("local-transfer-capability").textContent = "Checking this mailbox's verified Copy support and available folders…";
+  paintLocalTransferMode();
+  try {
+    const result = await call("mail:crossMailboxCopy", crossMailboxTransferParams(session, "destinations"));
+    if (!transferChoiceCurrent(session, generation, undefined, mode)) {
+      if (transferSessionCurrent(session, generation)) $("local-transfer-capability").textContent = "The source or destination mailbox changed while checking support. Choose the mailbox again to review it.";
+      return;
+    }
+    if (result?.accountId !== accountId || !Array.isArray(result.folders)) throw new Error("The receiving mailbox returned an invalid capability result.");
+    session.capabilities = result;
+    paintLocalTransferFolders();
+    if ($("local-transfer-folder").value && !transferChoiceCurrent(session, generation, $("local-transfer-folder").value, mode)) {
+      session.capabilities = null; $("local-transfer-folder").replaceChildren();
+      $("local-transfer-capability").textContent = "The receiving folder or its parent changed while checking support. Choose the mailbox again to review it.";
+      return;
+    }
+    $("local-transfer-capability").textContent = [result.copyEnabled ? "Copy is available for enabled folders." : result.copyReason || "Verified Copy is unavailable for this mailbox.",
+      result.moveReason || "Move to a connected mailbox is unavailable. Copy keeps every source message.", "Maximum 50 messages; 32 MiB per original message; 256 MiB total per review."].join(" ");
+    $("local-transfer-notices").replaceChildren(...(result.notices || []).map(detail => { const row = document.createElement("li"); row.textContent = String(detail); return row; }));
+  } catch (failure) {
+    if (transferSessionCurrent(session, generation)) $("local-transfer-capability").textContent = "Copy support could not be checked. " + failure.message + " Choose the mailbox again to check its current capabilities.";
+  } finally {
+    if (transferSessionCurrent(session, generation)) { session.loading = false; paintLocalTransferMode(); }
+  }
+}
+
+function paintLocalTransferFolders() {
+  const session = localTransfer; if (!session) return;
+  const select = $("local-transfer-folder"), previous = select.value;
+  if (session.destination?.accountId === LOCAL_ACCOUNT_ID) {
+    const folders = foldersOf(state.localAccount), local = session.messages.every(isLocalMail);
+    select.replaceChildren(...folders.filter(folder => !local || session.mode === "copy" || !session.messages.every(row => row.folderId === folder.id))
+      .map(folder => option(folder.id, localFolderPath(folder, folders))));
+    $("local-transfer-folder-reasons").replaceChildren(); $("local-transfer-notices").replaceChildren();
+    $("local-transfer-capability").textContent = "Local Folders is available on this computer. Up to 200 messages; 64 MiB per original server message.";
+  } else {
+    const folders = session.capabilities?.folders || [];
+    select.replaceChildren(...folders.map(folder => {
+      const node = option(folder.id, (folder.path || folder.name || folder.id) + (folder.enabled ? "" : " · Unavailable: " + (folder.reason || "Verified Copy is unavailable")));
+      node.disabled = !folder.enabled; return node;
+    }));
+    $("local-transfer-folder-reasons").replaceChildren(...folders.filter(folder => !folder.enabled).map(folder => {
+      const row = document.createElement("li"); row.textContent = `${folder.path || folder.name || folder.id}: ${folder.reason || "Verified Copy is unavailable."}`; return row;
+    }));
+  }
+  if ([...select.options].some(row => row.value === previous && !row.disabled)) select.value = previous;
+  else select.value = [...select.options].find(row => !row.disabled)?.value || "";
+  captureTransferFolderChoice(session);
+}
+
 async function openLocalTransfer(messages, mode) {
+  if (localTransfer?.running) { showStatus("Finish the current transfer before opening another review.", true); return; }
+  const generation = ++localTransferOpenGeneration, trigger = document.activeElement;
   const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId,
     isDraft: !!email.isDraft, contextOwner: capturedContextOwner(email) }));
-  const current = () => rows.every(row => isLocalMail(row) || row.contextOwner && contextAccountProof(row.accountId) === row.contextOwner.connection);
-  if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft) || localTransfer?.running) {
+  const sourceFolders = rows.map(row => transferFolderProof(isLocalMail(row) ? state.localAccount : state.accounts.find(account => account.id === row.accountId), row.folderId));
+  const current = () => rows.every((row, index) => {
+    const original = messages[index], cached = state.emails.find(email => email.id === row.id && email.accountId === row.accountId);
+    const account = isLocalMail(row) ? state.localAccount : state.accounts.find(item => item.id === row.accountId);
+    return original.id === row.id && original.accountId === row.accountId && original.folderId === row.folderId && !original.isDraft
+      && (!cached || cached.folderId === row.folderId && !cached.isDraft)
+      && (!sourceFolders[index] || transferFolderProof(account, row.folderId) === sourceFolders[index])
+      && (isLocalMail(row) || row.contextOwner?.emailId === row.id && row.contextOwner.folderId === row.folderId
+        && contextAccountProof(row.accountId) === row.contextOwner.connection);
+  });
+  if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft)) {
     showStatus("Choose up to 200 saved messages and finish any current local transfer first.", true); return;
   }
+  if (localTransfer) { localTransfer.closed = true; retireCrossMailboxReview(localTransfer); }
   try { await loadLocalFolders(); }
-  catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); return; }
+  catch (error) { if (generation === localTransferOpenGeneration) showStatus("Local Folders could not be opened. " + error.message, true); return; }
+  if (generation !== localTransferOpenGeneration) return;
   if (!current()) { showStatus("The source mailbox changed. Review these messages again before transferring.", true); return; }
   const dialog = $("local-transfer");
   if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
-  localTransfer = { messages: rows, mode, current, running: false, stop: false, trigger: document.activeElement };
+  localTransfer = { messages: rows, mode, current, generation: 0, running: false, stop: false, trigger, destination: { accountId: LOCAL_ACCOUNT_ID } };
   if (!dialog.dataset.wired) {
     dialog.dataset.wired = "1";
     $("local-transfer-form").addEventListener("submit", event => { event.preventDefault(); commitLocalTransfer(); });
-    $("local-transfer-mode").addEventListener("change", paintLocalTransferMode);
+    $("local-transfer-account").addEventListener("change", chooseLocalTransferAccount);
+    $("local-transfer-folder").addEventListener("change", changeLocalTransferChoice);
+    $("local-transfer-mode").addEventListener("change", () => {
+      changeLocalTransferChoice();
+      if (localTransfer?.destination.accountId === LOCAL_ACCOUNT_ID) paintLocalTransferFolders();
+      else if (localTransfer?.loading) { localTransfer.loading = false; $("local-transfer-capability").textContent = "The action changed while checking support. Choose the destination mailbox again to check its current capabilities."; }
+      paintLocalTransferMode();
+    });
     $("local-transfer-cancel").addEventListener("click", () => {
       if (localTransfer?.running) {
-        localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message. A started server move cannot be recalled.";
-      } else closeDialog("local-transfer");
+        localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message. A started upload or server move cannot be recalled.";
+      } else {
+        localTransferOpenGeneration++;
+        if (localTransfer) { localTransfer.closed = true; localTransfer.generation++; retireCrossMailboxReview(localTransfer); }
+        closeDialog("local-transfer");
+      }
     });
     dialog.addEventListener("cancel", event => {
-      if (localTransfer?.running) { event.preventDefault(); localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message."; }
+      if (localTransfer?.running) { event.preventDefault(); localTransfer.stop = true; $("local-transfer-status").textContent = "Stopping after the current message. A started upload or server move cannot be recalled."; }
     });
     dialog.addEventListener("close", () => {
       // A native close event can arrive after this dialog has reopened.
       // It belongs to the older session and cannot retire the new review.
       if (dialog.open) return;
-      const trigger = localTransfer?.trigger;
-      if (!localTransfer?.running) localTransfer = null;
-      trigger?.focus?.();
+      localTransferOpenGeneration++;
+      const session = localTransfer, trigger = session?.trigger;
+      if (session?.running) session.stop = true;
+      else { retireCrossMailboxReview(session); localTransfer = null; }
+      if (trigger?.isConnected) trigger.focus();
     });
   }
   $("local-transfer-source").textContent = rows.length === 1 ? rows[0].subject + " · " + (isLocalMail(rows[0]) ? "Local Folders" : accountLabel(state.accounts.find(account => account.id === rows[0].accountId))) : selectionScopeCopy(rows, rows) + " Hidden selections are included.";
   const localOption = option(LOCAL_ACCOUNT_ID, "Local Folders · On this computer");
-  const remoteOptions = state.accounts.map(account => {
-    const destination = option(account.id, accountLabel(account) + " · Unavailable: copying into connected mailboxes is not supported");
-    destination.disabled = true;
-    return destination;
-  });
+  const remoteOptions = state.accounts.map(account => option(account.id, accountLabel(account) + " · Check Copy support"));
   $("local-transfer-account").replaceChildren(localOption, ...remoteOptions);
   $("local-transfer-account").value = LOCAL_ACCOUNT_ID;
   $("local-transfer-account").disabled = false;
-  const local = rows.every(isLocalMail);
-  const folders = foldersOf(state.localAccount);
-  $("local-transfer-folder").replaceChildren(...folders.filter(folder => !local || mode === "copy" || !rows.every(row => row.folderId === folder.id))
-    .map(folder => option(folder.id, localFolderPath(folder, folders))));
   $("local-transfer-mode").value = mode;
-  $("local-transfer-mode").querySelector('[value="move"]').textContent = local ? "Move between local folders" : "Move · Trash server original after copying";
   $("local-transfer-status").textContent = "";
-  paintLocalTransferMode();
-  $("local-transfer-ok").disabled = false;
-  $("local-transfer-cancel").textContent = "Cancel";
-  $("local-transfer-folder").disabled = false;
-  $("local-transfer-mode").disabled = false;
+  paintLocalTransferFolders(); paintLocalTransferMode();
   openDialog("local-transfer"); $("local-transfer-folder").focus();
 }
 
 function paintLocalTransferMode() {
+  const session = localTransfer; if (!session) return;
   const mode = $("local-transfer-mode").value;
-  const local = localTransfer?.messages.every(isLocalMail);
+  const local = session.messages.every(isLocalMail), remote = $("local-transfer-account").value !== LOCAL_ACCOUNT_ID;
+  const move = $("local-transfer-mode").querySelector('[value="move"]');
+  move.disabled = remote;
+  move.textContent = remote ? "Move · Unavailable for connected destinations" : local ? "Move between local folders" : "Move · Trash server original after copying";
+  $("local-transfer-folder-label").textContent = remote ? "Receiving folder or label" : "Local destination";
   $("local-transfer-title").textContent = "Move / Copy to other mailbox";
   $("local-transfer-ok").textContent = mode === "move" ? "Move" : "Copy";
-  $("local-transfer-help").textContent = local ? "Copy or move complete messages and attachments between local folders. No network connection is needed."
+  $("local-transfer-help").textContent = remote ? "Copy keeps every source message. This mailbox must support preserving and verifying the complete original message, original headers, all attachments, and read/star state. Gmail imports use the original valid Date header for sorting; Gmail may classify or group messages and add labels. IMAP needs persistent UIDPLUS or IMAP4rev2 UIDs, full readback, flags and date support. Provider behavior is not identical. Maximum 50 messages; 32 MiB per original; 256 MiB total per review. Review does not upload mail. Copy needs an internet connection."
+    : local ? "Copy or move complete messages and attachments between local folders. No network connection is needed."
     : mode === "move" ? "Download and verify a complete local copy first, then move the server original to its Trash. Gmail moves the message across all labels. Server Trash may be auto-deleted by your provider. Failed or unconfirmed moves keep the local copy; check the server before retrying. IMAP needs MOVE support. Maximum 64 MiB per original message."
       : "Download the complete original message, headers and all attachments to this computer. Server messages stay in place. An internet connection and free disk space are needed. Maximum 64 MiB per original message.";
+  $("local-transfer-form").setAttribute("aria-busy", String(!!(session.loading || session.reviewing || session.running)));
+  const locked = !!(session.running || session.finished);
+  $("local-transfer-account").disabled = locked; $("local-transfer-mode").disabled = locked;
+  $("local-transfer-folder").disabled = locked || !!session.loading;
+  const folder = session.capabilities?.folders.find(row => row.id === $("local-transfer-folder").value);
+  $("local-transfer-ok").disabled = locked || !!session.loading || !!session.reviewing || !$("local-transfer-folder").value
+    || remote && (mode !== "copy" || !session.capabilities?.copyEnabled || !folder?.enabled);
+  $("local-transfer-cancel").textContent = session.running ? "Stop after this message" : session.finished ? "Close" : "Cancel";
+}
+
+async function commitCrossMailboxTransfer(session) {
+  const generation = session.generation, folderId = $("local-transfer-folder").value, mode = $("local-transfer-mode").value;
+  const folder = session.capabilities?.folders.find(row => row.id === folderId);
+  if (session.loading || session.reviewing || session.finished || mode !== "copy" || !session.capabilities?.copyEnabled || !folder?.enabled) {
+    $("local-transfer-status").textContent = "Choose an enabled Copy destination. Move to a connected mailbox is unavailable."; return;
+  }
+  if (!transferChoiceCurrent(session, generation, folderId, mode)) {
+    $("local-transfer-status").textContent = "The source, receiving mailbox, folder or action changed. Close this dialog and review the messages again."; return;
+  }
+  session.reviewing = true; paintLocalTransferMode();
+  let review;
+  try {
+    review = await call("mail:crossMailboxCopy", crossMailboxTransferParams(session, "review", folderId));
+    if (!transferChoiceCurrent(session, generation, folderId, mode)) {
+      retireCrossMailboxReview(null, review?.reviewId);
+      if (transferSessionCurrent(session, generation)) $("local-transfer-status").textContent = "The source, receiving mailbox, folder or action changed during review. No copy was started.";
+      return;
+    }
+    if (!review?.reviewId || review.accountId !== session.destination.accountId || review.folderId !== folderId || review.sourceCount !== session.messages.length) {
+      retireCrossMailboxReview(null, review?.reviewId); throw new Error("The Copy review did not match the captured messages and destination.");
+    }
+    session.reviewId = review.reviewId; session.review = review;
+    const labels = [...new Set(session.messages.map(row => isLocalMail(row) ? "Local Folders" : accountLabel(state.accounts.find(account => account.id === row.accountId))))];
+    const sourceLabels = review.sourceLabels?.length ? review.sourceLabels.join(", ") : labels.join(", ");
+    const destinationLabel = review.destinationLabel || accountLabel(state.accounts.find(account => account.id === session.destination.accountId)) + " / " + (folder.path || folder.name);
+    const detail = `${review.sourceCount} message${review.sourceCount === 1 ? "" : "s"} from ${sourceLabels} will be copied to ${destinationLabel}. Every source message stays in place. Complete original headers, message bodies, all attachments and read/star state must be verified. Gmail uses the original valid Date header for sorting and may classify or group mail and add labels. Other providers may differ. Limits: 50 messages, 32 MiB per original and 256 MiB total per review. ${[...(session.capabilities.notices || []), ...(review.notices || [])].join(" ")} Stop cancels remaining messages after the current upload finishes; a started upload cannot be recalled.`;
+    $("local-transfer-status").textContent = detail;
+    const answer = await askConfirm({ title: `Copy ${review.sourceCount} message${review.sourceCount === 1 ? "" : "s"} to another mailbox?`, body: detail, confirm: "Copy messages", cancel: "Cancel" });
+    if (!transferChoiceCurrent(session, generation, folderId, mode) || session.reviewId !== review.reviewId) {
+      retireCrossMailboxReview(session, review.reviewId);
+      if (transferSessionCurrent(session, generation)) $("local-transfer-status").textContent = "The source, receiving mailbox, folder or action changed while confirmation was open. No copy was started.";
+      return;
+    }
+    if (!answer.ok || session.stop) {
+      retireCrossMailboxReview(session); $("local-transfer-status").textContent = "Copy cancelled. No messages were uploaded."; return;
+    }
+    if (review.expiresAt && new Date(review.expiresAt).getTime() <= Date.now()) {
+      retireCrossMailboxReview(session); $("local-transfer-status").textContent = "The Copy review expired. Press Copy to review the captured messages again."; return;
+    }
+    session.reviewing = false; session.running = true; session.finished = true; paintLocalTransferMode();
+    const results = []; let detailError = "";
+    for (const message of session.messages) {
+      if (session.stop) break;
+      if (!transferChoiceCurrent(session, generation, folderId, mode)) { detailError = "The source, receiving mailbox, folder or action changed. Remaining messages were not copied."; break; }
+      $("local-transfer-status").textContent = `Copying ${results.length + 1} of ${session.messages.length}… Sources stay in place.`;
+      try {
+        const result = await call("mail:crossMailboxCopy", { action: "copy", reviewId: review.reviewId, emailId: message.id, accountId: message.accountId });
+        if (!result || !["copied", "reused", "unknown", "failed"].includes(result.status) || !result.receiptId
+          || result.sourceRetained !== true || result.destination?.accountId !== session.destination.accountId || result.destination?.folderId !== folderId) {
+          detailError = "The copy result could not be verified. The destination may contain a copy. Automatic retry is blocked; check the destination before any further action."; break;
+        }
+        results.push(result);
+        if (result.status === "unknown") { detailError = `The destination may contain a copy. Automatic retry is blocked. ${result.detail || "The upload could not be verified."}`; break; }
+        if (result.status === "failed") { detailError = result.detail || "The message was not copied. Remaining messages were stopped."; break; }
+        if (!transferChoiceCurrent(session, generation, folderId, mode)) { detailError = "The source, receiving mailbox, folder or action changed during Copy. Remaining messages were not copied."; break; }
+      } catch (failure) {
+        detailError = `Copy stopped: ${failure.message} The destination may contain a copy. This dialog will not retry a started request.`; break;
+      }
+    }
+    session.running = false; retireCrossMailboxReview(session);
+    if (transferSessionCurrent(session, generation)) {
+      const copied = results.filter(row => row.status === "copied").length, reused = results.filter(row => row.status === "reused").length;
+      const detail = `${copied} copied; ${reused} verified existing copies; ${session.messages.length - copied - reused} not confirmed or not attempted. Every source message was retained. ${detailError || (session.stop ? "Stopped after the current message." : "Copy finished.")}`;
+      $("local-transfer-status").textContent = detail; paintLocalTransferMode(); showStatus(detail, !!detailError);
+      confirmSettled().then(() => {
+        if (!transferSessionCurrent(session, generation)) return;
+        $("local-transfer-status").scrollIntoView({ block: "nearest" }); $("local-transfer-cancel").focus();
+      });
+    }
+  } catch (failure) {
+    retireCrossMailboxReview(session, review?.reviewId);
+    if (transferSessionCurrent(session, generation)) $("local-transfer-status").textContent = "Copy review failed. " + failure.message;
+  } finally {
+    if (transferSessionCurrent(session, generation)) { session.reviewing = false; paintLocalTransferMode(); }
+    else if (localTransfer === session && !$("local-transfer").open && !session.running) localTransfer = null;
+  }
 }
 
 async function commitLocalTransfer() {
   const session = localTransfer;
-  if (!session || session.running) return;
+  if (!session || session.running || session.finished || session.closed || session.reviewing || session.loading) return;
   if (!session.current()) {
     $("local-transfer-status").textContent = "The source mailbox changed. Close this dialog and review the messages again.";
     return;
   }
   if ($("local-transfer-account").value !== LOCAL_ACCOUNT_ID) {
-    $("local-transfer-status").textContent = "This destination is unavailable. Choose Local Folders to save messages on this computer.";
-    return;
+    return commitCrossMailboxTransfer(session);
   }
   const folderId = $("local-transfer-folder").value;
   if (!folderId) return;
   const mode = $("local-transfer-mode").value;
-  session.running = true;
-  $("local-transfer-ok").disabled = true;
-  $("local-transfer-folder").disabled = true;
-  $("local-transfer-mode").disabled = true;
-  $("local-transfer-account").disabled = true;
-  $("local-transfer-cancel").textContent = "Stop after this message";
+  const generation = session.generation;
+  if (!transferChoiceCurrent(session, generation, folderId, mode)) { $("local-transfer-status").textContent = "The destination folder or action changed. Review the messages again."; return; }
+  session.running = true; session.finished = true; paintLocalTransferMode();
   const results = []; let error = "";
   for (const message of session.messages) {
     if (session.stop) break;
-    if (!session.current()) { error = "The source mailbox changed. Remaining messages were not transferred."; break; }
+    if (!transferChoiceCurrent(session, generation, folderId, mode)) { error = "The source mailbox or destination changed. Remaining messages were not transferred."; break; }
     $("local-transfer-status").textContent = `${mode === "move" ? "Moving" : "Copying"} ${results.length + 1} of ${session.messages.length}…`;
     try {
       const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", contextOwnedParams({
@@ -730,10 +1022,11 @@ async function commitLocalTransfer() {
   }
   session.running = false;
   const details = error || `${results.length} of ${session.messages.length} messages saved in Local Folders.`;
-  $("local-transfer-status").textContent = details;
-  $("local-transfer-cancel").textContent = "Close";
+  if (!transferSessionCurrent(session, generation)) { if (localTransfer === session && !$("local-transfer").open) localTransfer = null; return; }
+  $("local-transfer-status").textContent = details; paintLocalTransferMode();
   // A failed or uncertain move is never automatically replayed by this dialog.
   try { await loadLocalFolders(); renderAccounts(); await loadList(); } catch (failure) { error ||= "Saved results received; refresh could not complete. " + failure.message; }
+  if (!transferSessionCurrent(session, generation)) return;
   if (mode === "move" && session.messages.some(message => message.id === state.email?.id)) {
     state.email = null; state.thread = []; renderReader(false);
   }
@@ -8242,7 +8535,7 @@ function renderActions(pane, email) {
       readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
-    note.textContent = "Stored on this computer · Available offline. Reply, AI actions and restoring to a server mailbox are unavailable for local copies.";
+    note.textContent = "Stored on this computer · Available offline. Reply and AI actions are unavailable for local copies. Use Move / Copy to other mailbox to make a verified Copy in a supported connected destination. Remote Move is unavailable.";
     pane.appendChild(note); return;
   }
   const bar = document.createElement("div");
