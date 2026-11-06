@@ -290,7 +290,7 @@ test("a later cache refresh failure preserves a confirmed creation receipt", asy
 });
 
 function accessFixture(options = {}) {
-  const account = { id: "a", created_at: 10, profile: options.gmail ? "gmail" : "yahoo", auth_kind: "password", mail_transport: options.gmail ? "gmail_api" : "imap", username: "a@fixture.invalid", imap_host: "imap.fixture.invalid", imap_port: 993, imap_tls: 1 };
+  const account = { id: "a", created_at: 10, profile: options.gmail || options.legacyGmail ? "gmail" : "yahoo", auth_kind: options.gmail || options.legacyGmail ? "oauth2" : "password", mail_transport: options.gmail ? "gmail_api" : "imap", username: "a@fixture.invalid", imap_host: "imap.fixture.invalid", imap_port: 993, imap_tls: 1 };
   let gen = 1, rev = Symbol("credential"), reads = 0, connects = 0, writes = 0, clientId = "client-fixture";
   const access = createAccess({ accountById: id => id === "a" ? account : null, bindAccount: a => ({ ...a }), assertAccountCurrent: a => { if (a.created_at !== account.created_at) throw Object.assign(new Error("changed"), { code: "conflict" }); },
     generation: () => gen, revision: () => rev, googleClient: () => clientId,
@@ -298,7 +298,7 @@ function accessFixture(options = {}) {
     secretFor: async () => { reads++; if (options.secret) await options.secret(); return "synthetic"; },
     withMailClient: async (a, secret, work, hooks) => {
       connects++; if (options.connection) await options.connection();
-      const transport = { list: async () => { if (options.list) await options.list(); return [{ path: "User", delimiter: "/", flags: new Set() }]; }, mailboxCreate: async () => { writes++; } };
+      const transport = { list: async () => { if (options.list) await options.list(); return [{ path: "User", delimiter: "/", flags: new Set() }]; }, mailboxCreate: async () => { writes++; }, mailboxRename: async () => { writes++; } };
       if (options.gmail) transport.gmail = { api: createGmailMailApi({ check: hooks.check, accessToken: async () => { if (options.token) await options.token(); return "synthetic"; },
         fetchImpl: async (url, request) => { if ((request.method || "GET") !== "GET") writes++; return new Response(JSON.stringify({ labels: [{ id: "Label_1", name: "User", type: "user" }] }), { status: 200 }); } }) };
       return work(transport);
@@ -310,6 +310,17 @@ for (const stage of ["lane", "secret", "connection", "list"]) test(`transport ow
   const wait = delay(), options = { [stage]: () => wait.promise }, f = accessFixture(options);
   const running = f.access.withAccount("a", async client => { await client.list(); client.check(); await client.create("New"); });
   await tick(); f.reconnect(); wait.resolve(); await assert.rejects(running, /changed/);
+  assert.equal(f.writes, 0); if (stage === "lane") assert.equal(f.reads, 0);
+});
+for (const operation of ["create", "move"]) for (const stage of ["lane", "secret", "connection", "list"]) test(`legacy Google OAuth IMAP ${operation} rejects client replacement during ${stage}`, async () => {
+  const wait = delay(), f = accessFixture({ legacyGmail: true, [stage]: () => wait.promise });
+  const ticket = f.access.owner("a");
+  const running = f.access.withAccount("a", async client => {
+    await client.list(); client.check();
+    if (operation === "create") await client.create("New");
+    else { client.check(); await client.transport.mailboxRename("User", "Moved"); client.check(); }
+  }, ticket);
+  await tick(); f.client(); wait.resolve(); await assert.rejects(running, /changed/);
   assert.equal(f.writes, 0); if (stage === "lane") assert.equal(f.reads, 0);
 });
 
