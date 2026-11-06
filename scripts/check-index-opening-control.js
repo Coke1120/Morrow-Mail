@@ -23,14 +23,14 @@ async function bootControls(source = fs.readFileSync(path.join(__dirname, "../ho
       presentBootFailure: async () => { calls.errors++; context.bootFailed = true; }, onBootRejection() {},
       listScheduledRows: () => pendingMail ? [{ status: "pending", subject: "Synthetic scheduled mail", sendAt: "2026-11-01T00:00:00Z" }] : [],
       requestQuitChoice() { calls.prompts++; return choice.promise; }, scheduledQuitTime: () => "synthetic time",
-      app: { on: (name, listener) => events.set(name, listener),
+      app: { getVersion: () => "0.4.3", on: (name, listener) => events.set(name, listener),
         quit() { calls.quit++; events.get("before-quit")(event()); }, exit() { throw new Error("Unexpected app exit"); } },
       quitScheduled: { createQuitController(options) { controller = realQuit.createQuitController(options); return controller; } },
       BrowserWindow: class {
         constructor(options) {
           assert.equal(options.webPreferences.sandbox, true);
           this.listeners = new Map(); this.destroyed = false; window = this;
-          this.webContents = { executeJavaScript(script) {
+          this.webContents = { setWindowOpenHandler() {}, on() {}, executeJavaScript(script) {
             calls.paints++;
             vm.runInNewContext(script, { document: { getElementById: () => node } });
             return Promise.resolve();

@@ -4,6 +4,19 @@
 
 The packaged app boots the first-party renderer shipped in `renderer/` (see [INDEPENDENT_UI.md](INDEPENDENT_UI.md)). `electron-builder` includes that directory via `build.files`. An external `app.asar` is not required.
 
+`build.files` includes the Apache 2.0 `LICENSE`, the unchanged earlier
+`LICENSE-MIT`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` inside `app.asar` on all
+platforms. `npm ci` regenerates the bundled Motion/PDF.js license text from the
+locked installed packages. Keep runtime dependency licenses in `node_modules`,
+PDF font/character-map license files in `renderer/vendor/pdfjs`, and Electron's
+own license and Chromium notices. `extraResources` copies those two files from
+the installed native Electron distribution into `resources/licenses` (macOS:
+`Contents/Resources/licenses`), because electron-builder removes the original
+top-level copies on macOS. Use the native release runner for each platform so
+the copied notices match its Electron build. Packaging must retain these files;
+project metadata does not relicense those components. Validate an archive with
+`node scripts/check-packaged-licenses.js /path/to/resources/app.asar`.
+
 `MORROW_ASAR` is an optional override that loads an external `app.asar` instead. The app does not look for `resources/ui.asar` on its own. Do not commit an external asar.
 
 ## Windows packaging

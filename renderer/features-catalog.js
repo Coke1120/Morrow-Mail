@@ -265,6 +265,12 @@ id: "mail-workflow-feedback",
         blurb: "About & updates checks supported installations on launch and every hour while Morrow is open. A red ! means an update is available, downloading, ready, or needs manual installation. macOS checks for newer signed releases even with a cached download, reuses unchanged verified bytes, and checks installation requirements before restart. Installed Windows copies download the NSIS update; portable Windows copies use Open official releases to download the portable executable manually. Restart and install requires other windows closed, Outbox empty, and pending edits resolved. Windows starts its installer only after scheduled-mail quit confirmation and shutdown cleanup finish. Quitting alone does not install an update. Mail, settings and account credentials stay in their existing profile.",
       },
       {
+        id: "project-license",
+        title: "Version, source and license",
+        category: "Support",
+        blurb: "The opening screen, What's new, and About & updates show the installed version, GitHub source and Apache License 2.0 links. What's new appears once per app version; About & updates stays available from the sidebar. Earlier MIT-licensed code and third-party libraries, fonts and assets retain their own notices, included with the app.",
+      },
+      {
         id: "mail-body-updates",
         title: "Mail body updates",
         category: "Mail",
