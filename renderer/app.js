@@ -912,6 +912,40 @@ function accountLabel(account) {
   return email || name || (account && account.id) || "";
 }
 
+function sidebarAccountIdentity(account) {
+  const email = String(account.email || account.displayEmail || "").trim();
+  const name = String(account.label || account.name || "").trim();
+  const profile = String(account.imapSmtpProfile || account.profile || account.platform || "").toLowerCase();
+  const provider = account.isLocal ? "On this computer"
+    : ({ gmail: "Gmail", outlook: "Outlook", yahoo: "Yahoo" }[profile] || "IMAP");
+  const detail = !account.isLocal && name && name !== email ? name + " · " + provider : provider;
+  const identity = document.createElement("span");
+  identity.className = "account-identity";
+  const address = document.createElement("span");
+  address.className = "account-address";
+  address.textContent = account.isLocal ? name || email || "Local Folders" : email || name || account.id;
+  const subtitle = document.createElement("span");
+  subtitle.className = "account-detail";
+  subtitle.textContent = detail;
+  subtitle.title = detail;
+  identity.append(address, subtitle);
+  return identity;
+}
+
+function sidebarFolderLabel(folder, account) {
+  // These are reserved Gmail API identities, not similarly named user labels.
+  const labels = { CATEGORY_PERSONAL: "Personal", CATEGORY_SOCIAL: "Social", CATEGORY_PROMOTIONS: "Promotions",
+    CATEGORY_UPDATES: "Updates", CATEGORY_FORUMS: "Forums", YELLOW_STAR: "Yellow star" };
+  if (folderProvider(account) === "gmail" && folder.providerId === folder.name && Object.hasOwn(labels, folder.providerId)) {
+    return labels[folder.providerId];
+  }
+  if (folder.depth > 0 && folder.name === folder.id) {
+    const delimiter = accountDelimiter(account);
+    return String(folder.name).slice(String(folder.name).lastIndexOf(delimiter) + delimiter.length);
+  }
+  return chipLabel(folder);
+}
+
 function allInboxUnread(accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
   const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
@@ -5263,7 +5297,7 @@ function filterSidebarTree(rows, query) {
   const keep = new Set();
   const match = new Set();
   for (const folder of list) {
-    if (!chipLabel(folder).toLowerCase().includes(q)) continue;
+    if (![chipLabel(folder), folder.name].some(value => String(value || "").toLowerCase().includes(q))) continue;
     const id = String(folder.id);
     match.add(id);
     keep.add(id);
@@ -5444,9 +5478,10 @@ function renderAccounts() {
   const folderQuery = String(folderFilterQuery() || "").trim().toLowerCase();
   // Sync status and folder selection do not change the folder tree.
   const key = JSON.stringify([
-    mailAccounts().map(account => [account.id, account.email, account.label, account.senderName, account.imapSmtpProfile,
+    mailAccounts().map(account => [account.id, account.email, account.displayEmail, account.label, account.name, account.senderName,
+      account.isLocal, account.platform, account.profile, account.imapSmtpProfile,
       account.needsReauth, account.reauthReason, account.delimiter,
-      foldersOf(account).map(folder => [folder.id, folder.name, folder.wellKnownName, folder.wellKnown, folder.type])]),
+      foldersOf(account).map(folder => [folder.id, folder.name, folder.providerId, folder.wellKnownName, folder.wellKnown, folder.type])]),
     state.accountId,
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
@@ -5510,18 +5545,21 @@ function renderAccounts() {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
     const expanded = filtering || accountFoldersExpanded(account);
-    const tree = folderTree(foldersOf(account), accountDelimiter(account));
+    const tree = folderTree(foldersOf(account), accountDelimiter(account))
+      .map(folder => ({ ...folder, label: sidebarFolderLabel(folder, account) }));
     const rows = expanded ? sidebarFolderRows(tree, account.id) : [];
     if (filtering && !rows.length) continue;
     shownFolder = true;
     const heading = document.createElement("button");
     heading.type = "button";
-    heading.className = "account";
+    heading.className = "account mailbox-account";
     heading.setAttribute("aria-expanded", expanded ? "true" : "false");
     heading.setAttribute("aria-label", filtering ? accountLabel(account) + ", expanded to show matching folders"
       : (expanded ? "Collapse " : "Expand ") + accountLabel(account));
     if (filtering) heading.setAttribute("aria-disabled", "true");
-    heading.append(folderTwistMark(expanded), accountLabel(account));
+    const identity = sidebarAccountIdentity(account);
+    heading.setAttribute("aria-description", identity.querySelector(".account-detail").textContent);
+    heading.append(folderTwistMark(expanded), identity);
     heading.title = accountLabel(account);
     heading.addEventListener("click", () => {
       folderNavKey = "account:" + account.id;
@@ -11637,7 +11675,7 @@ async function renameAccountLabel(account) {
   if (!account || !account.id) return;
   const result = await askConfirm({
     title: "Rename account",
-    body: "This name is the label in the account list. Clear it to use the provider name, or the address when the provider has none. The address and From stay the same.",
+    body: "This label appears below the address in the account list. Clear it to use the provider's display name when available. The address and From stay the same.",
     confirm: "Save",
     cancel: "Cancel",
     needsName: true,
