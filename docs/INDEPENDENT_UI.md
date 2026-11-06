@@ -27,6 +27,12 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+The opening status window, What's new, and About & updates display the installed
+version, GitHub source and Apache License 2.0 links. Opening links uses the browser;
+the status window allows only the two fixed project/license HTTPS destinations.
+What's new retains its once-per-version acknowledgement; About & updates remains
+available from the rail. Earlier MIT and third-party notices ship with the app.
+
 Local Folders → Import MBOX reviews explicitly selected mailbox files, destination
 and mboxrd/mboxo format. Private snapshots, atomic per-message progress and
 explicit Continue make cancellation and restart recoverable without changing the
