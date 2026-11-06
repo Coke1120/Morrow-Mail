@@ -15,7 +15,8 @@
       "Compose's native right-click menu offers available spelling corrections and editing actions without AI. Suggestions depend on the platform and dictionaries; this is not grammar checking.",
       "Timeline gives clearer errors for invalid or incomplete AI replies, keeps retries bounded and preserves earlier saved timelines when generation fails.",
       "Mail-row menus add read, star and safe Trash actions plus a combined Copy/Move dialog that preserves Local Folders.",
-      "Copy complete mail and attachments between supported Gmail and IMAP mailboxes after review. Full verification must pass before success, sources stay in place and uncertain uploads are never retried automatically. Remote Move remains unavailable in this proposal.",
+      "Copy complete mail and attachments between supported Gmail and IMAP mailboxes after review. Full verification must pass before success, sources stay in place and uncertain uploads are never retried automatically.",
+      "After verified Copy, Gmail API sources can move originals to Gmail Trash through a separate review and confirmation. Other server sources remain Copy-only for connected receiving mailboxes; Local Folders transfers keep their existing options.",
       "Date and Time are separate mail-list columns. Right-click a header or use Columns to hide or show Time; saved layouts, device timezone and full-timestamp sorting are preserved.",
     ],
     "0.4.4": [
