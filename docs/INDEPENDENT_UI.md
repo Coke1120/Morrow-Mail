@@ -30,8 +30,8 @@ Body download failures, including IMAP responses without the requested source, s
 Local Folders → Import MBOX reviews explicitly selected mailbox files, destination
 and mboxrd/mboxo format. Private snapshots, atomic per-message progress and
 explicit Continue make cancellation and restart recoverable without changing the
-source. See [supported formats, limits and backup](MBOX_IMPORT.md). This feature
-is proposed by draft #521 implementation work and has not been released.
+source. See [supported formats, limits and backup](MBOX_IMPORT.md). MBOX import
+is available since v0.4.3.
 
 Mail's account list includes Local Folders on this computer. Its heading has compact
 plus (New local folder) and Import MBOX icon buttons with accessible names,
