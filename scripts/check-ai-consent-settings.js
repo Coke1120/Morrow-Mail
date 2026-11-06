@@ -494,8 +494,8 @@ test("Features and Settings help render the same explicit consent prerequisites"
   assert.match(f.get("features-catalog").textContent, /Settings → AI and AI Setup support review, allow and revoke; Allow requires a ready saved connection and the explicit-action checkbox/);
   assert.match(f.get("features-catalog").textContent, /If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
   assert.match(f.get("features-catalog").textContent, /Save & review connection saves without approving/);
-  assert.match(f.get("features-catalog").textContent, /Reopening Settings preserves unsaved connection edits and requires a fresh permission choice/);
-  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>Review the saved connection[\s\S]*?Background use is optional/);
+  assert.match(f.get("features-catalog").textContent, /Reopening Settings preserves unsaved connection edits and clearly shows saved permission choices/);
+  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>Review the saved connection[\s\S]*?Thread Timeline, Case and background use are optional/);
   assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow is unavailable, follow the status message/);
   f.assertNoModelCalls();
 });
@@ -536,7 +536,7 @@ test("Settings and Setup keep material disclosure outside the details dialog, af
   }
 });
 
-test("saved v2 consent renders the expanded Timeline disclosure with no implicit manual or background opt-in", async t => {
+test("verified v2 consent preserves unchanged manual/background uses while expanded Timeline and Case remain off", async t => {
   const f = fixture({ useDom: true }); t.after(f.dispose);
   const cfg = f.config.loadConfig();
   const legacy = { id: "legacy-v2-grant", version: 2, manual: true, background: true,
@@ -544,22 +544,74 @@ test("saved v2 consent renders the expanded Timeline disclosure with no implicit
   f.seedConsent(legacy);
   await f.load();
   const review = f.consent.status();
-  assert.equal(review.version, 4); assert.equal(review.manual, false); assert.equal(review.background, false);
+  assert.equal(review.version, 4); assert.equal(review.manual, true); assert.equal(review.background, true);
+  assert.equal(review.scopes.timeline, false); assert.equal(review.scopes.case, false);
   for (const id of ["ai-consent-data", "ai-consent-full-data"]) {
     assert.match(f.get(id).textContent, /sender names and addresses, mail timestamps and date provenance/);
     assert.match(f.get(id).textContent, /optional keywords and contact emails/);
   }
-  assert.equal(f.get("ai-consent-manual").checked, false);
-  assert.equal(f.get("ai-consent-background").checked, false);
-  assert.equal(f.get("ai-consent-allow").disabled, true);
+  assert.equal(f.get("ai-consent-manual").checked, true);
+  assert.equal(f.get("ai-consent-background").checked, true);
+  assert.equal(f.get("ai-consent-timeline").checked, false);
+  assert.equal(f.get("ai-consent-case").checked, false);
   assert.equal(f.writes, 0);
   assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
   await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: review.token, manual: false, background: false }), /Affirmatively/);
   await f.checkManual(true);
+  f.get("ai-consent-background").checked = false;
+  f.get("ai-consent-timeline").click();
+  f.get("ai-consent-case").click();
   f.get("ai-consent-allow").click(); await tick();
   assert.equal(f.consent.status().manual, true);
   assert.equal(f.consent.status().background, false);
   const grant = f.calls.find(row => row.channel === "host:aiConsentGrant" && row.input.manual === true);
   assert.equal(grant.input.background, false);
   f.assertNoModelCalls();
+});
+
+test('saved permission checkboxes survive Settings reopen; adding Case requires its own affirmative choice', async t => {
+  const f = fixture({ useDom: true }); t.after(f.dispose);
+  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core', 'timeline'] });
+  await f.load();
+  assert.equal(f.get('ai-consent-manual').checked, true);
+  assert.equal(f.get('ai-consent-timeline').checked, true);
+  assert.equal(f.get('ai-consent-case').checked, false);
+  assert.match(f.get('ai-consent-status').textContent, /Saved permission:.*Thread Timeline allowed.*Case needs approval/);
+  const before = f.writes;
+  await f.component.refreshConsent();
+  assert.equal(f.writes, before); assert.equal(f.consent.status().scopes.case, false);
+  f.get('ai-consent-case').click();
+  assert.equal(f.consent.status().scopes.case, false, 'a checkbox does not persist permission');
+  f.get('ai-consent-allow').click(); await tick();
+  assert.equal(f.consent.status().scopes.case, true);
+  assert.equal(f.get('ai-consent-manual').checked, true);
+  assert.equal(f.get('ai-consent-case').checked, true);
+  await f.bridge.invoke('host:aiConsentRevoke'); await f.component.refreshConsent();
+  assert.equal(f.get('ai-consent-manual').checked, false);
+  assert.equal(f.get('ai-consent-timeline').checked, false);
+  assert.equal(f.get('ai-consent-case').checked, false);
+  f.assertNoModelCalls();
+});
+
+test('selecting the active ChatGPT account keeps saved permission and an active lease', async () => {
+  const f = fixture({ config: { authMode: 'chatgpt', chatgptModel: 'fixture-chat' } });
+  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
+  const lease = f.consent.acquire(f.config.loadConfig());
+  await f.bridge.invoke('host:chatgptSelect', 'fixture-account');
+  assert.equal(f.consent.status().manual, true); assert.equal(lease.signal.aborted, false); lease.check(); lease.release();
+  f.assertNoModelCalls();
+});
+
+test('actual Settings Select click preserves the saved model, clean draft and permission for the active account', async t => {
+  const f = fixture({ useDom: true, config: { authMode: 'chatgpt', chatgptModel: 'fixture-chat' } }); t.after(f.dispose);
+  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
+  await f.load();
+  const lease = f.consent.acquire(f.config.loadConfig()), before = f.writes;
+  assert.equal(f.ui.run('aiDirty()'), false);
+  f.get('chatgpt-account').value = 'fixture-account'; f.get('chatgpt-select').click(); await tick(); await tick();
+  assert.equal(f.component.draft().chatgptModel, 'fixture-chat');
+  assert.equal(f.ui.run('aiDirty()'), false);
+  assert.equal(f.get('ai-consent-manual').checked, true);
+  assert.equal(f.consent.status().manual, true); assert.equal(f.writes, before);
+  assert.equal(lease.signal.aborted, false); lease.check(); lease.release(); f.assertNoModelCalls();
 });

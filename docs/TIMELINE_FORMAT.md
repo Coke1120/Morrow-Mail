@@ -203,9 +203,13 @@ AI automatically. No raw prompt/body copies are saved with jobs.
 
 ## Privacy, retention and exports
 
-Disclosure version 4 requires renewed explicit-action AI permission for prior
-grants, including versions 2 and 3. Reading permission status does not migrate or approve
-an old grant; manual and background use stay off until a fresh affirmative choice.
+AI permissions are scoped to unchanged ordinary actions, Thread Timeline, Case and
+background processing. Verified version 1/2 grants retain ordinary uses and their
+explicit background choice; current expanded Thread Timeline and Case remain off.
+Verified version 3 additionally retains Thread Timeline; version 4 retains Case.
+Unknown, corrupt, revoked or differently bound grants allow nothing. Reading status
+does not write a grant or approve expanded uses. Expanded scopes need an explicit
+choice at the saved destination; unchanged scopes survive app updates.
 Manual approval does not enable background use. Preparation and exports need no
 model request. Generation uses only reviewed text, subjects, sender/date evidence,
 attachment names, optional keyword/contact focus and Main/Background selections through the existing saved provider plumbing, without Brain,

@@ -180,8 +180,11 @@ test("actual host test and account-change IPC enforce permission independently o
   assert.equal((await run("host:aiTest", { model: "unapproved-model" })).ok, false);
   assert.equal(f.calls.length, 1);
   config.saveConfig({ authMode: "chatgpt", chatgptModel: "fixture-chat" }); f.allow();
+  const lease = f.consent.acquire(config.loadConfig());
   run("host:chatgptSelect", "synthetic-account");
-  assert.equal(f.consent.status().manual, false);
+  assert.equal(f.consent.status().manual, true); assert.equal(lease.signal.aborted, false);
+  run("host:chatgptSelect", "another-account");
+  assert.equal(f.consent.status().manual, false); assert.equal(lease.signal.aborted, true); lease.release();
 });
 
 function loadSynthetic(name, replacements) {
@@ -232,4 +235,62 @@ test("actual Brain, Agent, custom/catalog skill, draft, suggestion and translati
   const automatic = await draft.answer("aiDraftWrite:replySuggestions", [{ source: "compose-open", email: mail }]);
   assert.match(automatic.error.message, /Background AI is off/);
   assert.equal(f.calls.length, 0);
+});
+
+function legacyGrant(f, version, extra = {}) {
+  const cfg = config.loadConfig(), destination = config.completionsUrl(cfg.baseUrl);
+  const record = { id: 'verified-historical-grant', version, manual: true, background: true,
+    fingerprint: require('node:crypto').createHash('sha256').update(JSON.stringify([version, cfg.authMode, destination, cfg.model, '', cfg.apiKey])).digest('hex'), ...extra };
+  fs.writeFileSync(path.join(f.directory, 'ai-consent.json'), JSON.stringify(record)); return record;
+}
+
+test('verified historical disclosures preserve only unchanged uses across a restart without rewriting the grant', t => {
+  const f = fixture(t); f.allow();
+  for (const version of [1, 2, 3, 4]) {
+    legacyGrant(f, version);
+    const original = fs.readFileSync(path.join(f.directory, 'ai-consent.json'), 'utf8');
+    const restarted = createConsent({ directory: () => f.directory, config: config.loadConfig });
+    for (const consent of [f.consent, restarted]) {
+      const value = consent.status();
+      assert.equal(value.manual, true); assert.equal(value.background, true);
+      assert.equal(value.scopes.timeline, version >= 3); assert.equal(value.scopes.case, version >= 4);
+      consent.acquire(config.loadConfig(), { background: true }).release();
+      for (const scope of ['timeline', 'case']) {
+        if (value.scopes[scope]) consent.acquire(config.loadConfig(), { scope }).release();
+        else assert.throws(() => consent.acquire(config.loadConfig(), { scope }), /separately allow/);
+      }
+    }
+    assert.equal(fs.readFileSync(path.join(f.directory, 'ai-consent.json'), 'utf8'), original);
+  }
+  for (const extra of [{ fingerprint: 'wrong-destination' }, { manual: false }, { version: 99 }, { format: 'unknown' }]) {
+    legacyGrant(f, 4, extra); assert.equal(f.consent.status().manual, false);
+  }
+});
+
+test('scoped disclosure upgrades keep unchanged manual/background uses and request only the expanded scope', t => {
+  const f = fixture(t); f.allow(true);
+  const { SCOPES } = consentModule;
+  for (const key of ['case', 'timeline', 'background', 'core']) {
+    const upgraded = createConsent({ directory: () => f.directory, config: config.loadConfig, scopeVersions: { ...SCOPES, [key]: 2 } });
+    const status = upgraded.status();
+    assert.equal(status.manual, key !== 'core');
+    assert.equal(status.background, !['core', 'background'].includes(key));
+    assert.equal(status.scopes.timeline, !['core', 'timeline'].includes(key));
+    assert.equal(status.scopes.case, !['core', 'timeline', 'case'].includes(key));
+    if (key !== 'core') upgraded.acquire(config.loadConfig()).release();
+    assert.throws(() => upgraded.acquire(config.loadConfig(), key === 'background' ? { background: true } : { scope: key === 'core' ? 'core' : key }), /off|separately allow/);
+  }
+});
+
+test('Timeline adapters require their specific permission even when ordinary explicit AI is allowed', async t => {
+  const f = fixture(t);
+  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
+  for (const consentScope of ['timeline', 'case', 'unknown']) await assert.rejects(client.complete([{ role: 'user', content: 'Fictional mail' }], { consentScope }), /separately allow/);
+  assert.equal(f.calls.length, 0);
+  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core', 'timeline'] });
+  await client.complete([], { consentScope: 'timeline' }); assert.equal(f.calls.length, 1);
+  await assert.rejects(client.complete([], { consentScope: 'case' }), /separately allow/);
+  await assert.rejects(context.background(() => client.complete([], { consentScope: 'timeline' })), /Background AI is off|separately allow/);
+  assert.equal(f.calls.length, 1);
+  assert.throws(() => f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core', 'case'] }), /Review the selected/);
 });

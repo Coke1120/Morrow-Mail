@@ -39,3 +39,5 @@
 @media (max-width: 480px) {
   .ai-consent-modal .ai-consent-heading h3 { flex-basis: 100%; }
 }
+
+.ai-consent #ai-consent-status { font-weight: 600; padding: 10px; border-radius: 6px; background: var(--hover, #dbe7d9); }

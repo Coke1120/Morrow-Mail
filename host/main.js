@@ -384,8 +384,10 @@ function trackWindow(win, savedZoom) {
 function registerHostAi() {
   const auth = () => require("./chatgpt-auth").getAuth();
   const consent = () => require("./ai-consent").getConsent();
-  const changeAccount = work => updateGate.run(() => {
-    if (loadConfig().authMode === "chatgpt") consent().revoke();
+  const changeAccount = (work, selectedId) => updateGate.run(() => {
+    const current = auth().status();
+    const unchanged = selectedId !== undefined && selectedId === current.activeId && current.connected;
+    if (loadConfig().authMode === "chatgpt" && !unchanged) consent().revoke();
     return work();
   });
   ipcMain.handle("host:aiConsentStatus", () => consent().status());
@@ -396,7 +398,7 @@ function registerHostAi() {
   ipcMain.handle("host:chatgptCallback", (_event, input) => changeAccount(() => auth().callback(input)));
   ipcMain.handle("host:chatgptCancel", () => { auth().cancel(); return auth().status(); });
   ipcMain.handle("host:chatgptSignOut", (_event, id) => changeAccount(() => auth().signOut(id)));
-  ipcMain.handle("host:chatgptSelect", (_event, id) => changeAccount(() => auth().select(id)));
+  ipcMain.handle("host:chatgptSelect", (_event, id) => changeAccount(() => auth().select(id), id));
   ipcMain.handle("host:chatgptPreferences", (_event, input) => updateGate.run(() => auth().preferences(input)));
   ipcMain.handle("host:chatgptResumeUsage", () => auth().resumeUsage());
   ipcMain.handle("host:aiGetConfig", () => publicConfig());
