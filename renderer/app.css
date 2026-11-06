@@ -5496,8 +5496,14 @@ textarea { min-height: 140px; resize: vertical; }
 }
 
 .ai-write label { margin: 0; }
+.ai-write:not([hidden]) > * { flex-shrink: 0; }
 
-.ai-write input[type="text"] { width: 100%; }
+.ai-write #ai-prompt { width: 100%; box-sizing: border-box; min-height: 88px; max-height: 60dvh; resize: vertical; overflow: auto; }
+
+.compose-ai-popover { max-height: min(620px, 65dvh); overflow-y: auto; overscroll-behavior: contain; }
+.compose-ai-popover .compose-suggestions { margin-top: 0; align-items: flex-start; }
+.compose-ai-popover .compose-suggestions > .hint { flex-basis: 100%; }
+.compose-ai-popover .suggest-list { min-width: 0; }
 
 .ai-write .error { margin: 0; }
 
