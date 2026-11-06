@@ -69,6 +69,14 @@ test("default compiled gate is represented as unavailable and a forced Move cann
   assert.equal(f.rows("mail:crossMailboxCopy","copy").length,0);assert.equal(f.rows("mail:crossMailboxMove","move").length,0);
 });
 
+test("confirmed source Trash with pending cache refresh displays an honest warning and never replays", async t => {
+  const f=fixture(t);await f.ready(1);
+  f.ui.run("hook=(channel,p)=>channel==='mail:crossMailboxMove'&&p.action==='move'?{...reply(channel,p),cacheRefreshPending:true}:undefined");
+  await f.ui.run("commitLocalTransfer()");
+  assert.match(f.status(),/1 Gmail originals confirmed in Trash.*Local cache refresh is pending.*do not repeat the Move/);
+  await f.ui.run("commitLocalTransfer()");assert.equal(f.rows("mail:crossMailboxMove","move").length,1);
+});
+
 test("Copy confirmation cannot authorize Gmail Trash; every Copy finishes before distinct review and confirmation", async t => {
   const f=fixture(t);await f.ready();
   f.ui.run(`confirmHook=async copy=>{

@@ -228,8 +228,8 @@ function sourceMoveJournal() {
 function ownedMailboxMoves() {
   if (!mailboxMoveService) mailboxMoveService = createMailboxMoveService({ access: mailboxCopyAccess(), copies: ownedMailboxCopies,
     journal: sourceMoveJournal, gate: updateGate, enabled: mailboxMovePolicy.enabled, reason: mailboxMovePolicy.reason,
-    onConfirmed(accountId, trash) {
-      broadcast("mail:emailsUpdated", { accountId, source: "crossMailboxMove", sourceTrashed: true, providerId: trash.providerId });
+    onConfirmed(accountId, trash, { cacheRefreshPending } = {}) {
+      broadcast("mail:emailsUpdated", { accountId, source: "crossMailboxMove", sourceTrashed: true, providerId: trash.providerId, cacheRefreshPending: !!cacheRefreshPending });
       emitAccounts();
     } });
   return mailboxMoveService;

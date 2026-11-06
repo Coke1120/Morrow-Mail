@@ -21,13 +21,13 @@ function fixture(t, options = {}) {
   let cl = copyJournal(copyFile), ml = moveJournal(moveFile), mono = 0, hook = async () => {};
   const state = { valid: true, alive: true, labels: ["INBOX", "UNREAD", "STARRED"], uploads: 0, trashes: 0,
     raw: RAW, destinationRaw: RAW, sourceFolder: "v1", destinationFolder: "v1", destinationLabels: ["Archive"],
-    sourceBackend: options.unsupported ? "imap" : "gmail", loseAck: false, rejectTrash: false, wrongTrash: false, destination: null, requests: [] };
+    sourceBackend: options.unsupported ? "imap" : "gmail", loseAck: false, rejectTrash: false, wrongTrash: false, destination: null, requests: [], cacheAdoptions: 0 };
   const owner = { check() { if (!state.alive) throw Object.assign(new Error("Synthetic window destroyed or navigated"), { code: "move_review", operationIssued: false }); } };
   const accounts = { source: { profile: options.unsupported ? "custom" : "gmail", auth_kind: "oauth2", mail_transport: options.unsupported ? "imap" : "gmail_api" } };
   const access = {
     capture(params) { if (!state.valid) throw conflict(); return { destination: { accountId: "destination" }, sources: params.items.map(item => ({ id: item.emailId,
       accountId: item.accountId, owner: { account: accounts.source }, label: "source@fixture.invalid" })) }; },
-    async review() { await hook("destination-review"); if (!state.valid) throw conflict(); return { id: "Archive", label: "Destination / Archive", proof: digest(state.destinationFolder) }; },
+    async review(_ticket, _id, authority = {}) { authority.check?.(); await hook("destination-review"); authority.check?.(); if (!state.valid) throw conflict(); return { id: "Archive", label: "Destination / Archive", proof: digest(state.destinationFolder) }; },
     async withCopy(ticket, source, destination, work, authority = {}) {
       const checked = () => { authority.check?.(); if (!state.valid || destination.proof !== digest(state.destinationFolder)) throw conflict(); };
       checked(); await hook("lane"); checked(); await hook("credential"); checked(); await hook("connection"); checked();
@@ -62,6 +62,7 @@ function fixture(t, options = {}) {
           return { raw: state.destinationRaw, date: DATE, unread: true, starred: true, labelIds: state.destinationLabels }; },
         verifyState(saved, expected) { if (saved.date !== expected.date || saved.unread !== expected.unread || saved.starred !== expected.starred) throw new Error("synthetic state mismatch"); },
         reviewSourceMove: snapshot => mover.review(snapshot), trashSource: (snapshot, proof, beforeSubmit) => mover.trash(snapshot, proof, beforeSubmit),
+        async adoptSourceTrash() { assert.equal(ml.list().at(-1).phase, "source_trashed"); await hook("cache-adopt"); checked(); state.cacheAdoptions++; },
       });
     },
   };
@@ -91,9 +92,19 @@ test("Move never uploads and cannot accept a Copy review or a missing verified r
 test("verified Copy plus distinct Move confirmation commits exact Gmail Trash once", async t => {
   const f = fixture(t); await f.copy(); const review = await f.review(), result = await f.move(review);
   assert.equal(result.status, "moved"); assert.equal(result.sourceTrashed, true); assert.equal(f.state.uploads, 1); assert.equal(f.state.trashes, 1);
+  assert.equal(result.cacheRefreshPending, false); assert.equal(f.state.cacheAdoptions, 1);
   const record = f.ml.list()[0]; assert.equal(record.phase, "source_trashed"); assert.equal(record.trash.providerId, "canonical-source");
   assert.equal(record.copy.id, f.cl.list()[0].id); assert.equal(f.cl.list()[0].phase, "verified"); assert.ok(f.state.destination);
   assert.equal((await f.move(review)).status, "already_moved"); assert.equal(f.state.trashes, 1);
+});
+test("cache failure after durable source confirmation never changes provider outcome or repeats Trash", async t => {
+  const f = fixture(t); await f.copy(); const reviewed = await f.review();
+  f.hook(stage => { if (stage === "cache-adopt") throw new Error("synthetic cache failure"); });
+  const result = await f.move(reviewed);
+  assert.equal(result.status, "moved"); assert.equal(result.cacheRefreshPending, true); assert.match(result.detail, /Local cache refresh is pending/);
+  assert.equal(f.ml.list()[0].phase, "source_trashed"); assert.equal(f.ml.list()[0].trash.providerId, "canonical-source");
+  const repeat = await f.move(reviewed); assert.equal(repeat.status, "already_moved"); assert.equal(repeat.cacheRefreshPending, true);
+  assert.equal(f.state.trashes, 1); assert.equal(f.state.uploads, 1); assert.ok(f.state.destination);
 });
 test("Gmail label aliases and concurrent duplicate requests share one source removal", async t => {
   const f = fixture(t); await f.copy(["message", "alias"]); const review = await f.review(["message", "alias"]);

@@ -36,6 +36,14 @@ its original provider ID and must have TRASH membership and unchanged MIME/date/
 read/star state before a confirmed outcome is stored. No generic delete, label
 delete, IMAP fallback, SMTP or permanent-delete API is used.
 
+After the confirmed source outcome is durable, the exact full Gmail readback is
+adopted using the existing transactional label mapping and alias pruning. Only the
+known canonical Gmail ID is admitted; duplicate RFC Message-ID rows are never
+inferred to be aliases. Original account/client/credential/folder ownership is
+checked through parsing and the synchronous cache commit. A failed cache update
+rolls back local adoption and reports refresh pending while keeping the confirmed
+provider receipt; it never changes that outcome to uncertainty or re-Trashes.
+
 Reviews bind the requesting main frame and webContents. Destruction/main-frame
 navigation retires authority in the host; same-page account/folder/choice/stop
 changes retire the renderer ticket. Every access/session await and the submission

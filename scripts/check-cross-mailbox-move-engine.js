@@ -18,7 +18,7 @@ async function scenario(kind) {
   }
   const engine = require("../host/mail/engine"), db = require("../host/mail/db"), secrets = require("../host/mail/secrets"), remote = require("../host/mail/remote");
   const oauth = require("../host/mail/oauth"), config = require("../host/mail/oauth-config"), owners = require("../shared/mail-context-owner");
-  const originalClient = remote.withClient, originalRead = secrets.getPasswordAsync;
+  const originalClient = remote.withClient, originalRead = secrets.getPasswordAsync, originalApply = db.applyGmailMessage;
   oauth.accessTokenFor = async (_account, raw) => JSON.parse(raw).accessToken;
   const messages = new Map(), imports = new Map(), imapCopies = new Map(), wire = []; let trashes = 0, uploads = 0, hook = async () => {};
   const gmail = kind !== "gmail-imap";
@@ -27,7 +27,9 @@ async function scenario(kind) {
   const call = (channel, params, owner = event()) => engine.answer(channel, [params], owner);
   function resource(id, saved) {
     return { id, threadId: "thread-" + id, labelIds: saved.labels, internalDate: String(DATE), raw: saved.raw.toString("base64url"),
-      payload: { mimeType: "text/plain", headers: [{ name: "Message-ID", value: "<duplicate@fixture.invalid>" }],
+      payload: { mimeType: "text/plain", headers: RAW.toString().split("\r\n\r\n")[0].split("\r\n").map(line => {
+        const colon = line.indexOf(":"); return { name: line.slice(0, colon), value: line.slice(colon + 1).trim() };
+      }),
         body: { size: 13, data: Buffer.from("Complete body").toString("base64url") } } };
   }
   global.fetch = async (input, options) => {
@@ -65,7 +67,8 @@ async function scenario(kind) {
     if (gmailAccount) db.enableGmail(id);
     db.replaceFolders(id, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox", providerId: gmailAccount ? "INBOX" : null },
       { path: "Archive", name: "Archive", wellKnown: null, providerId: gmailAccount ? "Label_archive" : null },
-      { path: "Trash", name: "Trash", wellKnown: "deleteditems", providerId: gmailAccount ? "TRASH" : null }], "/");
+      { path: "Trash", name: "Trash", wellKnown: "deleteditems", providerId: gmailAccount ? "TRASH" : null },
+      ...(gmailAccount ? [{ path: "All Mail", name: "All Mail", wellKnown: "all", providerId: "__gmail_all__" }] : [])], "/");
     if (gmailAccount) {
       const providerId = id + "-source", mapped = db.rememberGmail(id, { providerId, labelIds: ["INBOX", "UNREAD"] });
       messages.set(id + ":" + providerId, { raw: RAW, labels: ["INBOX", "UNREAD"] });
@@ -111,13 +114,71 @@ async function scenario(kind) {
       assert.equal((await call("mail:crossMailboxMove", { action: "review" })).error.code, "move_gated");
       assert.equal(wire.length, 0); assert.equal(fs.existsSync(path.join(dir, "mailbox-move-recovery.sqlite")), false); return;
     }
-    seed("a"); seed("b", gmail); await copy();
+    seed("a"); seed("b", gmail);
+    if (["source-cache-after-move", "cache-failure-after-confirmation", "cache-owner-before-commit"].includes(kind)) {
+      messages.get("a:a-source").labels.push("Label_archive", "STARRED");
+      db.rememberGmail("a", { providerId: "a-source", labelIds: messages.get("a:a-source").labels });
+      db.updateMessage("a-message", { starred: 1 });
+      for (const folderPath of ["Archive", "All Mail"]) {
+        const row = db.messageById("a-message"), id = "a-alias-" + folderPath;
+        db.insertMessage({ id, accountId: "a", folderPath, uid: row.uid, uidValidity: row.uid_validity,
+          rfcMessageId: row.rfc_message_id, date: row.date_iso, listSortTs: DATE, unread: true, starred: true, textBody: "Complete body", bodyComplete: true });
+        db.updateMessage(id, { gmail_id: "a-source" });
+      }
+      // Same RFC header is not canonical identity and must not be rebound/pruned.
+      db.insertMessage({ id: "unrelated-legacy", accountId: "a", folderPath: "INBOX", uid: 999, uidValidity: db.accountById("a").gmail_generation,
+        rfcMessageId: "<duplicate@fixture.invalid>", date: new Date(DATE).toISOString(), listSortTs: DATE, textBody: "Unrelated retained body", bodyComplete: true });
+    }
+    await copy();
+    if (kind === "review-queued-destroy") {
+      const blocked = held(); let entered = false, staleReads = 0;
+      hook = async stage => { if (stage === "http:b:GET:/labels" && !entered) { entered = true; await blocked.promise; } };
+      const holding = call("mail:crossMailboxCopy", { action: "review", ...params("a", "b", "copy") });
+      while (!entered) await tick();
+      secrets.getPasswordAsync = async (...args) => { if (sender.destroyed) staleReads++; return originalRead(...args); };
+      const reviewing = call("mail:crossMailboxMove", { action: "review", ...params() });
+      await tick(); sender.destroyed = true; sender.emit("destroyed"); const beforeWire = wire.length;
+      blocked.release(); await holding;
+      const reply = await reviewing;
+      assert.equal(reply.success, false); assert.equal(staleReads, 0); assert.equal(wire.length, beforeWire);
+      assert.equal(trashes, 0); assert.equal(uploads, 1); return;
+    }
     if (kind === "both-directions") {
       await copy("b", "a"); const [a, b] = await Promise.all([reviewMove(), reviewMove("b", "a")]);
       const results = await Promise.all([move(a), move(b, "b")]); assert.ok(results.every(reply => reply.success && reply.data.status === "moved"));
       assert.equal(trashes, 2); assert.equal(uploads, 2); assert.equal(imports.size, 2); return;
     }
     const review = await reviewMove();
+    if (["source-cache-after-move", "cache-failure-after-confirmation", "cache-owner-before-commit"].includes(kind)) {
+      const failure = kind !== "source-cache-after-move";
+      if (failure) db.applyGmailMessage = (...args) => { const result = originalApply(...args);
+        if (args[0] === "a" && trashes) {
+          if (kind === "cache-owner-before-commit") secrets.setPassword("a", "synthetic replacement grant after provider confirmation");
+          else throw new Error("synthetic cache transaction failure");
+        } return result; };
+      const reply = await move(review);
+      assert.equal(reply.success, true, JSON.stringify(reply.error)); assert.equal(reply.data.status, "moved");
+      assert.equal(reply.data.cacheRefreshPending, failure); assert.equal(reply.data.sourceTrashed, true);
+      const inbox = (await call("mail:listFromCache", { accountId: "a", folderId: "INBOX", limit: 50 })).data.emails;
+      const trash = (await call("mail:listFromCache", { accountId: "a", folderId: "Trash", limit: 50 })).data.emails;
+      assert.deepEqual(inbox.map(row => row.id).sort(), failure ? ["a-message", "unrelated-legacy"] : ["unrelated-legacy"]);
+      assert.equal(trash.length, failure ? 0 : 1);
+      assert.equal(db.messageById("unrelated-legacy").gmail_id, null); assert.equal(db.messageById("unrelated-legacy").text_body, "Unrelated retained body");
+      if (!failure) {
+        assert.deepEqual(db.gmailCopies("a", "a-source").map(row => row.folder_path), ["Trash"]);
+        assert.deepEqual([...trash[0].labelIds].sort(), [...messages.get("a:a-source").labels].sort());
+        assert.equal(trash[0].unread, true); assert.equal(trash[0].isStarred, true); assert.equal(trash[0].bodyComplete, true);
+      } else {
+        assert.match(reply.data.detail, /Local cache refresh is pending/);
+        assert.deepEqual(db.gmailCopies("a", "a-source").map(row => row.folder_path).sort(), ["All Mail", "Archive", "INBOX"]);
+        assert.equal(JSON.parse(db.gmailMap("a", "a-source").labels_json).includes("TRASH"), false, "partial adoption rolled back");
+      }
+      const Database = require("better-sqlite3"), journal = new Database(path.join(dir, "mailbox-move-recovery.sqlite"), { readonly: true });
+      const saved = JSON.parse(journal.prepare("SELECT body FROM mailbox_moves").get().body); journal.close();
+      assert.equal(saved.phase, "source_trashed"); assert.equal(saved.trash.providerId, "a-source");
+      assert.equal((await move(review)).data.status, "already_moved"); assert.equal(trashes, 1); assert.equal(uploads, 1);
+      assert.ok(imports.size); return;
+    }
     if (kind === "window" || kind === "navigation") {
       if (kind === "window") { sender.destroyed = true; sender.emit("destroyed"); }
       else { sender.emit("did-start-navigation", {}, "fixture://other", false, true); sender.mainFrame = {}; }
@@ -153,7 +214,7 @@ async function scenario(kind) {
     assert.equal((await move(review)).data.status, kind === "lost-ack" ? "unknown" : "already_moved"); assert.equal(trashes, 1);
     assert.ok(imports.size || imapCopies.size); assert.ok(wire.every(row => row.method !== "DELETE"));
   } finally {
-    secrets.getPasswordAsync = originalRead; remote.withClient = originalClient;
+    secrets.getPasswordAsync = originalRead; remote.withClient = originalClient; db.applyGmailMessage = originalApply;
     await engine.stopLocalImports(); engine.closeMailboxMoveForTest(); engine.closeMailboxCopyForTest(); engine.closeLocalArchiveForTest(); await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -161,7 +222,7 @@ async function scenario(kind) {
 if (process.argv[2] === "fixture") scenario(process.argv[3]).then(() => process.exit(0), error => { console.error(error); process.exit(1); });
 else {
   const { test } = require("node:test");
-  for (const kind of ["gate", "gmail-gmail", "gmail-imap", "both-directions", "window", "navigation", "other-window", "credential-a", "credential-b", "remove-a", "remove-b", "destroy-during-read", "cancel-after-post", "lost-ack"]) {
+  for (const kind of ["gate", "gmail-gmail", "gmail-imap", "both-directions", "review-queued-destroy", "source-cache-after-move", "cache-failure-after-confirmation", "cache-owner-before-commit", "window", "navigation", "other-window", "credential-a", "credential-b", "remove-a", "remove-b", "destroy-during-read", "cancel-after-post", "lost-ack"]) {
     test("actual engine Gmail source Move " + kind, () => {
       const child = spawnSync(process.execPath, [__filename, "fixture", kind], { encoding: "utf8", timeout: 25000 });
       assert.equal(child.status, 0, child.stderr || child.stdout);

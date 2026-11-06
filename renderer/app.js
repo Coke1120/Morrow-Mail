@@ -818,7 +818,8 @@ async function reviewCrossMailboxGmailTrash(session, generation, folderId, copie
       if (!crossMailboxMoveChoiceCurrent(session, generation, folderId)) break;
     }
     const moved = outcomes.filter(row => row.sourceTrashed === true).length;
-    return { detail: `${moved} Gmail originals confirmed in Trash; ${session.messages.length - moved} retained or not attempted. Verified destination copies stay. Gmail retention applies; no Undo is provided. ${session.moveInvalidated || (session.stop ? "Stopped; remaining source requests were cancelled." : outcomes.find(row => row.status === "source_retained")?.detail || "")}`, error: false };
+    const refreshPending = outcomes.some(row => row.cacheRefreshPending === true);
+    return { detail: `${moved} Gmail originals confirmed in Trash; ${session.messages.length - moved} retained or not attempted. Verified destination copies stay. Gmail retention applies; no Undo is provided. ${refreshPending ? "Local cache refresh is pending. Refresh the Gmail source mailbox to update its folders; do not repeat the Move. " : ""}${session.moveInvalidated || (session.stop ? "Stopped; remaining source requests were cancelled." : outcomes.find(row => row.status === "source_retained")?.detail || "")}`, error: refreshPending };
   } catch (failure) {
     return { detail: retained + " Separate Gmail Trash review failed: " + failure.message, error: true };
   } finally { retireCrossMailboxMoveReview(session, review?.reviewId); }

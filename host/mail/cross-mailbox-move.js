@@ -51,7 +51,7 @@ function createService({ access, copies, journal, enabled = POLICY.enabled, reas
     pendingReviews++;
     const starting = { owner, expires: clock() + LIMITS.reviewMs, cancelled: false };
     try {
-      const ticket = capture(params), destination = await access.review(ticket, params.folderId); guard(starting, owner);
+      const ticket = capture(params), destination = await access.review(ticket, params.folderId, { check: () => guard(starting, owner) }); guard(starting, owner);
       const entries = new Map(); let total = 0;
       for (const source of ticket.sources) {
         const entry = await copyService().verifyExistingOnly(ticket, source, destination, async verified => {
@@ -114,8 +114,12 @@ function createService({ access, copies, journal, enabled = POLICY.enabled, reas
         acknowledged = true;
         receipt = ledger.update(receipt.id, "source_unknown", { phase: "source_trashed", trash, updatedAt: now(),
           detail: "The exact Gmail source was confirmed in Gmail Trash. The destination copy remains." });
-        try { onConfirmed(entry.source.accountId, trash); } catch { /* durable receipt survives cache/event failure */ }
-        return result(receipt, "moved", receipt.detail);
+        let cacheRefreshPending = false;
+        try { await verified.session.adoptSourceTrash(trash); }
+        catch { cacheRefreshPending = true; /* confirmed provider outcome is already durable; never re-Trash */ }
+        try { onConfirmed(entry.source.accountId, trash, { cacheRefreshPending }); } catch { /* durable receipt survives event failure */ }
+        return { ...result(receipt, "moved", receipt.detail + (cacheRefreshPending
+          ? " Local cache refresh is pending. Refresh this Gmail mailbox to update its folders; do not repeat the Move." : "")), cacheRefreshPending };
       } catch (error) {
         if (!acknowledged && error.operationIssued === false) {
           receipt = ledger.update(receipt.id, ["prepared", "source_unknown"], { phase: "not_trashed", updatedAt: now(),
