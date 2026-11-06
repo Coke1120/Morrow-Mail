@@ -1798,9 +1798,12 @@
     </dialog>
     <dialog id="local-transfer" aria-labelledby="local-transfer-title" aria-describedby="local-transfer-help">
       <form id="local-transfer-form">
-        <h2 id="local-transfer-title">Copy to Local Folders</h2>
+        <h2 id="local-transfer-title">Move / Copy to other mailbox</h2>
         <p id="local-transfer-source"></p>
         <p id="local-transfer-help" class="hint"></p>
+        <label for="local-transfer-account">Destination mailbox</label>
+        <select id="local-transfer-account" aria-describedby="local-transfer-capability"></select>
+        <p id="local-transfer-capability" class="hint">Local Folders is available. Copying or moving messages into another connected mailbox is not supported yet. Choose Local Folders to save messages on this computer.</p>
         <label for="local-transfer-mode">Action</label>
         <select id="local-transfer-mode"><option value="copy">Copy · Keep original</option><option value="move">Move · Trash server original after copying</option></select>
         <label for="local-transfer-folder">Local destination</label>

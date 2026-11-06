@@ -729,7 +729,22 @@ function handle(channel, params) {
     }
   }
   if (!ids.length) return ok({ pending: [], outcomes: [], opIds: [] });
+  if (params?.moveToTrashOnly === true) {
+    if (!["mail:delete", "mail:threadTrash", "mail:deleteBatch"].includes(channel)) return fail("invalid", "Choose the Move to Trash action.");
+    // The row menu promises a recoverable move, even if the cache changed
+    // while its confirmation was open. Reject the whole request before any
+    // action is accepted; never turn this promise into permanent deletion.
+    for (const id of ids) {
+      const row = db.messageById(id);
+      const source = row && db.folderByPath(row.account_id, row.folder_path);
+      const trash = row && db.folderByWellKnown(row.account_id, "deleteditems");
+      if (source && (["deleteditems", "trash"].includes(source.well_known) || source.path === trash?.path)) {
+        return fail("already-trash", "A selected message is already in Trash. Refresh and use Move to folder to restore it. No message was deleted.");
+      }
+    }
+  }
   const permanent = channel === "mail:deleteBatch"
+    && params?.moveToTrashOnly !== true
     && (params.folderWellKnownName === "deleteditems" || params.folderWellKnownName === "trash");
   let well = null;
   let targetPath = null;

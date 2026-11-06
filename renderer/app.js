@@ -483,13 +483,16 @@ async function manageLocalFolder(action, folder) {
   showStatus(action === "delete" ? "Empty local folder deleted." : "Local folder saved.");
 }
 
-function openLocalMessageMenu(messages, x, y) {
+function openLocalMessageMenu(messages, x, y, origin) {
+  messages = messages.map(row => ({ ...row }));
   const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local messages");
-  appendMenuAction(menu, "Copy to local folder…", () => openLocalTransfer(messages, "copy"));
-  appendMenuAction(menu, "Move to local folder…", () => openLocalTransfer(messages, "move"));
-  appendMenuAction(menu, "Move to local Trash", () => guard(() => trashLocalMessages(messages)));
+  appendMenuAction(menu, "Move to folder…", () => openLocalTransfer(messages, "move"));
+  appendMenuAction(menu, "Move / Copy to other mailbox…", () => openLocalTransfer(messages, "copy"));
+  appendMenuAction(menu, "Labels…", null, "Local Folders uses folders, not Gmail labels.");
+  appendMessageFlagActions(menu, messages);
+  appendMenuAction(menu, "Move to trash", () => guard(() => trashLocalMessages(messages)), contextTrashReason(messages));
   if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
-  placeMenu(menu, x, y);
+  placeMenu(menu, x, y, origin);
 }
 
 let mboxReview = null;
@@ -624,14 +627,17 @@ function localFolderPath(folder, folders, visited = new Set()) {
 
 async function openLocalTransfer(messages, mode) {
   const rows = messages.map(email => ({ id: email.id, accountId: email.accountId, subject: email.subject || "(no subject)", folderId: email.folderId, isDraft: !!email.isDraft }));
+  const proofs = new Map(rows.filter(row => !isLocalMail(row)).map(row => [row.accountId, contextAccountProof(row.accountId)]));
+  const current = () => [...proofs].every(([id, proof]) => proof && contextAccountProof(id) === proof);
   if (!rows.length || rows.length > 200 || rows.some(email => email.isDraft) || localTransfer?.running) {
     showStatus("Choose up to 200 saved messages and finish any current local transfer first.", true); return;
   }
   try { await loadLocalFolders(); }
   catch (error) { showStatus("Local Folders could not be opened. " + error.message, true); return; }
+  if (!current()) { showStatus("The source mailbox changed. Review these messages again before transferring.", true); return; }
   const dialog = $("local-transfer");
   if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
-  localTransfer = { messages: rows, mode, running: false, stop: false, trigger: document.activeElement };
+  localTransfer = { messages: rows, mode, current, running: false, stop: false, trigger: document.activeElement };
   if (!dialog.dataset.wired) {
     dialog.dataset.wired = "1";
     $("local-transfer-form").addEventListener("submit", event => { event.preventDefault(); commitLocalTransfer(); });
@@ -653,7 +659,16 @@ async function openLocalTransfer(messages, mode) {
       trigger?.focus?.();
     });
   }
-  $("local-transfer-source").textContent = rows.length === 1 ? rows[0].subject : `${rows.length} selected messages. Hidden selections are included.`;
+  $("local-transfer-source").textContent = rows.length === 1 ? rows[0].subject + " · " + (isLocalMail(rows[0]) ? "Local Folders" : accountLabel(state.accounts.find(account => account.id === rows[0].accountId))) : selectionScopeCopy(rows, rows) + " Hidden selections are included.";
+  const localOption = option(LOCAL_ACCOUNT_ID, "Local Folders · On this computer");
+  const remoteOptions = state.accounts.map(account => {
+    const destination = option(account.id, accountLabel(account) + " · Unavailable: copying into connected mailboxes is not supported");
+    destination.disabled = true;
+    return destination;
+  });
+  $("local-transfer-account").replaceChildren(localOption, ...remoteOptions);
+  $("local-transfer-account").value = LOCAL_ACCOUNT_ID;
+  $("local-transfer-account").disabled = false;
   const local = rows.every(isLocalMail);
   const folders = foldersOf(state.localAccount);
   $("local-transfer-folder").replaceChildren(...folders.filter(folder => !local || mode === "copy" || !rows.every(row => row.folderId === folder.id))
@@ -672,7 +687,7 @@ async function openLocalTransfer(messages, mode) {
 function paintLocalTransferMode() {
   const mode = $("local-transfer-mode").value;
   const local = localTransfer?.messages.every(isLocalMail);
-  $("local-transfer-title").textContent = (mode === "move" ? "Move" : "Copy") + " to Local Folders";
+  $("local-transfer-title").textContent = "Move / Copy to other mailbox";
   $("local-transfer-ok").textContent = mode === "move" ? "Move" : "Copy";
   $("local-transfer-help").textContent = local ? "Copy or move complete messages and attachments between local folders. No network connection is needed."
     : mode === "move" ? "Download and verify a complete local copy first, then move the server original to its Trash. Gmail moves the message across all labels. Server Trash may be auto-deleted by your provider. Failed or unconfirmed moves keep the local copy; check the server before retrying. IMAP needs MOVE support. Maximum 64 MiB per original message."
@@ -682,6 +697,14 @@ function paintLocalTransferMode() {
 async function commitLocalTransfer() {
   const session = localTransfer;
   if (!session || session.running) return;
+  if (!session.current()) {
+    $("local-transfer-status").textContent = "The source mailbox changed. Close this dialog and review the messages again.";
+    return;
+  }
+  if ($("local-transfer-account").value !== LOCAL_ACCOUNT_ID) {
+    $("local-transfer-status").textContent = "This destination is unavailable. Choose Local Folders to save messages on this computer.";
+    return;
+  }
   const folderId = $("local-transfer-folder").value;
   if (!folderId) return;
   const mode = $("local-transfer-mode").value;
@@ -689,10 +712,12 @@ async function commitLocalTransfer() {
   $("local-transfer-ok").disabled = true;
   $("local-transfer-folder").disabled = true;
   $("local-transfer-mode").disabled = true;
+  $("local-transfer-account").disabled = true;
   $("local-transfer-cancel").textContent = "Stop after this message";
   const results = []; let error = "";
   for (const message of session.messages) {
     if (session.stop) break;
+    if (!session.current()) { error = "The source mailbox changed. Remaining messages were not transferred."; break; }
     $("local-transfer-status").textContent = `${mode === "move" ? "Moving" : "Copying"} ${results.length + 1} of ${session.messages.length}…`;
     try {
       const result = await call(isLocalMail(message) ? "mail:moveLocalMessage" : "mail:transferToLocal", {
@@ -10992,15 +11017,24 @@ function ensureOrganizeMenu() {
   return menu;
 }
 
-function closeOrganizeMenu() {
+let organizeMenuOrigin = null;
+let organizeMenuSerial = 0;
+
+function closeOrganizeMenu(restoreFocus = false) {
   const menu = $("organize-menu");
   if (!menu) return;
+  organizeMenuSerial++;
   menu.hidden = true;
   menu.dataset.open = "";
   menu.replaceChildren();
+  const origin = organizeMenuOrigin;
+  organizeMenuOrigin = null;
+  if (restoreFocus && origin?.isConnected) origin.focus();
 }
 
-function placeMenu(menu, x, y) {
+function placeMenu(menu, x, y, origin = document.activeElement) {
+  organizeMenuOrigin = origin;
+  const serial = ++organizeMenuSerial;
   menu.hidden = false;
   menu.dataset.open = "";
   menu.style.left = "8px";
@@ -11011,10 +11045,10 @@ function placeMenu(menu, x, y) {
   menu.style.left = Math.min(Math.max(8, x), maxX) + "px";
   menu.style.top = Math.min(Math.max(8, y), maxY) + "px";
   setTimeout(() => {
-    if (menu.hidden) return;
+    if (menu.hidden || serial !== organizeMenuSerial) return;
     menu.dataset.open = "1";
-    const first = menu.querySelector("[role='menuitem']");
-    if (first) first.focus();
+    const first = menu.querySelector("[role='menuitem']:not(:disabled)");
+    if (first) first.focus({ preventScroll: true });
   }, 0);
 }
 
@@ -11437,6 +11471,7 @@ function finishLabelPick() {
     labels: session.labels,
     bulk: !!session.bulk,
     messages: session.messages.slice(),
+    contextCurrent: session.contextCurrent,
   };
   guard(async () => {
     await closeLabelPicker();
@@ -11449,6 +11484,7 @@ function finishLabelPick() {
 }
 
 async function applyLabelPlans(snapshot) {
+  if (snapshot.contextCurrent && !snapshot.contextCurrent()) throw new Error("The mailbox changed. Review these labels again.");
   const plans = snapshot.plans || [];
   const viewKey = mailboxViewKey();
   if (!snapshot.bulk && plans.length === 1) {
@@ -11468,6 +11504,7 @@ async function applyLabelPlans(snapshot) {
     if (removes) calls = confirmedCalls("remove-label", answer, calls, { removesFromView: true });
   }
   if (!calls.length) return;
+  if (snapshot.contextCurrent && !snapshot.contextCurrent()) throw new Error("The mailbox changed while confirmation was open. Review these labels again.");
   const outcome = await runBulk(calls);
   const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => String(row.id)));
   for (const plan of plans) {
@@ -11488,6 +11525,9 @@ function finishMovePick() {
   const session = moveSession;
   const target = activeMoveTarget(session);
   if (!session || !target || target.disabled) return;
+  if (session.contextCurrent && !session.contextCurrent()) {
+    showStatus("The mailbox changed. Close this dialog and review the messages again.", true); return;
+  }
   closeMovePicker();
   if (session.purpose === "message") {
     if (session.bulk && session.emails && session.emails.length) {
@@ -11495,7 +11535,7 @@ function finishMovePick() {
       const kind = session.kind;
       const id = target.id;
       const name = target.path || target.label || target.name;
-      guard(() => applyPickedMove(emails, kind, id, name));
+      guard(() => applyPickedMove(emails, kind, id, name, session.contextCurrent));
       return;
     }
     guard(() => (session.kind === "outlook"
@@ -11649,36 +11689,105 @@ async function renameAccountLabel(account) {
   await call("mail:setAccountLabel", { accountId: account.id, label: result.name });
 }
 
-function appendMenuAction(menu, label, run) {
+function appendMenuAction(menu, label, run, disabledReason = "") {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "menuitem";
   button.setAttribute("role", "menuitem");
   button.textContent = label;
+  button.tabIndex = -1;
+  if (disabledReason) {
+    button.disabled = true;
+    button.title = disabledReason;
+    button.setAttribute("aria-description", disabledReason);
+  }
   button.addEventListener("click", () => {
-    closeOrganizeMenu();
-    run();
+    closeOrganizeMenu(true);
+    if (run) run();
   });
   menu.appendChild(button);
+  return button;
 }
 
-function openOrganizeMenu(email, x, y) {
+function contextAccountProof(accountId) {
+  const account = accountId === LOCAL_ACCOUNT_ID ? state.localAccount : state.accounts.find(row => row.id === accountId);
+  return account ? JSON.stringify([account.id, account.createdAt, account.email, account.username, account.platform,
+    account.imapSmtpProfile, account.mailTransport, account.imapHost, account.imapPort]) : "";
+}
+
+function contextMessages(messages) {
+  const rows = messages.map(row => ({ ...row, members: undefined }));
+  const proofs = new Map(rows.map(row => [row.accountId, contextAccountProof(row.accountId)]));
+  const current = () => [...proofs].every(([id, proof]) => proof && contextAccountProof(id) === proof);
+  const run = action => () => guard(async () => {
+    if (!current()) throw new Error("The mailbox changed. Close this menu and review the message again.");
+    return action(rows, current);
+  });
+  return { rows, current, run };
+}
+
+function contextTrashReason(messages) {
+  const inTrash = messages.some(row => {
+    if (isLocalMail(row)) return row.folderId === "local-folder:trash";
+    const account = state.accounts.find(item => item.id === row.accountId);
+    const folder = foldersOf(account).find(item => item.id === row.folderId);
+    return ["trash", "deleteditems"].includes(String(folder?.wellKnownName || row.folderWellKnownName || row.folderId || "").toLowerCase());
+  });
+  return inTrash ? "Already in Trash. Use Move to folder to restore it. This action never deletes permanently." : "";
+}
+
+function appendMessageFlagActions(menu, messages, run = action => () => guard(() => action(messages))) {
+  const read = messages.every(row => !row.unread);
+  const starred = messages.every(row => row.isStarred);
+  appendMenuAction(menu, read ? "Mark as unread" : "Mark as read", run(rows => bulkSetRead(!read, rows)));
+  appendMenuAction(menu, starred ? "Unstar" : "Star", run(rows => bulkStar(!starred, rows)));
+}
+
+function openContextMove(rows, current, kind = "imap") {
+  openSelectionMove(kind, rows);
+  if (moveSession) moveSession.contextCurrent = current;
+}
+
+function openContextLabels(rows, current) {
+  openLabelPicker(rows, true);
+  if (labelSession) labelSession.contextCurrent = current;
+}
+
+async function contextRemoval(messages, kind, current) {
+  if (!messages.length || refusePaused(messages)) return;
+  if (messages.some(isLocalMail)) throw new Error("Select connected mailbox messages separately from Local Folders.");
+  const reason = kind === "trash" && contextTrashReason(messages);
+  if (reason) throw new Error(reason);
+  const detail = { scope: selectionScopeCopy(messages, messages) + " Only these messages are included." };
+  const answer = await askConfirm(bulkConfirmCopy(kind, messages.length, detail));
+  if (!answer?.ok) return;
+  if (!current()) throw new Error("The mailbox changed while confirmation was open. Review the message again.");
+  // Explicit IDs never expand the clicked row into a conversation, and the
+  // Trash command cannot acquire deleteBatch's permanent-delete semantics.
+  const calls = messages.map(row => ({ channel: kind === "trash" ? "mail:delete" : "mail:archive",
+    params: { emailId: row.id, accountId: row.accountId, ...(kind === "trash" ? { moveToTrashOnly: true } : {}) } }));
+  queueBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", calls, messages, kind);
+}
+
+function openOrganizeMenu(email, x, y, origin) {
   if (!email) return;
-  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y); return; }
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y, origin); return; }
+  const context = contextMessages([email]);
+  email = context.rows[0];
+  const account = state.accounts.find((item) => item.id === email.accountId);
   const provider = folderProvider(account);
   const listed = account ? providerPayloadFor(account) : null;
   const model = organizeMenu(email, foldersOf(account), listed, provider);
   const menu = ensureOrganizeMenu();
-  menu.setAttribute("aria-label", "Move and labels");
+  menu.setAttribute("aria-label", "Message actions");
   menu.replaceChildren();
-  if (!email.isDraft) {
-    appendMenuAction(menu, "Copy to Local Folders…", () => openLocalTransfer([email], "copy"));
-    appendMenuAction(menu, "Move to Local Folders…", () => openLocalTransfer([email], "move"));
-  }
-  if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openMessageMovePicker(email, "imap"));
-  if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker([email], false));
-  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openMessageMovePicker(email, "outlook"));
+  appendMenuAction(menu, "Move to folder…", context.run(openContextMove), model.move.length ? "" : "No writable folder destinations are available. Refresh this mailbox first.");
+  appendMenuAction(menu, "Move / Copy to other mailbox…", context.run(rows => openLocalTransfer(rows, "copy")), email.isDraft ? "Save and close the draft before transferring it." : "");
+  appendMenuAction(menu, "Labels…", context.run(openContextLabels), provider === "gmail" && model.add.length ? "" : provider === "gmail" ? "Refresh Gmail labels or authorize the existing Gmail label capability first." : "This mailbox uses folders. Labels are available for Gmail accounts.");
+  appendMessageFlagActions(menu, context.rows, context.run);
+  appendMenuAction(menu, "Move to trash", context.run((rows, current) => contextRemoval(rows, "trash", current)), contextTrashReason(context.rows));
+  appendMenuAction(menu, "Archive", context.run((rows, current) => contextRemoval(rows, "archive", current)));
+  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", context.run((rows, current) => openContextMove(rows, current, "outlook")));
   if (model.note) {
     const note = document.createElement("p");
     note.className = "organize-note";
@@ -11691,7 +11800,7 @@ function openOrganizeMenu(email, x, y) {
     note.textContent = "No folders to show.";
     menu.appendChild(note);
   }
-  placeMenu(menu, x, y);
+  placeMenu(menu, x, y, origin);
 }
 
 function emailFromRow(row) {
@@ -11902,8 +12011,7 @@ async function bulkTrash(selected = selectedMessages()) {
   queueBulkRemoval("Move to Trash", gated, review.rows, "trash");
 }
 
-async function bulkSetRead(isRead) {
-  const messages = selectedMessages();
+async function bulkSetRead(isRead, messages = selectedMessages()) {
   if (!messages.length || refusePaused(messages)) return;
   const priorHold = state.unreadHold || null;
   if (typeof applyUnreadHold === "function") {
@@ -11933,8 +12041,7 @@ async function bulkSetRead(isRead) {
   if (completed.size) await settleOpenView();
 }
 
-async function bulkStar(isStarred) {
-  const messages = selectedMessages();
+async function bulkStar(isStarred, messages = selectedMessages()) {
   if (!messages.length || refusePaused(messages)) return;
   const previous = new Map(messages.map((email) => [email.id, !!email.isStarred]));
   paintStars(messages, isStarred);
@@ -11963,7 +12070,7 @@ function dropTargetName(target) {
   return folderTitle(folders, target.id);
 }
 
-async function applyBulkMove(messages, target, targetName) {
+async function applyBulkMove(messages, target, targetName, current) {
   const rows = Array.isArray(messages) ? messages.filter(Boolean) : [];
   if (!rows.length || !target) return;
   if (refusePaused(rows)) return;
@@ -11985,6 +12092,7 @@ async function applyBulkMove(messages, target, targetName) {
   }
   const gated = confirmedCalls(action, answer, planned, detail);
   if (!gated.length) return;
+  if (current && !current()) throw new Error("The mailbox changed while confirmation was open. Review this move again.");
   const outcome = await runBulk(gated, action === "add-label" ? undefined : beginRemovalRequest(rows, "move", name));
   const acted = [];
   for (const spec of gated) {
@@ -12005,16 +12113,16 @@ async function applyBulkMove(messages, target, targetName) {
   });
 }
 
-async function applyPickedMove(messages, kind, destinationId, name) {
+async function applyPickedMove(messages, kind, destinationId, name, current) {
   const accountId = messages[0] && messages[0].accountId;
   const target = kind === "outlook"
     ? { kind: "outlook", id: destinationId, accountId: accountId, api: true }
     : { kind: "imap", id: destinationId, accountId: accountId };
-  await applyBulkMove(messages, target, name);
+  await applyBulkMove(messages, target, name, current);
 }
 
-function openSelectionMove(kind) {
-  const messages = selectionMoveMessages();
+function openSelectionMove(kind, captured) {
+  const messages = captured || selectionMoveMessages();
   if (!messages.length) return;
   if (messages.every(isLocalMail)) return openLocalTransfer(messages, "move");
   openMessageMovePicker(messages[0], kind);
@@ -12027,31 +12135,27 @@ function openSelectionMove(kind) {
   source.textContent = selectionScopeCopy(messages);
 }
 
-function openSelectionMenu(x, y) {
-  const messages = selectedMessages();
+function openSelectionMenu(x, y, origin) {
+  const context = contextMessages(selectedMessages());
+  const messages = context.rows;
   if (!messages.length) return;
-  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y); return; }
+  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y, origin); return; }
   const email = messages[0];
-  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const account = state.accounts.find((item) => item.id === email.accountId);
   const provider = folderProvider(account);
   const listed = account ? providerPayloadFor(account) : null;
   const model = organizeMenu(email, foldersOf(account), listed, provider);
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Selected messages");
   menu.replaceChildren();
-  if (messages.every(email => !email.isDraft)) {
-    appendMenuAction(menu, "Copy to Local Folders…", () => openLocalTransfer(messages, "copy"));
-    appendMenuAction(menu, "Move to Local Folders…", () => openLocalTransfer(messages, "move"));
-  }
-  const starred = messages.every((row) => row.isStarred);
-  appendMenuAction(menu, "Mark read", () => guard(() => bulkSetRead(true)));
-  appendMenuAction(menu, "Mark unread", () => guard(() => bulkSetRead(false)));
-  appendMenuAction(menu, starred ? "Unstar" : "Star", () => guard(() => bulkStar(!starred)));
-  appendMenuAction(menu, "Archive", () => guard(bulkArchive));
-  appendMenuAction(menu, "Trash", () => guard(bulkTrash));
-  if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openSelectionMove("imap"));
-  if (provider === "gmail" && model.add.length) appendMenuAction(menu, "Labels…", () => openLabelPicker(messages, true));
-  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openSelectionMove("outlook"));
+  const oneAccount = messages.every(row => row.accountId === email.accountId);
+  appendMenuAction(menu, "Move to folder…", context.run(openContextMove), oneAccount && model.move.length ? "" : "Select messages in one mailbox with writable folder destinations.");
+  appendMenuAction(menu, "Move / Copy to other mailbox…", context.run(rows => openLocalTransfer(rows, "copy")), messages.some(row => row.isDraft) ? "Save and close drafts before transferring them." : "");
+  appendMenuAction(menu, "Labels…", context.run(openContextLabels), oneAccount && provider === "gmail" && model.add.length ? "" : "Select messages from one Gmail account with available labels.");
+  appendMessageFlagActions(menu, messages, context.run);
+  appendMenuAction(menu, "Move to trash", context.run((rows, current) => contextRemoval(rows, "trash", current)), contextTrashReason(messages));
+  appendMenuAction(menu, "Archive", context.run((rows, current) => contextRemoval(rows, "archive", current)));
+  if (oneAccount && model.outlook.length) appendMenuAction(menu, "Move in Outlook…", context.run((rows, current) => openContextMove(rows, current, "outlook")));
   appendMenuAction(menu, "Clear selection", () => commitSelection(clearListSelection()));
   if (model.note && !model.add.length && !model.remove.length && !model.outlook.length) {
     const note = document.createElement("p");
@@ -12059,7 +12163,7 @@ function openSelectionMenu(x, y) {
     note.textContent = model.note;
     menu.appendChild(note);
   }
-  placeMenu(menu, x, y);
+  placeMenu(menu, x, y, origin);
 }
 
 function selectionButton(id, label, paths, run) {
@@ -12183,11 +12287,20 @@ function onListContext(event) {
   const email = emailFromRow(row);
   if (!email || email.outbox) return;
   event.preventDefault();
+  const origin = row.querySelector("button.message") || row;
   if (state.selectedIds.indexOf(String(email.id)) >= 0 && state.selectedIds.length > 1) {
-    openSelectionMenu(event.clientX, event.clientY);
+    openSelectionMenu(event.clientX, event.clientY, origin);
     return;
   }
-  openOrganizeMenu(email, event.clientX, event.clientY);
+  openOrganizeMenu(email, event.clientX, event.clientY, origin);
+}
+
+function onListContextKey(event) {
+  if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+  const row = event.target.closest?.(".message-row");
+  if (!row) return;
+  const rect = row.getBoundingClientRect();
+  onListContext({ target: event.target, clientX: rect.left + 16, clientY: rect.top + 16, preventDefault: () => event.preventDefault() });
 }
 
 function readerContextTarget(event) {
@@ -12483,6 +12596,7 @@ function onFolderDrop(event) {
 
 function wireOrganize() {
   $("messages").addEventListener("contextmenu", onListContext);
+  $("messages").addEventListener("keydown", onListContextKey);
   $("reader").addEventListener("contextmenu", onReaderContext);
   $("messages").addEventListener("pointerdown", onMessagePointerDown, true);
   $("messages").addEventListener("dragstart", onMessageDragStart);
@@ -12501,15 +12615,25 @@ function wireOrganize() {
     closeOrganizeMenu();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
     const menu = $("organize-menu");
     if (!menu || menu.hidden) return;
-    event.preventDefault();
-    closeOrganizeMenu();
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation();
+      closeOrganizeMenu(true);
+    } else if (menu.contains(event.target) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      const items = [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+      const index = items.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === "Tab") closeOrganizeMenu();
   });
   document.addEventListener("scroll", (event) => {
     const menu = $("organize-menu");
-    if (!menu || menu.hidden) return;
+    // Native right-click can queue a scroll while it focuses the row. It
+    // predates this menu; do not let it dismiss a menu that is still opening.
+    if (!menu || menu.hidden || menu.dataset.open !== "1") return;
     if (event.target === menu || (event.target && menu.contains && menu.contains(event.target))) return;
     closeOrganizeMenu();
   }, true);
