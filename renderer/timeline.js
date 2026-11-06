@@ -22,7 +22,7 @@
       "timeline-consolidation": "AI could not compact the long-message summaries within the run limits. Earlier saved timelines remain unchanged.",
       "timeline-cancelled": "Generation cancelled. Data already delivered to the provider cannot be recalled.",
       "timeline-not-found": "This saved timeline is no longer available. Account removal also deletes related timelines.",
-      "ai-consent-required": "Allow explicit AI actions for the saved destination in Settings → AI → AI data permission, then reopen Timeline.",
+      "ai-consent-required": "Review and allow Thread Timeline and, for Case mode, Case data use for the saved destination in Settings → AI → AI data permission, then reopen Timeline.",
       "timeline-input": "Check the keywords and contact emails, then try again.",
       "timeline-contacts": "Use up to 100 email addresses, separated by commas or new lines.",
       "timeline-revision": "The saved timeline changed. Open it again before exporting.",

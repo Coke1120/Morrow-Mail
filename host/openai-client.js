@@ -40,7 +40,7 @@ async function withConsent(options, work) {
   const cfg = options.config || requireConfig();
   const context = require("./ai-context");
   const background = options.background === true || context.isBackground();
-  const lease = require("./ai-consent").getConsent().acquire(cfg, { signal: options.signal, background, stamp: context.stamp() });
+  const lease = require("./ai-consent").getConsent().acquire(cfg, { signal: options.signal, background, stamp: context.stamp(), scope: options.consentScope || "core" });
   try {
     lease.check();
     const result = await work({ ...options, config: cfg, background, signal: lease.signal, check: lease.check });

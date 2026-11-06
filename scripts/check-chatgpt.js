@@ -609,3 +609,12 @@ test("host background classification survives async work and cannot be removed b
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('selecting the connected active ChatGPT registration does not invalidate an admitted request or rewrite storage', async t => {
+  const f = await fixture(t); await f.login();
+  const id = f.auth.status().activeId, before = JSON.stringify(f.record()), calls = f.calls.length;
+  const lease = await f.auth.lease();
+  f.auth.select(id);
+  lease.check(); assert.equal(lease.signal.aborted, false); lease.release();
+  assert.equal(JSON.stringify(f.record()), before); assert.equal(f.calls.length, calls);
+});

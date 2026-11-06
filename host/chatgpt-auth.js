@@ -321,6 +321,7 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
     const data = store.read();
     const record = data.registrations.find(r => r.id === id);
     if (!record?.connected || ended.has(id) || signingOut.has(id)) throw new Error("Sign in to that ChatGPT account before selecting it.");
+    if (data.activeId === id) return status();
     data.activeId = id;
     store.write(data);
     invalidateRequests();
