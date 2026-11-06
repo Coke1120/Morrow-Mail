@@ -49,7 +49,7 @@ function gmailListing(labels) {
 function createAccess({ accountById, bindAccount, assertAccountCurrent, generation, revision, googleClient,
   secretFor, withMailClient, exclusive, refreshCache, blocked = () => false } = {}) {
   function describe(account) {
-    const clientId = account.profile === "gmail" && account.auth_kind === "oauth2" ? googleClient() : null;
+    const clientId = account.mail_transport === "gmail_api" || (account.profile === "gmail" && account.auth_kind === "oauth2") ? googleClient() : null;
     return { binding: digest(JSON.stringify([...identity(account), clientId])), generation: generation(account.id), revision: revision(account.id) };
   }
   function owner(accountId) {
