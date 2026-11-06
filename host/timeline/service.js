@@ -6,13 +6,15 @@ const { freezeSources, assertSources, hash, fingerprint, dedupeRows, messagePrev
 const { htmlToPlain } = require("../mail/text-encoding");
 const { LIMITS, LANGUAGES, PROMPT_VERSION, preparePlan, extract } = require("./extract");
 const { budget, budgetDetails } = require("./budget");
+const { validationDetails } = require("./validation-feedback");
 
 const CHANNELS = new Set(["timeline:search", "timeline:source", "timeline:check", "timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
 const codes = new Set(["timeline-validation", "timeline-consolidation", "timeline-version", "timeline-size", "timeline-depth", "timeline-selection-limit", "timeline-empty", "timeline-source-changed", "timeline-query", "timeline-budget", "timeline-not-found", "timeline-manifest", "timeline-partial", "timeline-busy", "timeline-cancelled", "ai-consent-required", "timeline-language", "timeline-timezone", "timeline-input", "timeline-revision"]);
 
 function publicError(error) {
   const details = budgetDetails(error);
-  return { code: codes.has(error?.code) ? error.code : "timeline-failed", ...(details ? { budget: details } : {}) };
+  const validation = validationDetails(error);
+  return { code: codes.has(error?.code) ? error.code : "timeline-failed", ...(details ? { budget: details } : {}), ...(validation ? { validation } : {}) };
 }
 
 function shape(value, keys, required = []) {
@@ -108,7 +110,7 @@ function createService(dependencies) {
       coverage: snapshot.coverage, missingBodies: snapshot.missingBodies, invalidMetadata: snapshot.invalidMetadata, search: snapshot.search,
       messages: snapshot.records.map(record => ({ ...messagePreview(db.timelineMessage(record.id)), phase: record.phase || "main" })), caseScope: snapshot.caseScope,
       chunks: plan?.chunks.length || 0, estimatedInputTokens: plan?.estimatedInputTokens || 0, ...(blocked ? { budget: blocked } : {}),
-      limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.manual,
+      limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.scopes?.[entry.options.mode === "case" ? "case" : "timeline"] === true,
       locality: status.locality, providerTerms: status.providerTerms };
   }
   function cancel(owner, id) {
@@ -128,7 +130,7 @@ function createService(dependencies) {
     if (!entry.snapshot.sources.length || (entry.snapshot.coverage.omitted_message_count && !input.acceptPartial)) throw failure("timeline-partial");
     if (jobs.size) throw failure("timeline-busy");
     const controller = new AbortController();
-    const lease = consent.acquire(config(), { signal: controller.signal, stamp: entry.consentToken, background: false });
+    const lease = consent.acquire(config(), { signal: controller.signal, stamp: entry.consentToken, background: false, scope: entry.options.mode === "case" ? "case" : "timeline" });
     const jobId = crypto.randomUUID();
     const job = { owner, controller, accounts: entry.snapshot.accounts.map(account => account.id) };
     try { db.timeline.startJob(jobId, owner); }
@@ -151,7 +153,7 @@ function createService(dependencies) {
           display_timezone: entry.options.displayTimezone, time_basis: "mail_timestamp", coverage: entry.snapshot.coverage, source_threads: entry.snapshot.sourceThreads,
           ...(entry.snapshot.caseScope ? { case_scope: entry.snapshot.caseScope } : {}),
         }, language: entry.options.language, focus: { keywords: entry.options.keywords || "", contact_emails: entry.options.contactEmails || [] }, signal: lease.signal, check,
-        complete: (messages, options) => complete(messages, { ...options, config: config(), background: false }),
+        complete: (messages, options) => complete(messages, { ...options, config: config(), background: false, consentScope: entry.options.mode === "case" ? "case" : "timeline" }),
         progress: value => { calls = value.calls; send(value); } });
         check();
         db.timeline.save(result.document, entry.snapshot.records, { digest: entry.snapshot.digest, promptVersion: PROMPT_VERSION, usage: result.usage });

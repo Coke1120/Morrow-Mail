@@ -191,10 +191,15 @@ async function run() {
     for (const write of [api => api.send({ raw: Buffer.from("synthetic MIME"), confirmed: true }),
       api => api.saveDraft({ raw: Buffer.from("synthetic MIME") }), api => api.saveDraft({ draftId: "draft", raw: Buffer.from("synthetic MIME") }),
       api => api.markRead("message", true), api => api.createLabel("Synthetic"), api => api.deleteLabel("label")]) {
-      account = reset(); route = () => reply({}, 401);
+      account = reset(); route = (url, init) => init.method === "GET" && String(url).endsWith("/labels")
+        ? reply({ labels: [{ id: "label", name: "Synthetic", type: "user" }] }) : reply({}, 401);
       await assert.rejects(session(account, write), e => e.status === 401);
       assert.equal(calls.filter(c => c.method !== "GET").length, 1); assert.equal(posts.length, 0);
     }
+    // A failed fresh protection read must not reach the label DELETE at all.
+    account = reset(); route = () => reply({}, 401);
+    await assert.rejects(session(account, api => api.deleteLabel("label")), e => e.status === 401);
+    assert.equal(calls.filter(c => c.method !== "GET").length, 0);
     account = reset();
     progress("read-recovery-after-accepted-write");
     const fallback = route;

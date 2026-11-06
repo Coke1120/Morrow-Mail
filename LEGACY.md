@@ -2,6 +2,9 @@
 
 The product is the Electron app at the repository root.
 
+The archival snapshot retains its original licensing terms; the current root
+LICENSE does not relicense the contents of `legacy.zip`.
+
 - `host/` is the Electron main process and mail engine.
 - `renderer/` is the first-party UI.
 - `shared/` is code shared by that app.

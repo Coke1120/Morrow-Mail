@@ -22,7 +22,7 @@
       "timeline-consolidation": "AI could not compact the long-message summaries within the run limits. Earlier saved timelines remain unchanged.",
       "timeline-cancelled": "Generation cancelled. Data already delivered to the provider cannot be recalled.",
       "timeline-not-found": "This saved timeline is no longer available. Account removal also deletes related timelines.",
-      "ai-consent-required": "Allow explicit AI actions for the saved destination in Settings → AI → AI data permission, then reopen Timeline.",
+      "ai-consent-required": "Review and allow Thread Timeline and, for Case mode, Case data use for the saved destination in Settings → AI → AI data permission, then reopen Timeline.",
       "timeline-input": "Check the keywords and contact emails, then try again.",
       "timeline-contacts": "Use up to 100 email addresses, separated by commas or new lines.",
       "timeline-revision": "The saved timeline changed. Open it again before exporting.",
@@ -31,11 +31,17 @@
     const status = text => { node("timeline-status").textContent = text; };
     async function invoke(channel, payload = {}) {
       const result = await api.invoke(channel, payload);
-      if (!result?.success) throw Object.assign(new Error("Timeline operation failed"), { code: result?.error?.code, budget: result?.error?.budget, calls: result?.error?.calls });
+      if (!result?.success) throw Object.assign(new Error("Timeline operation failed"), { code: result?.error?.code, budget: result?.error?.budget, calls: result?.error?.calls, validation: result?.error?.validation });
       return result.data;
     }
     function report(error) {
       let text = errorText[error?.code] || "Timeline operation failed. Check the AI connection and retry explicitly. No alternate provider is used.";
+      const stages = { extraction: "Message extraction", consolidation: "Long-message consolidation", case: "Case overview" };
+      const reasons = { parse: "invalid JSON formatting", schema: "invalid fields or text limits", reference: "missing, repeated or unsupported source references", incomplete: "an incomplete provider response" };
+      const validation = error?.validation;
+      if (error?.code === "timeline-validation" && Object.hasOwn(stages, validation?.stage) && Object.hasOwn(reasons, validation?.category) && validation.attempts === 2) {
+        text = `${stages[validation.stage]} failed after one retry: ${reasons[validation.category]}. Earlier saved timelines remain unchanged.`;
+      }
       const labels = { "source-bytes": "Downloaded mail size", "metadata-bytes": "Message header and attachment-name size", "focus-bytes": "Optional focus size",
         "request-bytes": "Request input size", "planned-input-bytes": "Planned extraction input size", "chunk-count": "Planned extraction requests",
         "call-count": "AI requests", "input-bytes": "Run input size", "output-tokens": "AI output tokens", "duration-ms": "Run time in milliseconds", "consolidation-bytes": "Summary consolidation input size" };
@@ -348,7 +354,7 @@
         jobId = null; prepared = null; cancelRequested = false; cancelling = false; buttons();
         if (value.phase === "completed") {
           if (dialog.open) { await load(value.timelineId); await savedList(); }
-        } else report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls });
+        } else report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls, validation: value.validation });
       } else status(`${value.phase === "merging" ? "Consolidating validated summaries" : "Extracting downloaded messages"}: ${value.completed} / ${value.total} · ${value.calls} calls. Cancel stops later calls, not data already delivered.`);
     }
     dialog.addEventListener("keydown", event => event.stopPropagation());

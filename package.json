@@ -5,13 +5,13 @@
   "main": "host/main.js",
   "private": true,
   "author": "Leo Ho",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "start": "electron .",
     "check": "node scripts/check-boot-path.js",
     "test:timeline": "node scripts/timeline.test.js",
     "bot:call": "node scripts/morrow-bot-call.js",
-    "postinstall": "node scripts/bundle-motion.js && node scripts/bundle-pdf.js",
+    "postinstall": "node scripts/bundle-motion.js && node scripts/bundle-pdf.js && node scripts/bundle-notices.js",
     "motion:bundle": "node scripts/bundle-motion.js",
     "pdf:bundle": "node scripts/bundle-pdf.js",
     "pack": "electron-builder --dir",
@@ -59,6 +59,9 @@
       "shared/**/*",
       "package.json",
       "LICENSE",
+      "LICENSE-MIT",
+      "NOTICE",
+      "THIRD_PARTY_NOTICES.md",
       "!host/**/*.test.js",
       "!**/*.map",
       "!node_modules/motion/**",
@@ -67,6 +70,14 @@
       "!node_modules/motion-utils/**"
     ],
     "extraResources": [
+      {
+        "from": "node_modules/electron/dist/LICENSE",
+        "to": "licenses/LICENSE.electron.txt"
+      },
+      {
+        "from": "node_modules/electron/dist/LICENSES.chromium.html",
+        "to": "licenses/LICENSES.chromium.html"
+      },
       {
         "from": "resources/",
         "to": ".",

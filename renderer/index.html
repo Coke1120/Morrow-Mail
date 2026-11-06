@@ -226,7 +226,7 @@
             <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
           </div>
         </div>
-        <p id="mail-sort-help" class="sr">Drag headers to reorder columns, or use Columns / Alt + Left or Right. Right-click a header or press Shift + F10 to choose visible columns; Columns has the same checkboxes. Subject stays visible. Click Date, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Recipient sorts by the first To recipient. Hiding a column keeps sorting. Reply / forward icons appear before the subject for reported IMAP flags or confirmed Gmail evidence on this device. Unknown states show nothing. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order and displays saved To recipients across accounts.</p>
+        <p id="mail-sort-help" class="sr">Drag headers to reorder columns, or use Columns / Alt + Left or Right. Right-click a header or press Shift + F10 to choose visible columns; Columns has the same checkboxes. Subject stays visible. Click Date, Time, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Date and Time both sort by the full timestamp, including the date. They use your date/time formats and device timezone; tooltips include the full timestamp and timezone. Recipient sorts by the first To recipient. Hiding a column keeps sorting. Reply / forward icons appear before the subject for reported IMAP flags or confirmed Gmail evidence on this device. Unknown states show nothing. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order and displays saved To recipients across accounts.</p>
         <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help mail-view-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
@@ -284,14 +284,17 @@
           <p class="hint">Account removal deletes related local timelines. Exports, backups and historical journal bytes remain. No URL or webhook export.</p>
         </div>
         <details id="timeline-history" hidden><summary>Saved timelines</summary><div id="timeline-saved"></div></details>
-        <details><summary>Data use &amp; limits</summary><p class="hint">Reviewed message text/quoted history, subjects, sender names and addresses, mail timestamps and date provenance, attachment names, optional keywords/contact emails and Case Main/Background selections go to the saved AI destination only after Generate and explicit-action AI permission. Independent To/Cc headers stay local; body and focus can still contain recipient addresses. Version 4 disclosure requires renewed consent for older grants. Case synthesis uses validated summaries under the same run budget; overview sections are limited to 12 points, with source evidence and uncertainty for human review. Attachment files, Brain, Agent notes and conversation history are excluded. No mail is marked read, relabeled or sent. Up to 1,000 messages / 200 downloaded threads; 32 calls, one validation retry per step and a ten-minute run limit. Cancel stops later calls, not data already delivered. Review the destination and provider terms in Settings → AI → AI data permission.</p></details>
+        <details><summary>Data use &amp; limits</summary><p class="hint">Reviewed message text/quoted history, subjects, sender names and addresses, mail timestamps and date provenance, attachment names, optional keywords/contact emails and Case Main/Background selections go to the saved AI destination only after Generate and explicit-action AI permission. Independent To/Cc headers stay local; body and focus can still contain recipient addresses. Thread Timeline and Case have separate saved permissions; expanded uses require incremental review while unchanged AI actions keep permission. Case synthesis uses validated summaries under the same run budget; overview sections are limited to 12 points, with source evidence and uncertainty for human review. Attachment files, Brain, Agent notes and conversation history are excluded. No mail is marked read, relabeled or sent. Up to 1,000 messages / 200 downloaded threads; 32 calls, one validation retry per step and a ten-minute run limit. Failed output shows a fixed stage and reason without raw AI text. The single retry receives bounded corrective guidance; retrying a failed run is always explicit. Cancel stops later calls, not data already delivered. Review the destination and provider terms in Settings → AI → AI data permission.</p></details>
       </div>
     </dialog>
     <section id="provider-panel" class="primary-space" hidden aria-labelledby="provider-title">
       <div class="space-head motion-block"><h2 id="provider-title">Folders &amp; labels</h2></div>
-      <p class="hint">Columns work like Finder. Select a folder to show what is inside it on the right. Filter matches a name and keeps the folders above it. Right-click to rename, delete, or move. Drag a row to nest it, or drop a message on a row to add a Gmail label or move an Outlook message.</p>
-      <label for="provider-account">Mailbox</label>
-      <select id="provider-account"></select>
+      <p class="hint">Switch mailbox below to browse or create folders and labels. Gmail label deletion keeps email; Undo cancels within 30 seconds before removal. IMAP, Outlook and Yahoo folder deletion is currently unavailable.</p>
+      <div class="folder-mailbox-picker">
+        <label for="provider-account">Manage mailbox</label>
+        <select id="provider-account" aria-controls="provider-content"></select>
+        <div id="provider-mailboxes" class="folder-mailbox-cards" role="group" aria-label="Choose mailbox to manage"></div>
+      </div>
       <div class="folder-filter provider-filter">
         <label class="sr" for="provider-filter">Filter labels and folders</label>
         <input id="provider-filter" type="search" placeholder="Filter labels and folders" autocomplete="off" spellcheck="false" aria-controls="provider-content" />
@@ -625,7 +628,7 @@
         </div>
         <p class="hint" id="cli-note"></p>
         <p class="hint" id="cli-mbox-help">MBOX import is available through the Import MBOX icon button beside Local Folders in the account list. It has no CLI command or bot operation; use the file, format and destination review in the app.</p>
-        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. This downloaded thread retains the lightweight mode. Case / client mode searches only the current account's downloaded mail; accumulate selected messages across token-prefix search rounds, classify Main / Background, Review selected mail and confirm before Generate. If the opened thread exceeds its capture limits, Case mode still supports a smaller explicit selection. Every search word must match subject, sender or indexed body (first 200,000 characters); Gmail query syntax and To/Cc search are unavailable. At most 100 results per query; limited queries and all coverage gaps are disclosed. Search never proves completeness. Independent To/Cc stay local evidence; addresses may still occur in body or focus. AI sends reviewed bodies/quoted history, subjects, sender names/addresses, mail timestamps/provenance, attachment names, optional focus and Main/Background selections to the saved destination after disclosure version 4 consent. Background use stays separate. Case overviews cite sources for status, follow-ups, gaps and mentioned dates; mail dates remain distinct. No task is automatically checked off. Cached source reading does not download or mark read. Unsupported/incomplete mail needs explicit omission acceptance. No automatic older-mail download. 1,000 messages / 200 threads are ceilings; lower run budgets apply. Preflight includes the complete request and optional focus. Failed runs show attempted AI request counts. An explicit retry revalidates the same source and sends the reviewed mail again. Case synthesis/retries share existing limits; the estimate covers initial extraction only. Closing cancels later requests; delivered data cannot be recalled. Opening the sheet, local search, source evidence, saved history and exports use no AI. HTML, Markdown, isolated PDF and public JSON require fresh export review. Thread schema 1.0.0 and Case schema 1.1.0 are both readable. No URL/webhook export. Run <code>npm run test:timeline</code> for synthetic privacy, selection, schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
+        <p class="hint" id="cli-timeline">Timelines are explicit desktop actions from Timeline beside Summary in an opened message's action bar, not bot operations, CLI commands or scheduled skills. This downloaded thread retains the lightweight mode. Case / client mode searches only the current account's downloaded mail; accumulate selected messages across token-prefix search rounds, classify Main / Background, Review selected mail and confirm before Generate. If the opened thread exceeds its capture limits, Case mode still supports a smaller explicit selection. Every search word must match subject, sender or indexed body (first 200,000 characters); Gmail query syntax and To/Cc search are unavailable. At most 100 results per query; limited queries and all coverage gaps are disclosed. Search never proves completeness. Independent To/Cc stay local evidence; addresses may still occur in body or focus. AI sends reviewed bodies/quoted history, subjects, sender names/addresses, mail timestamps/provenance, attachment names, optional focus and Main/Background selections to the saved destination after the corresponding saved Thread Timeline or Case permission. Background use stays separate. Case overviews cite sources for status, follow-ups, gaps and mentioned dates; mail dates remain distinct. No task is automatically checked off. Cached source reading does not download or mark read. Unsupported/incomplete mail needs explicit omission acceptance. No automatic older-mail download. 1,000 messages / 200 threads are ceilings; lower run budgets apply. Preflight includes the complete request and optional focus. Failed runs show attempted AI request counts. An explicit retry revalidates the same source and sends the reviewed mail again. Case synthesis/retries share existing limits; the estimate covers initial extraction only. Closing cancels later requests; delivered data cannot be recalled. Opening the sheet, local search, source evidence, saved history and exports use no AI. HTML, Markdown, isolated PDF and public JSON require fresh export review. Thread schema 1.0.0 and Case schema 1.1.0 are both readable. No URL/webhook export. Run <code>npm run test:timeline</code> for synthetic privacy, selection, schema, source, extraction, export, persistence, consent and rendered-sheet checks; no real mail, credentials, AI requests or Electron GUI are used.</p>
         <p class="hint" id="cli-page-recovery">Compose attachment preparation, inert Undo recovery and Calendar retry identities are desktop operations; bot capabilities and permissions are unchanged. Calendar reauthorization uses the existing provider grant, separately from Google mail. These fixes do not expose calendar writes through the Node bot client.</p>
         <p class="hint" id="cli-folder-labels">Folders &amp; labels and Open in Mail are desktop actions. Label edits and Outlook moves use the selected message identity; ambiguous legacy Message-ID matches are refused. These fixes add no bot operations, command-line options or provider scopes.</p>
         <p class="hint" id="cli-mail-feedback">Downloaded-primary unread counts, background bulk Archive/Trash, accumulated removal Undo, the per-mailbox Out of Office chooser and cache-first Agent navigation are desktop behaviors. They add no bot commands, permissions, bulk cancellation or automatic retries. Out of Office changes still require review in Settings for one mailbox.</p>
@@ -714,14 +717,17 @@
     <dialog id="about-dialog" aria-labelledby="about-title"><div class="dialog-body">
       <div class="sheet-head"><h2 id="about-title">About &amp; updates</h2><button type="button" class="ghost" id="about-close">Close</button></div>
       <p id="product-name" class="product-name">Morrow Mail</p>
-      <p id="about-summary">Morrow Mail is an open-source Electron mail client for Windows and macOS. You connect your own accounts over IMAP or OAuth, read and send mail, and keep mail synced on this computer. Installers come from GitHub Releases under the MIT License.</p>
+      <p id="about-summary">Morrow Mail is an open-source Electron mail client for Windows and macOS. You connect your own accounts over IMAP or OAuth, read and send mail, and keep mail synced on this computer. Installers come from GitHub Releases. Morrow Mail is licensed under the Apache License 2.0.</p>
       <p id="about-copyright" class="hint">Copyright (c) 2026 Leo Ho / HWL-HK</p>
       <nav class="about-links" aria-label="Morrow Mail links">
         <a href="https://hwl-hk.com/en/morrow-mail/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>
         <a href="https://hwl-hk.com/en/morrow-mail/terms" target="_blank" rel="noreferrer">Terms of Service</a>
-        <a href="https://github.com/Coke1120/Morrow-Mail/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
+        <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache License 2.0</a>
         <a href="https://github.com/Coke1120/Morrow-Mail" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/Coke1120/Morrow-Mail/blob/main/NOTICE" target="_blank" rel="noreferrer">License notices</a>
       </nav>
+      <p class="hint">Earlier MIT-licensed code and third-party components keep their own license notices.</p>
+      <p class="project-invitation">Commercial use is welcome. For tailor-made services, contact <a href="mailto:leo@hwl-hk.com">leo@hwl-hk.com</a>.</p>
       <nav class="about-links" aria-label="Support">
         <span class="hint">Support</span>
         <a href="https://github.com/sponsors/Coke1120" target="_blank" rel="noreferrer">GitHub Sponsors</a>
@@ -735,14 +741,19 @@
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="changelog-title">What's new</h2><button type="button" class="ghost" id="changelog-close">Close</button></div>
         <p id="changelog-version" class="hint"></p>
+        <nav class="about-links" aria-label="Version source and license">
+          <a href="https://github.com/Coke1120/Morrow-Mail" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noreferrer">Apache License 2.0</a>
+        </nav>
         <ul id="changelog-notes"></ul>
+        <p class="project-invitation">Commercial use is welcome. For tailor-made services, contact <a href="mailto:leo@hwl-hk.com">leo@hwl-hk.com</a>.</p>
         <div class="row"><button type="button" class="primary" id="changelog-ok">OK</button></div>
       </div>
     </dialog>
     <dialog id="mail-columns" aria-labelledby="mail-columns-title" aria-describedby="mail-columns-help">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
-        <p id="mail-columns-help">Choose which columns to show. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. The same layout is used across mailboxes, search and Outbox.</p>
+        <p id="mail-columns-help">Choose which columns to show, including the separate Date and Time columns. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Time, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. Date and Time both sort by the full timestamp, including the date. Display uses your date/time formats and device timezone; hover a date or time for the full timestamp and timezone. The same layout is used across mailboxes, search and Outbox.</p>
         <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. Outlook OAuth, Yahoo app-password and other IMAP accounts use cached provider flags and confirmed successful Morrow sends. After complete SMTP acceptance, Morrow adds the server flag where permitted. Read-only folders, unsupported keywords or flag errors keep a local indicator; flag errors never resend mail. Transient flag failures retry during ordinary sync after five minutes. Cross-device IMAP icons require server and client support. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Confirmed local replies keep the original Gmail identity even without a Message-ID. Sent sync gradually checks already cached, uninspected reply candidates, at most two per pass within its normal read budget, and resumes after restart or connection recovery. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit Gmail provider evidence takes priority.</p>
         <ol id="mail-columns-order"></ol>
         <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
@@ -1017,8 +1028,14 @@
             <button type="button" id="ai-mode-reply" role="radio" data-ai-mode="reply" aria-checked="false" tabindex="-1" aria-disabled="false">Reply from thread</button>
           </div>
           <p id="compose-ai-note" class="hint compose-ai-note" role="status" hidden></p>
+          <div id="compose-suggestions" class="compose-suggestions" hidden>
+            <p id="compose-suggest-label" class="hint">Suggested replies</p>
+            <p id="compose-suggest-status" class="hint" role="status" hidden></p>
+            <div id="compose-suggest-list" class="suggest-list" role="list"></div>
+          </div>
           <label class="sr" for="ai-prompt">Prompt</label>
-          <input id="ai-prompt" type="text" placeholder="Type your prompt..." autocomplete="off" />
+          <textarea id="ai-prompt" rows="4" placeholder="Type your prompt..." autocomplete="off" aria-describedby="compose-ai-prompt-help"></textarea>
+          <p class="hint" id="compose-ai-prompt-help">Drag the lower corner to enlarge. Enter adds a new line; Ctrl/⌘+Enter generates.</p>
           <p id="ai-write-error" class="error" role="status" hidden></p>
           <div class="compose-ai-actions">
             <button type="button" class="primary" id="ai-generate">Generate</button>
@@ -1028,12 +1045,9 @@
         </div>
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
+        <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
         <textarea id="compose-body" class="compose-body-source" tabindex="-1" aria-hidden="true"></textarea>
-        <div id="compose-suggestions" class="compose-suggestions" hidden>
-          <p id="compose-suggest-label" class="hint">Suggested replies</p>
-          <p id="compose-suggest-status" class="hint" role="status" hidden></p>
-          <div id="compose-suggest-list" class="suggest-list" role="list"></div>
-        </div>
+
         <div class="compose-files">
           <input id="compose-file" type="file" multiple hidden />
           <button type="button" class="ghost icon-label" id="compose-attach">
@@ -1243,6 +1257,7 @@
               <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Expand Gmail accounts by default</label>
               <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Expand Outlook accounts by default</label>
               <p class="hint">Each account’s sidebar button saves its own expansion choice. These defaults apply until that account has an individual choice.</p>
+              <p id="sidebar-identity-help" class="hint">Mailbox headings show the address first, with the saved label or provider below it. Local Folders uses the same layout with On this computer. Folder parents keep their expanders and hierarchy; Gmail system categories use readable names without changing saved labels.</p>
             </div>
             <div class="checks">
               <h4>Agent</h4>
@@ -1378,11 +1393,11 @@
             <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
             <p class="hint settings-full-width">Fetch models reads the catalog using your credentials, without mail context. Test sends a short AI request after permission and uses provider usage.</p>
-            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection and choose AI data permission below. Background use is optional. If Allow is unavailable, follow the status message.</p>
+            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection and saved AI data permissions below. Thread Timeline, Case and background use are optional. Unchanged permissions survive app updates. If Allow is unavailable, follow the status message.</p>
           </div>
           <div id="ai-data-settings"></div>
           <details id="ai-connection-details" class="settings-disclosure"><summary>Connection details</summary>
-            <p class="hint">Save AI applies the submitted settings; edits made while saving remain unsaved. Reopening Settings keeps unsaved connection edits, refreshes saved permission and clears earlier checkbox choices. Test connection sends a short model request after AI data permission and uses plan usage in ChatGPT mode. Results from older tests or changed settings are ignored. Save and approve a changed destination/model before testing it. Fetch models only reads the selected provider's model catalog, sends its credentials, and sends no mail context. API mode keeps the saved key when its field is blank.</p>
+            <p class="hint">Save AI applies the submitted settings; edits made while saving remain unsaved. Reopening Settings keeps unsaved connection edits, refreshes saved permission and restores saved checkbox choices without granting new uses. Test connection sends a short model request after AI data permission and uses plan usage in ChatGPT mode. Results from older tests or changed settings are ignored. Save and approve a changed destination/model before testing it. Fetch models only reads the selected provider's model catalog, sends its credentials, and sends no mail context. API mode keeps the saved key when its field is blank.</p>
             <p class="hint">API settings are preserved when choosing ChatGPT. ChatGPT credentials are encrypted by operating system secure storage, controlled by the main process, and separate from mailbox OAuth. Paste-back is optional; cancellation and timeout require a fresh sign-in. See the AI connection feature for supported requests and limits.</p>
           </details>
           <div class="settings-group">
@@ -1932,8 +1947,9 @@
         <h2 id="confirm-title">Confirm</h2>
         <p id="confirm-body"></p>
         <div id="confirm-field" hidden>
-          <label for="confirm-name">Name</label>
+          <label id="confirm-field-label" for="confirm-name">Name</label>
           <input id="confirm-name" type="text" maxlength="200" autocomplete="off" spellcheck="false" />
+          <p id="confirm-validation" class="hint" role="alert" hidden></p>
         </div>
         <div class="row">
           <button type="submit" class="primary" id="confirm-ok">Confirm</button>
@@ -1941,6 +1957,7 @@
         </div>
       </form>
     </dialog>
+    <aside id="folder-operation-activity" class="folder-operation-activity" aria-label="Pending folder actions" hidden></aside>
     <aside id="attachment-transfer-activity" class="attachment-task-list" data-attachment-tasks="all" aria-label="Attachment transfers" hidden></aside>
     <script src="./motion.bundle.js"></script>
     <script src="../shared/compose-policy.js"></script>
