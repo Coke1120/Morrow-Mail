@@ -48,21 +48,32 @@ function createJournal(file, { database = Database } = {}) {
   function assertIntegrity(force = false) {
     if (poisoned) throw corrupt();
     try {
-      const version = sql.pragma("data_version", { simple: true }), currentStamp = stamp();
-      if (force || version !== observedVersion || currentStamp !== observedStamp) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const version = sql.pragma("data_version", { simple: true }), currentStamp = stamp();
+        if (!force && version === observedVersion && currentStamp === observedStamp) return;
         if (sql.pragma("quick_check", { simple: true }) !== "ok") throw corrupt();
         const rows = sql.prepare("SELECT * FROM mailbox_copies").all();
         if (rows.length > LIMITS.records) throw corrupt();
         for (const row of rows) decode(row);
+        const afterVersion = sql.pragma("data_version", { simple: true }), afterStamp = stamp();
+        if (version === afterVersion && currentStamp === afterStamp) {
+          observedVersion = version; observedStamp = currentStamp; return;
+        }
+        force = true;
       }
-      observedVersion = version; observedStamp = currentStamp;
+      throw corrupt();
     } catch { poisoned = true; throw corrupt(); }
   }
   function guarded(work) {
     assertIntegrity();
+    const beforeVersion = observedVersion;
     try {
       const value = work();
-      observedVersion = sql.pragma("data_version", { simple: true }); observedStamp = stamp();
+      const afterVersion = sql.pragma("data_version", { simple: true });
+      // Own writes do not advance data_version. An external writer during
+      // this operation invalidates its result; never cache it as verified.
+      if (beforeVersion !== afterVersion) throw corrupt();
+      observedStamp = stamp();
       return value;
     } catch (error) {
       if (["copy_exists", "copy_limit", "copy_conflict"].includes(error.code)) throw error;

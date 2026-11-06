@@ -160,5 +160,58 @@ test("external corruption poisons the open recovery handle and blocks unrelated 
   repaired.prepare("UPDATE mailbox_copies SET body=?,sha=? WHERE id=?").run(body,digest(body),value.id);repaired.close();
   assert.throws(()=>f.ledger.insert({...value,id:"new",key:digest("new")}),/recovery storage/);
 });
+test("receipt capacity blocks new identities without pruning verified or uncertain idempotency evidence",t=>{
+  const f=fixture(t),Database=require("better-sqlite3"),external=new Database(f.file);
+  const insert=external.prepare("INSERT INTO mailbox_copies VALUES(?,?,?,?,?,?,?,?)");
+  external.transaction(()=>{for(let i=0;i<5000;i++){
+    const value={id:"receipt-"+i,key:digest("key-"+i),sourceKey:digest("source-"+i),destinationKey:digest("destination"),phase:i%2?"verified":"unknown",updatedAt:i};
+    const body=JSON.stringify(value);insert.run(value.id,value.key,value.sourceKey,value.destinationKey,value.phase,value.updatedAt,body,digest(body));
+  }})();external.close();
+  assert.throws(()=>f.ledger.insert({id:"overflow",key:digest("overflow"),sourceKey:digest("source"),destinationKey:digest("destination"),phase:"prepared",updatedAt:5001}),/storage is full/);
+  assert.equal(f.ledger.list().length,5000);assert.equal(f.ledger.find(digest("key-0")).phase,"unknown");assert.equal(f.ledger.find(digest("key-1")).phase,"verified");
+});
+test("external indexed-key mutation after a receipt read cannot be adopted or hide a lost acknowledgement",t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"morrow-copy-version-race-")),file=path.join(dir,"copies.sqlite"),Database=require("better-sqlite3");
+  let armed=false,external;
+  const key=digest("lost-ack"),replacement=digest("changed-key");
+  function instrumented(file){
+    const sql=new Database(file),prepare=sql.prepare.bind(sql);
+    sql.prepare=statement=>{const query=prepare(statement);if(statement==="SELECT * FROM mailbox_copies WHERE copy_key=?"){
+      const get=query.get.bind(query);query.get=(...args)=>{const row=get(...args);if(armed){armed=false;external.prepare("UPDATE mailbox_copies SET copy_key=? WHERE id='lost-ack'").run(replacement)}return row};
+    }return query};return sql;
+  }
+  const ledger=createJournal(file,{database:instrumented});
+  t.after(()=>{external?.close();ledger.close();fs.rmSync(dir,{recursive:true,force:true})});
+  ledger.insert({id:"lost-ack",key,sourceKey:digest("source"),destinationKey:digest("dest"),phase:"unknown",updatedAt:1});
+  external=new Database(file);armed=true;
+  assert.throws(()=>ledger.find(key),/recovery storage/);
+  assert.throws(()=>ledger.find(key),/recovery storage/);
+  assert.throws(()=>ledger.insert({id:"duplicate",key,sourceKey:digest("source"),destinationKey:digest("dest"),phase:"prepared",updatedAt:2}),/recovery storage/);
+  assert.equal(external.prepare("SELECT COUNT(*) n FROM mailbox_copies").get().n,1,"no duplicate intent can replace the hidden unknown receipt");
+});
+test("integrity refresh fails closed after bounded attempts under continued external writes",t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"morrow-copy-changing-store-")),file=path.join(dir,"copies.sqlite"),Database=require("better-sqlite3");
+  let external,armed=false,writes=0;
+  function instrumented(file){
+    const sql=new Database(file),prepare=sql.prepare.bind(sql);
+    sql.prepare=statement=>{const query=prepare(statement);if(statement==="SELECT * FROM mailbox_copies"){
+      const all=query.all.bind(query);query.all=(...args)=>{const rows=all(...args);if(armed){
+        const value={id:"external-"+(++writes),key:digest("external-"+writes),sourceKey:digest("s"),destinationKey:digest("d"),phase:"unknown",updatedAt:writes};
+        const body=JSON.stringify(value);external.prepare("INSERT INTO mailbox_copies VALUES(?,?,?,?,?,?,?,?)").run(value.id,value.key,value.sourceKey,value.destinationKey,value.phase,value.updatedAt,body,digest(body));
+      }return rows};
+    }return query};return sql;
+  }
+  const ledger=createJournal(file,{database:instrumented});external=new Database(file);
+  t.after(()=>{external.close();ledger.close();fs.rmSync(dir,{recursive:true,force:true})});
+  armed=true;assert.throws(()=>ledger.assertIntegrity(true),/recovery storage/);assert.equal(writes,2,"integrity checks never spin against a writer");
+  armed=false;assert.throws(()=>ledger.find(digest("new")),/recovery storage/);
+});
+test("the original-message budget stops before a ninth 32 MiB destination upload",async t=>{
+  const f=fixture(t),prefix=Buffer.from("From: sender@fixture.invalid\r\nDate: Mon, 02 Nov 2026 03:04:05 +0000\r\nContent-Type: text/plain\r\n\r\n");
+  f.state.raw=Buffer.concat([prefix,Buffer.alloc(32*1024*1024-prefix.length,97)]);
+  const ids=Array.from({length:9},(_,i)=>"budget-"+i),review=await f.review(ids);
+  for(const id of ids.slice(0,8))assert.equal((await f.copy(review,id)).status,"copied");
+  await assert.rejects(f.copy(review,ids[8]),/256 MiB/);assert.equal(f.state.uploads,8);assert.equal(f.ledger.list().length,8);
+});
 
 module.exports={RAW,DATE};

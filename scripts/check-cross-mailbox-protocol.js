@@ -25,7 +25,7 @@ function fixture(t,options={}){
   const publicAccount=account=>({id:account.id,email:account.email,imapUsername:account.username,authKind:account.auth_kind,imapSmtpProfile:account.profile,
     mailTransport:account.mail_transport,bodyEpoch:account.epoch,...(account.profile==="custom"?{imapSmtpCustom:{imap:{host:account.imap_host,port:account.imap_port,tls:!!account.imap_tls}}}:{})});
   const owner=id=>{const account=accounts.get(id);return account&&{binding:digest(JSON.stringify([account.id,account.created_at,account.username,account.imap_host,account.imap_port,account.imap_tls,account.mail_transport,account.mail_transport==='gmail_api'?googleClient:null])),generation:account.epoch,revision:account.revision}};
-  const db={accountById:id=>accounts.get(id),messageById:id=>rows.get(id),folderByPath:(id,folder)=>id==="source"&&folder==="INBOX"?cacheFolder:null};
+  const db={accountById:id=>accounts.get(id),messageById:id=>rows.get(id),folderByPath:(id,folder)=>folder==="INBOX"?(id==="source"?cacheFolder:{...cacheFolder,uid_validity:state.uidValidity}):null};
   const queues=new Map();
   const exclusive=async(id,work)=>{const prior=queues.get(id)||Promise.resolve();let release;const held=new Promise(resolve=>{release=resolve});queues.set(id,held);await prior;try{return await work()}finally{release();if(queues.get(id)===held)queues.delete(id)}};
   const clients={};
@@ -74,7 +74,7 @@ function fixture(t,options={}){
     destinationAccountId:"destination",destinationOwner:{accountId:"destination",bodyEpoch:accounts.get("destination").epoch,connection:ownerPolicy.connection(publicAccount(accounts.get("destination")))},folderId:options.destinationGmail?"Label_archive":"Parent/Archive"});
   const review=()=>service.answer({action:"review",...params()});
   const copy=reviewed=>service.answer({action:"copy",reviewId:reviewed.reviewId,emailId:row.id,accountId:"source"});
-  return {state,accounts,row,rows,cacheFolder,events,clients,ledger,service,params,review,copy,
+  return {state,accounts,row,rows,cacheFolder,events,clients,ledger,service,params,review,copy,access,publicAccount,
     setHook(fn){hook=fn},clientChange(){googleClient="different-client"}};
 }
 
@@ -149,6 +149,23 @@ test("actual pinned ImapFlow SELECT parser cannot discard UIDNOTSTICKY before Co
     if(marker)await assert.rejects(selecting,/persistent UIDs/);else assert.equal(Number((await selecting).uidValidity),10);
     assert.equal(transport.mailbox?.uidNotSticky,undefined,"the pinned parser drops this code; the structured boundary must catch it");
   }
+});
+test("opposite-direction account copies serialize without lock inversion or nested reentry",async t=>{
+  const f=fixture(t);
+  f.rows.set("reverse",{...f.row,id:"reverse",account_id:"destination",uid_validity:22});
+  const forward=f.access.capture(f.params());
+  const source=f.publicAccount(f.accounts.get("destination")),destination=f.publicAccount(f.accounts.get("source"));
+  const reverse=f.access.capture({items:[{emailId:"reverse",accountId:"destination"}],contextOwners:[ownerPolicy.capture(source,{id:"reverse",accountId:"destination",folderId:"INBOX"})],
+    destinationAccountId:"source",destinationOwner:{accountId:"source",bodyEpoch:destination.bodyEpoch,connection:ownerPolicy.connection(destination)}});
+  const oneFolder=await f.access.review(forward,"Parent/Archive"),twoFolder=await f.access.review(reverse,"Parent/Archive");
+  let enter,release,active=0,maximum=0;
+  const entered=new Promise(resolve=>{enter=resolve}),held=new Promise(resolve=>{release=resolve});
+  const first=f.access.withCopy(forward,forward.sources[0],oneFolder,async()=>{active++;maximum=Math.max(maximum,active);enter();await held;active--;return "forward"});
+  await entered;
+  const second=f.access.withCopy(reverse,reverse.sources[0],twoFolder,async()=>{active++;maximum=Math.max(maximum,active);active--;return "reverse"});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(active,1);release();
+  let timeout;try{const completed=await Promise.race([Promise.all([first,second]),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error("Cross-copy deadlock")),3000)})]);assert.deepEqual(completed,["forward","reverse"])}finally{clearTimeout(timeout)}
+  assert.equal(maximum,1);assert.equal(f.state.uploads,0);
 });
 test("Gmail API import is one non-sending POST, uses existing grant and never retries a rejected write",async()=>{
   const calls=[];let refreshes=0;

@@ -8535,7 +8535,7 @@ function renderActions(pane, email) {
       readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
-    note.textContent = "Stored on this computer · Available offline. Reply, AI actions and restoring to a server mailbox are unavailable for local copies.";
+    note.textContent = "Stored on this computer · Available offline. Reply and AI actions are unavailable for local copies. Use Move / Copy to other mailbox to make a verified Copy in a supported connected destination. Remote Move is unavailable.";
     pane.appendChild(note); return;
   }
   const bar = document.createElement("div");
