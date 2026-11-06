@@ -39,7 +39,7 @@ function composeWindowBounds(parentBounds, index) {
 }
 
 function createComposeHost(options) {
-  const { BrowserWindow, ipcMain, shell } = require("electron");
+  const { BrowserWindow, ipcMain, shell, Menu } = require("electron");
   const opts = options || {};
   const records = new Map();
 
@@ -82,9 +82,11 @@ function createComposeHost(options) {
         preload: preloadFile(),
         contextIsolation: true,
         nodeIntegration: false,
+        spellcheck: true,
         sandbox: false,
       },
     });
+    require("./compose-editing-menu").installComposeEditingMenu(win, { Menu, htmlFile: opts.htmlFile });
     const id = win.webContents.id;
     const record = { win, seed: clean, allowClose: false, closeRequested: false };
     records.set(id, record);
