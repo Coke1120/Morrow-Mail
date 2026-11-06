@@ -4,6 +4,12 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const ownerPolicy = require("../shared/mail-context-owner");
 const { renderer } = require("./check-ux-workflows");
 
+function barrier() {
+  let enter,release;
+  const active=new Promise(resolve=>{enter=resolve}); const blocked=new Promise(resolve=>{release=resolve});
+  return {active,release,async wait(){enter();await blocked}};
+}
+
 async function run() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-context-owner-"));
   const keys = ["MORROW_MAIL_DIR", "MORROW_MAIL_SECRETS", "MORROW_USER_DATA", "MORROW_AI_CONFIG_DIR", "MORROW_GOOGLE_OAUTH_JSON", "MORROW_GOOGLE_OAUTH_FILE"];
@@ -11,7 +17,14 @@ async function run() {
   process.env.MORROW_MAIL_DIR = dir; process.env.MORROW_MAIL_SECRETS = "memory";
   process.env.MORROW_USER_DATA = dir; process.env.MORROW_AI_CONFIG_DIR = dir;
   delete process.env.MORROW_GOOGLE_OAUTH_JSON; delete process.env.MORROW_GOOGLE_OAUTH_FILE;
-  const engine = require("../host/mail/engine"), db = require("../host/mail/db"), secrets = require("../host/mail/secrets");
+  const actions = require("../host/mail/actions");
+  const install = actions.install;
+  let actionHooks;
+  actions.install = hooks => { actionHooks=hooks; return install(hooks); };
+  let engine;
+  try { engine=require("../host/mail/engine"); } finally { actions.install=install; }
+  assert.ok(actionHooks,"fixture requires a fresh engine so it can gate the real publication lane");
+  const db = require("../host/mail/db"), secrets = require("../host/mail/secrets");
   const remote = require("../host/mail/remote"), sidecar = require("../host/mail/sidecar");
   const savedRemote = Object.fromEntries(["withClient", "listFolderRecords", "verifySmtp", "openIdleClient", "searchUids", "changeFlags", "moveUid", "fetchArchiveSource"].map(key => [key, remote[key]]));
   const savedRead = secrets.getPasswordAsync, savedSidecar = sidecar.answer;
@@ -21,13 +34,33 @@ async function run() {
   const message = { id:"source",accountId:"owner",folderId:"INBOX",subject:"Synthetic owner fence",unread:true };
   const view = () => engine.accountViews().find(account => account.id === "owner");
   const capture = () => ownerPolicy.capture(view(), message);
-  const reconnect = async () => {
+  const reconnectBackground = [];
+  const releases = [];
+  let pendingReconnect = null;
+  const reconnectWork = async () => {
     // The synthetic listing retains source paths but omits the Inbox role to
     // avoid a sync. Reconnect still commits real credentials and bodyEpoch.
-    const result = await engine.answer("mail:connectImapSmtp", [{email:"owner@fixture.invalid",expectedAccountId:"owner",username:login.username,
-      profile:"custom",password:"synthetic-memory-only",custom:{imap:{host:login.imapHost,port:login.imapPort,tls:true},smtp:{host:login.smtpHost,port:login.smtpPort,tls:true}}}]);
+    // Reconnect schedules a separate current-generation sync after 200 ms.
+    // Capture that unrelated job instead of making keychain-read assertions
+    // depend on whether Windows/SQLite has consumed 200 ms. Publisher timers
+    // and the mailbox lane remain real and are controlled by explicit gates.
+    const nativeTimeout=global.setTimeout;
+    const scheduledBefore=reconnectBackground.length;
+    global.setTimeout=(work,delay,...args)=>{
+      if(delay===200){reconnectBackground.push(()=>work(...args));return {unref(){return this}};}
+      return nativeTimeout(work,delay,...args);
+    };
+    let result;
+    try { result = await engine.answer("mail:connectImapSmtp", [{email:"owner@fixture.invalid",expectedAccountId:"owner",username:login.username,
+      profile:"custom",password:"synthetic-memory-only",custom:{imap:{host:login.imapHost,port:login.imapPort,tls:true},smtp:{host:login.smtpHost,port:login.smtpPort,tls:true}}}]); }
+    finally { global.setTimeout=nativeTimeout; }
     assert.equal(result.success, true, result.error?.message);
+    assert.equal(reconnectBackground.length,scheduledBefore+1,"fixture captures exactly the post-reconnect background job");
     db.replaceFolders("owner", folders);
+  };
+  const reconnect = () => {
+    const work=reconnectWork(); pendingReconnect=work;
+    return work.finally(()=>{if(pendingReconnect===work) pendingReconnect=null});
   };
   try {
     remote.withClient = async (_account, _secret, work) => work({});
@@ -122,28 +155,62 @@ async function run() {
     assert.equal(portChanged.success,false,"host admission independently compares exposed connection fields");
     db.updateAccountLogin('owner',login);
 
-    // Acceptance and publishing are different turns. Reconnect in between must
-    // fail before even reading credentials, despite unchanged account settings.
+    // Hold actual publication before credentials; do not assume asynchronous
+    // reconnect finishes before a zero-delay publisher timer can run.
+    const publication=barrier();
+    releases.push(publication.release);
+    actions.install({...actionHooks,exclusive:(accountId,work)=>actionHooks.exclusive(accountId,async()=>{await publication.wait();return work()})});
     assert.equal(db.messageById('source')?.folder_path,'INBOX');
     assert.equal(capture().connection,ownerPolicy.connection(view()));
+    const queuedOwner=capture(); secretReads=0;
     const accepted=await engine.answer('mail:toggleStar',[{emailId:'source',accountId:'owner',isStarred:true,contextOwners:[capture()]}]);
     assert.equal(accepted.success,true,JSON.stringify(accepted)); assert.equal(accepted.data.pending.length,1);
     assert.ok(JSON.parse(db.mailActionsForMessage('source').at(-1).intent_json).contextOwner);
-    await reconnect(); secretReads=0;
-    const settled=await engine.settleActions();
+    const publishingQueued=engine.settleActions(); await publication.active;
+    assert.equal(secretReads,0,"publication is held before any credential read");
+    assert.equal(db.mailActionsForMessage('source').at(-1).phase,'accepted');
+    await reconnect();
+    assert.ok(view().bodyEpoch>queuedOwner.bodyEpoch,"reconnect committed before publication resumes");
+    assert.equal(secretReads,0,"reconnect did not run the held reviewed action");
+    publication.release();
+    const settled=await publishingQueued;
     assert.equal(settled.outcomes.find(row=>row.id==='source').status,'failed');
     assert.equal(secretReads,0); assert.equal(stores,0); assert.equal(db.messageById('source').starred,0);
+    actions.install(actionHooks);
+
+    // The complementary ordering is valid: while SMTP verification is still
+    // pending, the old owner has not expired and its action may finish. Prove
+    // that explicitly instead of treating any pre-commit completion as stale.
+    const verification=barrier();
+    releases.push(verification.release);
+    const verifySmtp=remote.verifySmtp;
+    remote.verifySmtp=()=>verification.wait();
+    const beforeCommit=capture(); const reconnecting=reconnect(); await verification.active;
+    assert.equal(view().bodyEpoch,beforeCommit.bodyEpoch);
+    const valid=await engine.answer('mail:toggleStar',[{emailId:'source',accountId:'owner',isStarred:true,contextOwners:[beforeCommit]}]);
+    assert.equal(valid.success,true);
+    const currentSettled=await engine.settleActions();
+    assert.equal(currentSettled.outcomes.find(row=>row.id==='source').status,'completed');
+    assert.equal(secretReads,1,"exactly one credential read belongs to the explicitly still-current owner");
+    assert.equal(stores,1,"only this still-current synthetic action submits");
+    assert.equal(view().bodyEpoch,beforeCommit.bodyEpoch);
+    verification.release(); await reconnecting; remote.verifySmtp=verifySmtp;
+    assert.ok(view().bodyEpoch>beforeCommit.bodyEpoch);
+    db.updateMessage('source',{starred:0}); secretReads=0; stores=0;
 
     // A connection edit while secure storage is pending cannot reach STORE.
     let enter,release;
     const entered=new Promise(resolve=>{enter=resolve}); const held=new Promise(resolve=>{release=resolve});
+    releases.push(release);
     secrets.getPasswordAsync=async(...args)=>{secretReads++;enter();await held;return savedRead(...args)};
     const waiting=await engine.answer('mail:toggleStar',[{emailId:'source',accountId:'owner',isStarred:true,contextOwners:[capture()]}]);
     assert.equal(waiting.success,true);
     const publishing=engine.settleActions(); await entered;
+    assert.equal(secretReads,1,"one read started while the reviewed connection was current");
     db.updateAccountLogin('owner',{...login,imapPort:1993}); release();
     const afterWait=await publishing;
     assert.equal(afterWait.outcomes.find(row=>row.id==='source').status,'failed'); assert.equal(stores,0);
+    assert.equal(secretReads,1,"no additional credential read occurs after the connection edit");
     db.updateAccountLogin('owner',login); secrets.getPasswordAsync=savedRead;
     sidecar.answer=savedSidecar;
 
@@ -156,6 +223,7 @@ async function run() {
     ]) {
       let enteredRead,releaseRead;
       const active=new Promise(resolve=>{enteredRead=resolve}); const blocked=new Promise(resolve=>{releaseRead=resolve});
+      releases.push(releaseRead);
       secrets.getPasswordAsync=async(...args)=>{enteredRead();await blocked;return savedRead(...args)};
       const request=engine.answer(channel,[{...params,contextOwners:[capture()]}]);
       await active; await reconnect(); releaseRead();
@@ -170,8 +238,11 @@ async function run() {
     const resumed=await engine.settleActions();
     assert.equal(resumed.outcomes.find(row=>row.id==='source').status,'not_attempted','restart cannot reauthorize an unsubmitted context action');
     assert.equal(db.messageById('source').starred,0); assert.equal(stores,0);
-    console.log('message-context-owner-ok: production accountView fields, same-login reconnect before account refresh/admission/publication, per-item account/source checks, read/star/move/labels/transfer payloads and credential-await race; no provider writes');
+    console.log('message-context-owner-ok: production accountView fields, deterministic pre/post-commit publication gates, zero stale credential reads/submissions, captured account/source checks and credential-await race; synthetic transports only');
   } finally {
+    for(const release of releases) release();
+    await pendingReconnect?.catch(()=>{});
+    actions.install(actionHooks);
     secrets.getPasswordAsync=savedRead; sidecar.answer=savedSidecar;
     await engine.settleActions().catch(()=>{}); engine.stopIdle();
     Object.assign(remote,savedRemote); engine.closeLocalArchiveForTest(); db.close();
