@@ -76,7 +76,7 @@ async function scenario(kind){
     hold=async id=>{if(id==="source")db.updateAccountLogin("destination",{username:"changed@fixture.invalid",profile:"custom",authKind:"password",imapHost:"imap.fixture.invalid",imapPort:993,imapTls:true,smtpHost:"smtp.fixture.invalid",smtpPort:465,smtpTls:true})};
     const denied=await bridge.invoke("mail:crossMailboxCopy",{action:"copy",reviewId:stale.data.reviewId,emailId:"source-message",accountId:"source"});assert.equal(denied.success,false);assert.equal(uploads,1);
     const moveGate=await bridge.invoke("mail:crossMailboxMove",{action:"capabilities"});
-    assert.equal(moveGate.success,true);assert.equal(moveGate.data.moveEnabled,false,"the prepared Move channel cannot enable source removal");
+    assert.equal(moveGate.success,false);assert.equal(moveGate.error.code,"move_review","Move requires a real owning first-party window; Copy's synthetic bridge cannot authorize source removal");
   }finally{remote.withClient=savedWith;engine.closeMailboxCopyForTest();engine.closeLocalArchiveForTest();db.close();fs.rmSync(dir,{recursive:true,force:true})}
 }
 

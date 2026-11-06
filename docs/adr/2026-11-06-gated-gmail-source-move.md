@@ -1,10 +1,12 @@
-# Gated Gmail-source Move after verified Copy
+# Gmail-source Move after verified Copy
 
-The Phase2 coordinator is prepared behind a compiled, disabled host policy.
-Neither a renderer setting nor an environment variable enables it. Copy's exact
-head, the source-removal implementation, synthetic checks and independent review
-must pass before the owner-authorized coordinator changes that policy. This
-change does not promote a branch, publish a release or enable source removal.
+The Phase2 coordinator enables Gmail API sources after verified Copy and separate
+independent ownership and durable-journal review. Copy was integrated at dev
+0d4bb88 after exact-head Linux/Windows CI and review; the Move review findings
+were fixed and independently rechecked at c842436 before this policy change.
+Neither a renderer setting nor an environment variable widens supported source
+providers. Injected disabled-policy checks remain as negative regressions. This
+local enablement does not promote a branch or publish a release.
 
 The first supported source transport is Gmail API. Legacy Gmail IMAP, generic
 IMAP, Outlook, Yahoo and Local Folders sources remain unavailable for connected
@@ -61,5 +63,5 @@ recovery. Partial and unknown outcomes always preserve the receiving copy.
 Synthetic fixtures exercise real engine/admission, Gmail HTTP adapters, journal
 reopen and crash/storage failures, duplicate identities, cancellation, protocol
 barriers and rendered UI. They do not certify live providers, native windows,
-screen readers or real power-loss behavior. Enabling the policy is a separate
-reviewed change after Copy's readiness handoff.
+screen readers or real power-loss behavior. The enabled policy still requires exact-head CI and
+coordinator approval before dev integration.

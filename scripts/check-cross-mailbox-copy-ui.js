@@ -29,7 +29,7 @@ function fixture(t) {
     loadLocalFolders=async()=>{}; loadList=async()=>{}; renderAccounts=()=>{};
     askConfirm=async copy=>{confirmations.push(copy);return {ok:true}};
     globalThis.capabilities=accountId=>({accountId,copyEnabled:true,copyReason:'',moveEnabled:false,
-      moveReason:'Connected Move is unavailable; sources stay in place.',maxBytes:33554432,maxMessages:50,maxTotalBytes:268435456,
+      moveReason:'Copy retains sources; Gmail API Move needs its separate review.',maxBytes:33554432,maxMessages:50,maxTotalBytes:268435456,
       folders:[{id:'Archive',name:'Archive',path:'Archive',enabled:true,reason:''},
         {id:'Trash',name:'Trash',path:'Trash',enabled:false,reason:'Trash cannot receive verified imports.'}],
       notices:['Provider may group the copied mail.']});
@@ -368,7 +368,7 @@ test("closing restores focus, host notices are inert text, and Features/CLI clai
   f.get("local-transfer-cancel").click(); assert.equal(f.document.activeElement, trigger);
   const catalog = require("../renderer/features-catalog");
   const item = catalog.items.find(row => row.id === "cross-mailbox-copy");
-  assert(item); assert.match(item.blurb, /Phase 1 supports Copy only/); assert.match(item.blurb, /No remote Move.*CLI command/);
+  assert(item); assert.match(item.blurb, /Copy retains every source message.*separate reviewed Gmail Move/); assert.match(item.blurb, /Copy cannot authorize source removal.*separate Trash review.*CLI command/);
   const source = fs.readFileSync(require.resolve("./check-boot-path.js"), "utf8");
   assert(source.includes(JSON.stringify([item.id, item.title, item.category, item.blurb])), "exact boot catalog tuple stays synchronized");
   assert.match(f.get("cli-unavailable").textContent, /cross-mailbox Copy\/Move.*no bot or CLI command/);

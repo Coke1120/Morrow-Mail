@@ -14,7 +14,7 @@ function createService({ access, copies, journal, enabled = POLICY.enabled, reas
   const reviews = new Map(); let pendingReviews = 0, active = 0, retired = false;
   const store = () => typeof journal === "function" ? journal() : journal;
   const copyService = () => typeof copies === "function" ? copies() : copies;
-  function available() { if (enabled !== true || retired) throw fail("move_gated", retired ? "Source Move reviews were retired for shutdown. Open a fresh application session before continuing." : reason); }
+  function available() { if (enabled !== true || retired) throw fail("move_gated", retired ? "Source Move reviews were retired for shutdown. Open a fresh application session before continuing." : "Gmail source Move is disabled. " + reason); }
   function principal(owner) { if (!owner || typeof owner.check !== "function") throw fail("move_review", "Open a fresh Move review in this window."); owner.check(); }
   function validate(params) {
     if (!Array.isArray(params?.items) || !params.items.length || params.items.length > LIMITS.messages) throw fail("move_limit", "Choose 1–50 saved Gmail API messages for this Move review.");

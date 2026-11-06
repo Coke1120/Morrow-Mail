@@ -25,7 +25,7 @@ function fixture(t) {
     askConfirm=async copy=>{confirmations.push(copy);return confirmHook?await confirmHook(copy):{ok:true}};
     globalThis.reply=(channel,p)=>{
       if(channel==='mail:crossMailboxCopy') {
-        if(p.action==='destinations')return {accountId:p.destinationAccountId,copyEnabled:true,moveEnabled:false,moveReason:'Connected Move stays gated.',
+        if(p.action==='destinations')return {accountId:p.destinationAccountId,copyEnabled:true,moveEnabled:false,moveReason:'Copy retains sources; Gmail API Move needs its separate review.',
           folders:['Archive','Other'].map(id=>({id,name:id,path:id,enabled:true})),notices:[],maxMessages:50,maxBytes:33554432,maxTotalBytes:268435456};
         if(p.action==='review'){const r={reviewId:'copy-review-'+(++sequence),accountId:p.destinationAccountId,folderId:p.folderId,sourceCount:p.items.length,
           sourceLabels:['a@fixture.invalid'],destinationLabel:'b@fixture.invalid / '+p.folderId,expiresAt:Date.now()+60000};copyTickets.set(r.reviewId,r);return r;}
@@ -33,7 +33,7 @@ function fixture(t) {
         if(p.action==='cancelReview')return {cancelled:true};
       }
       if(channel==='mail:crossMailboxMove') {
-        if(p.action==='capabilities')return {moveEnabled:moveGate,sourceGmailOnly:true,moveReason:'Prepared Gmail-source Move remains unavailable pending independent Copy verification.'};
+        if(p.action==='capabilities')return {moveEnabled:moveGate,sourceGmailOnly:true,moveReason:'Gmail source Move is unavailable under this synthetic disabled policy.'};
         if(p.action==='review'){const r={reviewId:'move-review-'+(++sequence),accountId:p.destinationAccountId,folderId:p.folderId,sourceCount:p.items.length,
           sourceLabels:['a@fixture.invalid'],destinationLabel:'b@fixture.invalid / '+p.folderId,notices:[],expiresAt:Date.now()+60000,
           entries:p.items.map(item=>({...item,copyReceiptId:'copy-'+item.emailId}))};moveTickets.set(r.reviewId,r);return r;}
@@ -61,10 +61,10 @@ test("actual preload permits only the exact first-party Move channel", async () 
   assert.equal(calls[0][0],"mail:crossMailboxMove");
 });
 
-test("default compiled gate is represented as unavailable and a forced Move cannot Copy or Trash", async t => {
+test("an injected disabled host policy is represented as unavailable and a forced Move cannot Copy or Trash", async t => {
   const f=fixture(t);await f.ready(2,false);
   assert.equal(f.get("local-transfer-mode").querySelector('[value="move"]').disabled,true);
-  assert.match(f.get("local-transfer-move-capability").textContent,/unavailable pending independent Copy verification/);
+  assert.match(f.get("local-transfer-move-capability").textContent,/unavailable under this synthetic disabled policy/);
   await f.ui.run("commitLocalTransfer()");
   assert.equal(f.rows("mail:crossMailboxCopy","copy").length,0);assert.equal(f.rows("mail:crossMailboxMove","move").length,0);
 });

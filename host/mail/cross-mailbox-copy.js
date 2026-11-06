@@ -23,14 +23,14 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
       if (!item || typeof item.emailId !== "string" || !item.emailId || typeof item.accountId !== "string" || !item.accountId || ids.has(item.emailId)) throw problem("copy_review", "Review each exact source message once.");
       ids.add(item.emailId);
     }
-    if (params.mode && params.mode !== "copy") throw problem("unsupported", "Move into a connected mailbox is unavailable until verified Copy and recoverable source Trash have been reviewed separately.");
+    if (params.mode && params.mode !== "copy") throw problem("unsupported", "Copy never authorizes source removal. Gmail API Move requires its separate source Trash review after verified Copy.");
   }
   async function destinations(params) {
     validateItems(params);
     const ticket = access.capture(params);
     const result = await access.destinations(ticket);
     return { ...result, maxBytes: LIMITS.rawBytes, maxMessages: LIMITS.messages, maxTotalBytes: LIMITS.batchBytes,
-      moveEnabled: false, moveReason: "Remote Move is not enabled in the Copy phase. Your source messages stay in place." };
+      moveEnabled: false, moveReason: "Copy retains every source. Check the separate Gmail API source Move capability and Trash review before any source removal." };
   }
   async function review(params) {
     validateItems(params); prune();

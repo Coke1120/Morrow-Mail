@@ -35,14 +35,14 @@ const root = path.resolve(__dirname, ".."), output = process.env.MORROW_UI_OUTPU
       window.reply = (channel, p) => {
         if (channel === "mail:localFolders") return state.localAccount;
         if (channel === "mail:crossMailboxCopy") {
-          if (p.action === "destinations") return { accountId: p.destinationAccountId, copyEnabled: true, moveEnabled: false, moveReason: "Move remains gated.", folders: [{ id: "Archive", name: "Archive", path: "Archive", enabled: true }], notices: [] };
+          if (p.action === "destinations") return { accountId: p.destinationAccountId, copyEnabled: true, moveEnabled: false, moveReason: "Copy retains sources; Gmail API Move needs its separate review.", folders: [{ id: "Archive", name: "Archive", path: "Archive", enabled: true }], notices: [] };
           if (p.action === "review") { const r = { reviewId: "copy-review-" + (++sequence), accountId: p.destinationAccountId, folderId: p.folderId, sourceCount: p.items.length,
             sourceLabels: ["a@fixture.invalid"], destinationLabel: "b@fixture.invalid / Archive", expiresAt: Date.now() + 60000 }; copyReviews.set(r.reviewId, r); return r; }
           if (p.action === "copy") return { status: "copied", receiptId: "copy-" + p.emailId, sourceRetained: true, destination: { accountId: "b", folderId: "Archive" } };
           if (p.action === "cancelReview") return { cancelled: true };
         }
         if (channel === "mail:crossMailboxMove") {
-          if (p.action === "capabilities") return { moveEnabled: moveGate, sourceGmailOnly: true, moveReason: "Prepared Gmail-source Move remains unavailable pending independent Copy verification." };
+          if (p.action === "capabilities") return { moveEnabled: moveGate, sourceGmailOnly: true, moveReason: "Gmail source Move is unavailable under this synthetic disabled policy." };
           if (p.action === "review") { const r = { reviewId: "move-review-" + (++sequence), accountId: p.destinationAccountId, folderId: p.folderId, sourceCount: p.items.length,
             entries: p.items.map(item => ({ ...item, copyReceiptId: "copy-" + item.emailId })), sourceLabels: ["a@fixture.invalid"], destinationLabel: "b@fixture.invalid / Archive", expiresAt: Date.now() + 60000 }; moveReviews.set(r.reviewId, r); return r; }
           if (p.action === "move") { if (!p.confirmed || !moveReviews.has(p.reviewId)) throw Error("Missing separate Move confirmation");
@@ -69,7 +69,7 @@ const root = path.resolve(__dirname, ".."), output = process.env.MORROW_UI_OUTPU
     };
     await open(false);
     assert.equal(await page.locator('#local-transfer-mode option[value="move"]').isDisabled(), true);
-    assert.match(await page.locator("#local-transfer-move-capability").textContent(), /unavailable pending independent Copy verification/);
+    assert.match(await page.locator("#local-transfer-move-capability").textContent(), /unavailable under this synthetic disabled policy/);
     assert.equal(await page.locator("#local-transfer-ok").isEnabled(), true);
     await page.locator("#local-transfer-cancel").click();
     await page.waitForFunction(() => !document.getElementById("local-transfer").open);
@@ -139,10 +139,10 @@ const root = path.resolve(__dirname, ".."), output = process.env.MORROW_UI_OUTPU
     await page.evaluate(() => commitLocalTransfer()); assert.equal(await page.evaluate(() => calls.filter(row => row.params.action === "move").length), attempts);
     await page.locator("#local-transfer-cancel").click(); await page.waitForFunction(() => !document.getElementById("local-transfer").open);
     await page.evaluate(() => showFeatures());
-    const feature = page.locator(".feature-card").filter({ has: page.getByRole("heading", { name: "Cross-mailbox Gmail Move (prepared)", exact: true }) });
-    await feature.scrollIntoViewIfNeeded(); assert.match(await feature.textContent(), /compiled host gate.*no user or environment switch.*Copy confirmation never authorizes source Trash/);
-    await page.screenshot({ path: path.join(output, "prepared-feature-narrow-dark.png") });
+    const feature = page.locator(".feature-card").filter({ has: page.getByRole("heading", { name: "Cross-mailbox Gmail Move", exact: true }) });
+    await feature.scrollIntoViewIfNeeded(); assert.match(await feature.textContent(), /Gmail API sources only.*separate explicit source Trash review.*Copy confirmation never authorizes source Trash/);
+    await page.screenshot({ path: path.join(output, "gmail-move-feature-narrow-dark.png") });
     assert.deepEqual(errors, []);
-    console.log("cross-mailbox-move-browser-ok: default disabled gate, separate Copy/Trash confirmations, keyboard/focus, Stop/window-close revocation while pending, uncertain no replay, 390/1440 light/dark, rendered gated Features; synthetic only");
+    console.log("cross-mailbox-move-browser-ok: disabled-policy negative, eligible Gmail-source flow, separate Copy/Trash confirmations, keyboard/focus, Stop/window-close revocation while pending, uncertain no replay, 390/1440 light/dark, rendered enabled Features; synthetic only");
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

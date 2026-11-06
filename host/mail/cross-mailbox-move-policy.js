@@ -1,6 +1,7 @@
 "use strict";
 
-// Root must independently approve Copy's exact head and the Move review before
-// changing this gate. No renderer preference or environment variable enables it.
-module.exports = Object.freeze({ enabled: false,
-  reason: "Gmail source Move is prepared separately and remains disabled until verified Copy and its source-removal safety checks are approved." });
+// Enabled after verified Copy and independent Move ownership/journal review.
+// The coordinator still checks source/provider/review/receipt authority; no
+// renderer preference or environment variable can widen supported sources.
+module.exports = Object.freeze({ enabled: true,
+  reason: "Gmail API source Move requires verified Copy and a separate explicit Gmail Trash review. Other connected source providers remain Copy-only." });

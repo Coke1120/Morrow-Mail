@@ -12,13 +12,15 @@ async function scenario(kind) {
   Object.assign(process.env, { MORROW_MAIL_DIR: dir, MORROW_USER_DATA: dir, MORROW_AI_CONFIG_DIR: dir, MORROW_MAIL_SECRETS: "memory", MORROW_GMAIL_PACE: "0",
     MORROW_GOOGLE_OAUTH_JSON: JSON.stringify({ installed: { client_id: "move-fixture.apps.googleusercontent.com", client_secret: "synthetic-only" } }) });
   delete process.env.MORROW_GOOGLE_OAUTH_FILE;
-  if (kind !== "gate") {
+  if (kind === "gate") {
     const policy = require.resolve("../host/mail/cross-mailbox-move-policy");
-    require.cache[policy] = { id: policy, filename: policy, loaded: true, exports: Object.freeze({ enabled: true, reason: "Synthetic fixture only" }) };
+    require.cache[policy] = { id: policy, filename: policy, loaded: true, exports: Object.freeze({ enabled: false, reason: "Synthetic disabled-policy fixture only" }) };
   }
   const engine = require("../host/mail/engine"), db = require("../host/mail/db"), secrets = require("../host/mail/secrets"), remote = require("../host/mail/remote");
   const oauth = require("../host/mail/oauth"), config = require("../host/mail/oauth-config"), owners = require("../shared/mail-context-owner");
   const originalClient = remote.withClient, originalRead = secrets.getPasswordAsync, originalApply = db.applyGmailMessage;
+  let credentialReads = 0;
+  secrets.getPasswordAsync = async (...args) => { credentialReads++; return originalRead(...args); };
   oauth.accessTokenFor = async (_account, raw) => JSON.parse(raw).accessToken;
   const messages = new Map(), imports = new Map(), imapCopies = new Map(), wire = []; let trashes = 0, uploads = 0, hook = async () => {};
   const gmail = kind !== "gmail-imap";
@@ -129,7 +131,41 @@ async function scenario(kind) {
       db.insertMessage({ id: "unrelated-legacy", accountId: "a", folderPath: "INBOX", uid: 999, uidValidity: db.accountById("a").gmail_generation,
         rfcMessageId: "<duplicate@fixture.invalid>", date: new Date(DATE).toISOString(), listSortTs: DATE, textBody: "Unrelated retained body", bodyComplete: true });
     }
-    await copy();
+    const copied = await copy();
+    if (kind === "default-policy") {
+      assert.equal(require("../host/mail/cross-mailbox-move-policy").enabled, true, "actual committed policy; no enabled-policy monkeypatch");
+      assert.equal((await call("mail:crossMailboxMove", { action: "capabilities", ...params() })).data.moveEnabled, true);
+      const before = wire.length, beforeCredentials = credentialReads;
+      for (const profile of ["custom", "outlook", "yahoo", "legacy-password", "legacy-oauth"]) {
+        const id = "unsupported-" + profile, legacy = profile.startsWith("legacy-");
+        seed(id, legacy);
+        if (legacy) {
+          db.setMailTransport(id, "imap");
+          if (profile === "legacy-password") db.updateAccountLogin(id, { ...db.accountById(id), profile: "gmail", authKind: "password",
+            imapHost: "imap.fixture.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
+        } else {
+          db.updateAccountLogin(id, { ...db.accountById(id), profile, authKind: "password", imapHost: "imap.fixture.invalid", imapPort: 993, imapTls: true,
+            smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
+          db.insertMessage({ id: id + "-message", accountId: id, folderPath: "INBOX", uid: 7, uidValidity: 11,
+            date: new Date(DATE).toISOString(), listSortTs: DATE, unread: true, textBody: "Complete body", bodyComplete: true });
+        }
+        const capability = await call("mail:crossMailboxMove", { action: "capabilities", ...params(id) });
+        assert.equal(capability.success, true); assert.equal(capability.data.moveEnabled, false); assert.match(capability.data.moveReason, /only.*Gmail API/);
+      }
+      const local = require("../host/mail/local-folders"), store = local.createLocalStore(path.join(dir, "local-folders.sqlite")); let saved;
+      try { saved = store.save("8".repeat(64), local.ARCHIVE_ID, await local.parseArchive(RAW), { unread: true }); } finally { store.close(); }
+      const localCapability = await call("mail:crossMailboxMove", { action: "capabilities", ...params(),
+        items: [{ emailId: saved.message_id, accountId: local.ACCOUNT_ID }], contextOwners: [] });
+      assert.equal(localCapability.success, true); assert.equal(localCapability.data.moveEnabled, false); assert.match(localCapability.data.moveReason, /only.*Gmail API/);
+      assert.equal(wire.length, before, "unsupported source capability never reads a provider");
+      assert.equal(credentialReads, beforeCredentials, "unsupported source capability never reads credentials");
+      assert.equal((await move(copied)).success, false, "Copy review cannot authorize source Trash"); assert.equal(trashes, 0);
+      const reviewed = await reviewMove(); assert.notEqual(reviewed.reviewId, copied.reviewId); assert.equal(trashes, 0);
+      assert.equal((await call("mail:crossMailboxMove", { action: "move", reviewId: reviewed.reviewId, emailId: "a-message", accountId: "a" })).success, false);
+      assert.equal(trashes, 0, "a distinct review still requires explicit source confirmation");
+      const result = await move(reviewed); assert.equal(result.success, true, JSON.stringify(result.error));
+      assert.equal(result.data.status, "moved"); assert.equal(result.data.cacheRefreshPending, false); assert.equal(trashes, 1); assert.equal(uploads, 1); return;
+    }
     if (kind === "review-queued-destroy") {
       const blocked = held(); let entered = false, staleReads = 0;
       hook = async stage => { if (stage === "http:b:GET:/labels" && !entered) { entered = true; await blocked.promise; } };
@@ -222,7 +258,7 @@ async function scenario(kind) {
 if (process.argv[2] === "fixture") scenario(process.argv[3]).then(() => process.exit(0), error => { console.error(error); process.exit(1); });
 else {
   const { test } = require("node:test");
-  for (const kind of ["gate", "gmail-gmail", "gmail-imap", "both-directions", "review-queued-destroy", "source-cache-after-move", "cache-failure-after-confirmation", "cache-owner-before-commit", "window", "navigation", "other-window", "credential-a", "credential-b", "remove-a", "remove-b", "destroy-during-read", "cancel-after-post", "lost-ack"]) {
+  for (const kind of ["gate", "default-policy", "gmail-gmail", "gmail-imap", "both-directions", "review-queued-destroy", "source-cache-after-move", "cache-failure-after-confirmation", "cache-owner-before-commit", "window", "navigation", "other-window", "credential-a", "credential-b", "remove-a", "remove-b", "destroy-during-read", "cancel-after-post", "lost-ack"]) {
     test("actual engine Gmail source Move " + kind, () => {
       const child = spawnSync(process.execPath, [__filename, "fixture", kind], { encoding: "utf8", timeout: 25000 });
       assert.equal(child.status, 0, child.stderr || child.stdout);

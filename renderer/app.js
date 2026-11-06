@@ -1037,10 +1037,10 @@ function paintLocalTransferMode() {
   move.textContent = remote ? (moveAvailable ? "Move · Copy, then review Gmail Trash" : "Move · Unavailable for connected destinations") : local ? "Move between local folders" : "Move · Trash server original after copying";
   const moveHelp = $("local-transfer-move-capability");
   moveHelp.hidden = !remote;
-  moveHelp.textContent = remote ? (session.moveLoading ? "Checking the separately gated Gmail-source Move capability. Copy remains available." : moveAvailable
+  moveHelp.textContent = remote ? (session.moveLoading ? "Checking the separate Gmail-source Move capability. Copy remains available." : moveAvailable
     ? "Move first completes verified Copy, then asks separately before moving Gmail API originals to Trash across all labels. Cancel keeps copies and sources. No atomic transfer or Undo; Gmail retention applies."
-    : !gmailApiTransferSources(session) ? "Connected Move is unavailable for IMAP, Outlook, Yahoo, legacy Gmail IMAP and Local Folders sources. Copy remains available. Gmail API-source Move is prepared but remains gated pending independent Copy verification."
-      : session.moveCapabilities?.moveReason || "Gmail API-source Move is prepared but unavailable pending independent Copy verification. Copy keeps every source.") : "";
+    : !gmailApiTransferSources(session) ? "Connected Move is unavailable for IMAP, Outlook, Yahoo, legacy Gmail IMAP and Local Folders sources. Copy remains available. Gmail API sources require verified Copy and a separate Gmail Trash review."
+      : session.moveCapabilities?.moveReason || "Gmail API-source Move is unavailable for this review. Copy keeps every source; check mailbox support and recovery storage.") : "";
   $("local-transfer-folder-label").textContent = remote ? "Receiving folder or label" : "Local destination";
   $("local-transfer-title").textContent = "Move / Copy to other mailbox";
   $("local-transfer-ok").textContent = mode === "move" ? (remote ? "Copy, then review Gmail Trash" : "Move") : "Copy";
@@ -8688,7 +8688,7 @@ function renderActions(pane, email) {
       readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
-    note.textContent = "Stored on this computer · Available offline. Reply and AI actions are unavailable for local copies. Use Move / Copy to other mailbox to make a verified Copy in a supported connected destination. Remote Move is unavailable.";
+    note.textContent = "Stored on this computer · Available offline. Reply and AI actions are unavailable for local copies. Use Move / Copy to other mailbox to make a verified Copy in a supported connected destination. Connected Move is unavailable for Local Folders sources.";
     pane.appendChild(note); return;
   }
   const bar = document.createElement("div");
