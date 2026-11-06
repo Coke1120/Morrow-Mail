@@ -1426,6 +1426,7 @@ test("forged case citations get one bounded retry, save no report and disclose c
   const result = await caseGeneration(f, await casePreparation(f));
   const terminal = await result.terminal;
   assert.equal(terminal.code, "timeline-validation"); assert.equal(terminal.calls, 3);
+  assert.deepEqual(terminal.validation, { stage: "case", category: "reference", attempts: 2 });
   assert.equal(f.artifacts.size, 0);
   assert.equal(f.calls.length, 3);
 });
@@ -1688,4 +1689,100 @@ test("body-free Case contexts reject broadened input and retain owner/source/acc
   f.changeAccount();
   await assert.rejects(f.service.invoke(1, "timeline:check", { manifestToken: refreshed.manifestToken }), { code: "timeline-source-changed" });
   assert.equal(f.calls.length, 0); assert.equal(f.downloads.length, 0);
+});
+
+test("model JSON accepts only one whole-response fence while artifact parsing stays strict", () => {
+  const { parseModelJson } = require("../host/timeline/validate");
+  for (const language of ["json", "JSON", ""]) {
+    assert.deepEqual(parseModelJson(` \n\`\`\`${language}\r\n{"events":[]}\r\n\`\`\`\n `), { events: [] });
+  }
+  for (const text of ['prefix\n```json\n{}\n```', '```json\n{}\n```\nsuffix', '```json\n{}\n```\n```json\n{}\n```', '```js\n{}\n```', '```json\n{"x":1,"\\u0078":2}\n```', '```json\n{} {}\n```']) {
+    assert.throws(() => parseModelJson(text), error => error.validationCategory === "parse");
+  }
+  assert.throws(() => parseJson('```json\n{}\n```'));
+  assert.throws(() => parseModelJson(Buffer.from([0xff])), error => error.validationCategory === "parse");
+});
+
+test("fixed retry feedback identifies each output failure without echoing provider output", async () => {
+  const source = { ...metadata(), subject: "Synthetic", text: "Fictional evidence." };
+  for (const category of ["parse", "schema", "reference", "incomplete"]) {
+    const calls = [];
+    await assert.rejects(extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
+      calls.push(messages);
+      const response = modelResponse(messages);
+      if (category === "parse") response.text = "PRIVATE_PROVIDER_DETAIL";
+      if (category === "schema") response.text = modelResponse(messages, { summary: "PRIVATE_PROVIDER_DETAIL".repeat(40) }).text;
+      if (category === "reference") response.text = modelResponse(messages, { source_token: "PRIVATE_PROVIDER_DETAIL" }).text;
+      if (category === "incomplete") response.finishReason = "length";
+      return response;
+    } }), error => {
+      assert.deepEqual(publicError(error), { code: "timeline-validation", validation: { stage: "extraction", category, attempts: 2 } });
+      assert.equal(Object.hasOwn(error, "validation") && error.paths.length, 0);
+      return true;
+    });
+    assert.equal(calls.length, 2);
+    assert.match(calls[1][0].content, new RegExp(`failed validation \\(${category}\\)`));
+    assert.doesNotMatch(JSON.stringify(calls[1]), /PRIVATE_PROVIDER_DETAIL/);
+    assert.deepEqual(calls[1].slice(1), calls[0].slice(1));
+    assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens));
+  }
+});
+
+test("40,000-character mail reports the late 12-call consolidation failure and can correct it within the same retry budget", async () => {
+  const source = { ...metadata(), subject: "Synthetic", text: "x".repeat(40000) };
+  assert.equal(planChunks([source]).length, 10);
+  for (const correct of [false, true]) {
+    const calls = [];
+    const run = extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
+      calls.push(messages);
+      const consolidating = messages[0].content.includes("Consolidation.");
+      if (!consolidating) return modelResponse(messages, { summary: `${calls.length}:` + "e".repeat(480) });
+      assert.ok(JSON.parse(messages[1].content).every(row => !row.text.includes("x".repeat(100))));
+      if (correct && calls.length === 12) {
+        assert.match(messages[0].content, /failed validation \(schema\)/);
+        return modelResponse(messages, { summary: "The fictional correspondence requests a review; no outcome is recorded." });
+      }
+      return modelResponse(messages, { summary: "s".repeat(501) });
+    } });
+    if (correct) assert.equal((await run).document.events.length, 1);
+    else await assert.rejects(run, error => {
+      assert.deepEqual(publicError(error).validation, { stage: "consolidation", category: "schema", attempts: 2 }); return true;
+    });
+    assert.equal(calls.length, 12);
+    assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens));
+  }
+});
+
+test("public validation details reject unknown values and remove all additional fields", () => {
+  const input = { code: "timeline-validation", message: "PRIVATE", paths: ["PRIVATE"], validation: { stage: "case", category: "reference", attempts: 2, output: "PRIVATE" } };
+  assert.deepEqual(publicError(input), { code: "timeline-validation", validation: { stage: "case", category: "reference", attempts: 2 } });
+  for (const value of [{ ...input.validation, stage: "PRIVATE" }, { ...input.validation, category: "PRIVATE" }, { ...input.validation, attempts: 3 }]) assert.deepEqual(publicError({ ...input, validation: value }), { code: "timeline-validation" });
+});
+
+test("actual Timeline UI shows safe validation stage and preserves the previous saved timeline", async context => {
+  let fail = false;
+  const fixture = integratedTimeline(context, { complete: messages => fail ? { text: "PRIVATE_OUTPUT", finishReason: "stop", usage: { outputTokens: 100 } } : modelResponse(messages) });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  const previous = JSON.stringify([...fixture.artifacts]);
+  fail = true;
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.deepEqual(lastTerminal(fixture).validation, { stage: "extraction", category: "parse", attempts: 2 });
+  assert.equal(JSON.stringify([...fixture.artifacts]), previous);
+  const text = fixture.node("timeline-status").textContent;
+  assert.match(text, /Message extraction failed after one retry: invalid JSON formatting/);
+  assert.match(text, /2 AI requests were attempted/);
+  assert.match(text, /Retrying sends the reviewed mail again/);
+  assert.doesNotMatch(text, /PRIVATE_OUTPUT/);
+  await settleTimeline(); assert.equal(fixture.calls.length, 3);
+});
+
+test("all fixed retry categories fit the planner's reserved request size, including Case", () => {
+  const { buildCaseRequest } = require("../host/timeline/case");
+  for (const build of [buildRequest, buildCaseRequest]) {
+    const rows = [{ source_token: uuid(), text: "Fictional evidence." }];
+    const reserved = Buffer.byteLength(JSON.stringify(build(rows, { retry: true })));
+    for (const retryCategory of ["parse", "schema", "reference", "incomplete"]) assert.ok(Buffer.byteLength(JSON.stringify(build(rows, { retry: true, retryCategory }))) <= reserved);
+  }
 });
