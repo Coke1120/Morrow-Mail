@@ -443,7 +443,8 @@ textarea:focus-visible {
 
 .folder-tools .folder-filter { flex: 1 1 auto; margin: 0; min-width: 0; }
 
-.folder-collapse-all {
+.folder-collapse-all,
+.local-folder-action {
   flex: none;
   width: 28px;
   height: 28px;
@@ -458,9 +459,12 @@ textarea:focus-visible {
 }
 
 .folder-collapse-all:hover,
-.folder-collapse-all:focus-visible { background: rgba(255, 255, 255, 0.18); }
+.folder-collapse-all:focus-visible,
+.local-folder-action:hover,
+.local-folder-action:focus-visible { background: rgba(255, 255, 255, 0.18); }
 
-#side-mail .folder-collapse-all:focus-visible {
+#side-mail .folder-collapse-all:focus-visible,
+#side-mail .local-folder-action:focus-visible {
   outline: 2px solid #b9d5ad;
   outline-offset: 2px;
 }
@@ -6185,9 +6189,10 @@ html[data-window="translate"] #reader .translate-column h2 {
 #local-transfer select { width: 100%; min-width: 0; max-width: 100%; }
 #local-transfer .row { flex-wrap: wrap; }
 #local-transfer :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
-#folders .local-folder-create { margin: 4px 12px 8px; padding: 7px 10px; color: #fff; background: transparent; border: 1px solid rgba(255,255,255,.35); border-radius: 8px; text-align: left; }
-#folders .local-folder-create:hover, #folders .local-folder-create:focus-visible { background: rgba(255,255,255,.12); }
-#folders .local-folder-create:focus-visible { outline: 2px solid #b9d5ad; outline-offset: 2px; }
+#folders .local-account-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 10px 0 2px; min-width: 0; }
+#folders .local-account-heading > .account { flex: 1 1 120px; width: auto; min-height: 28px; margin: 0; }
+#folders .local-folder-actions { display: flex; flex: none; gap: 4px; margin-left: auto; padding: 0 2px; }
+.local-folder-action svg { display: block; }
 #reader .local-reader-note { margin: 12px 20px; }
 #mbox-import { width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; }
 #mbox-import form { display: grid; gap: 12px; min-width: 0; max-height: calc(100dvh - 32px); overflow: auto; }

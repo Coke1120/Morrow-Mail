@@ -5547,16 +5547,33 @@ function renderAccounts() {
       if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
       event.preventDefault(); const rect = heading.getBoundingClientRect(); openLocalFolderMenu(null, rect.left, rect.bottom);
     });
-    nav.appendChild(heading);
     if (account.isLocal) {
+      const row = document.createElement("div");
+      row.className = "local-account-heading";
+      const actions = document.createElement("div");
+      actions.className = "local-folder-actions";
+      actions.setAttribute("role", "group");
+      actions.setAttribute("aria-label", "Local Folders actions");
       const create = document.createElement("button");
-      create.type = "button"; create.className = "ghost local-folder-create"; create.textContent = "New local folder…";
+      create.type = "button"; create.className = "local-folder-action local-folder-create";
+      create.title = "New local folder…";
+      create.setAttribute("aria-label", create.title);
+      create.setAttribute("aria-haspopup", "dialog");
+      create.setAttribute("aria-controls", "confirm");
+      create.appendChild(strokeIcon(["M12 5v14", "M5 12h14"], 16));
       create.addEventListener("click", () => guard(() => manageLocalFolder("create")));
-      nav.appendChild(create);
       const importer = document.createElement("button");
-      importer.type = "button"; importer.className = "ghost local-folder-create local-mbox-open"; importer.textContent = "Import MBOX…";
-      importer.addEventListener("click", () => guard(() => openMboxImport())); nav.appendChild(importer);
-    }
+      importer.type = "button"; importer.className = "local-folder-action local-mbox-open";
+      importer.title = "Import MBOX…";
+      importer.setAttribute("aria-label", importer.title);
+      importer.setAttribute("aria-haspopup", "dialog");
+      importer.setAttribute("aria-controls", "mbox-import");
+      importer.appendChild(strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"], 16));
+      importer.addEventListener("click", () => guard(() => openMboxImport()));
+      actions.append(create, importer);
+      row.append(heading, actions);
+      nav.appendChild(row);
+    } else nav.appendChild(heading);
     if (account.needsReauth && account.reauthReason) {
       const note = document.createElement("p");
       note.className = "reauth";
