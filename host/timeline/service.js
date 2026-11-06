@@ -6,13 +6,15 @@ const { freezeSources, assertSources, hash, fingerprint, dedupeRows, messagePrev
 const { htmlToPlain } = require("../mail/text-encoding");
 const { LIMITS, LANGUAGES, PROMPT_VERSION, preparePlan, extract } = require("./extract");
 const { budget, budgetDetails } = require("./budget");
+const { validationDetails } = require("./validation-feedback");
 
 const CHANNELS = new Set(["timeline:search", "timeline:source", "timeline:check", "timeline:prepare", "timeline:download", "timeline:generate", "timeline:cancel", "timeline:list", "timeline:get", "timeline:delete", "timeline:export"]);
 const codes = new Set(["timeline-validation", "timeline-consolidation", "timeline-version", "timeline-size", "timeline-depth", "timeline-selection-limit", "timeline-empty", "timeline-source-changed", "timeline-query", "timeline-budget", "timeline-not-found", "timeline-manifest", "timeline-partial", "timeline-busy", "timeline-cancelled", "ai-consent-required", "timeline-language", "timeline-timezone", "timeline-input", "timeline-revision"]);
 
 function publicError(error) {
   const details = budgetDetails(error);
-  return { code: codes.has(error?.code) ? error.code : "timeline-failed", ...(details ? { budget: details } : {}) };
+  const validation = validationDetails(error);
+  return { code: codes.has(error?.code) ? error.code : "timeline-failed", ...(details ? { budget: details } : {}), ...(validation ? { validation } : {}) };
 }
 
 function shape(value, keys, required = []) {

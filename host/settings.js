@@ -34,7 +34,7 @@ const DEFAULTS = {
   mailView: { layout: "right", listHeight: 320 },
   changelogSeen: "",
   onboarding: null,
-  mailColumnOrder: ["date", "recipient", "sender", "subject", "status"],
+  mailColumnOrder: ["date", "time", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
 };
 

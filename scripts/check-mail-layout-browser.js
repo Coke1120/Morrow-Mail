@@ -55,17 +55,17 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await page.goto(url);await initialize();
   await page.evaluate(()=>changeMailColumnVisibility('recipient',false));
   await page.locator('[data-sort-key="sender"] button').focus();await page.keyboard.press('Alt+ArrowRight');
-  assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','subject','sender']);
+  assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','time','recipient','subject','sender']);
   await page.keyboard.press('Alt+ArrowLeft');
   await page.evaluate(()=>changeMailColumnVisibility('recipient',true));
-  assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','sender','subject']);
+  assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','time','recipient','sender','subject']);
   const outerCorners=await verifyOuterMailCardCorners(page);
   const folderChips=await verifyFolderChipAlignment(page);
   console.log(JSON.stringify({folderChips}));
   await page.reload();await initialize();
   await page.locator('[data-sort-key="date"] button').dragTo(page.locator('[data-sort-key="subject"]'),{targetPosition:{x:150,y:12}});
   await page.waitForFunction(()=>mailColumnOrder()[0]!=='date');
-  const dragged=await page.evaluate(()=>mailColumnOrder());assert.equal(dragged.length,4);
+  const dragged=await page.evaluate(()=>mailColumnOrder());assert.equal(dragged.length,5);
   assert.equal(await page.evaluate(()=>state.listSort.sortBy),'date');
   await page.waitForTimeout(350);await page.locator('[data-sort-key="subject"] button').click();
   await page.waitForFunction(()=>state.listSort.sortBy==='subject');assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),dragged);
@@ -74,10 +74,10 @@ const root=path.join(__dirname,'..'),output=process.env.MORROW_UI_OUTPUT||path.j
   await page.locator('#mail-columns-open').click();await page.locator('#mail-columns[open]').waitFor();
   await page.addScriptTag({url:'/axe.js'});
   const violations=await page.evaluate(async()=> (await axe.run(document.getElementById('mail-columns'),{runOnly:{type:'tag',values:['wcag2a','wcag2aa']}})).violations.map(v=>v.id));assert.deepEqual(violations,[]);
-  await page.getByRole('button',{name:'Reset column order',exact:true}).click();assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','recipient','sender','subject']);
+  await page.getByRole('button',{name:'Reset column order',exact:true}).click();assert.deepEqual(await page.evaluate(()=>mailColumnOrder()),['date','time','recipient','sender','subject']);
   await page.getByRole('button',{name:'Move right: Date',exact:true}).click();assert.equal(await page.evaluate(()=>mailColumnOrder()[1]),'date');
   await page.locator('#mail-columns-close').click();await page.locator('#mail-columns').waitFor({state:'hidden'});
-  const align=await page.evaluate(()=>({head:[...document.querySelectorAll('.mail-list-columns [role="columnheader"]')].map(n=>n.getBoundingClientRect().x),row:[...document.querySelector('.row-main').children].slice(0,4).map(n=>n.getBoundingClientRect().x)}));assert.ok(align.head.every((x,i)=>Math.abs(x-align.row[i])<2),JSON.stringify(align));
+  const align=await page.evaluate(()=>({head:[...document.querySelectorAll('.mail-list-columns [role="columnheader"]')].map(n=>n.getBoundingClientRect().x),row:[...document.querySelector('.row-main').children].slice(0,5).map(n=>n.getBoundingClientRect().x)}));assert.ok(align.head.every((x,i)=>Math.abs(x-align.row[i])<2),JSON.stringify(align));
   assert.equal(await page.locator('.all-account-inbox .count').count(),0);assert.ok(await page.locator('button.folder[data-account-id="a"] .count').count()>0);
   await page.locator('.all-starred').click();await page.waitForFunction(()=>state.allInboxStarredOnly&&state.emails.every(r=>r.isStarred));
   const stars=await page.evaluate(()=>state.listTotal);await page.evaluate(()=>toggleStar(state.emails[0]));await page.waitForFunction(n=>state.listTotal===n-1,stars);
@@ -360,13 +360,17 @@ async function verifyColumnControls(page, initialize) {
   await page.screenshot({path:path.join(output,`sync-${layout}-${width}-${theme}.png`)});
   await page.locator('.body-sync-scroll').focus();assert.equal((await topmost()).tipOnTop,true,'keyboard focus retains the popup');
   await page.evaluate(()=>document.activeElement.blur());await page.mouse.move(1,1);
+  // Narrow layouts can scroll this header into view. Let the resulting scroll
+  // event finish before opening a menu that intentionally closes on scrolling.
+  await page.locator('[data-sort-key="subject"] button').scrollIntoViewIfNeeded();
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   await page.locator('[data-sort-key="subject"] button').click({button:'right'});
   const bounds=await page.locator('#mail-column-menu').boundingBox();assert.ok(bounds.x>=0&&bounds.y>=0&&bounds.x+bounds.width<=width);
   await page.keyboard.press('Escape');stacking.push({layout,width,theme,compact,...result});
  }
  await page.setViewportSize({width:900,height:700});
  await page.locator('#mail-columns-open').tap();
- for(const key of ['date','recipient','sender'])await page.locator(`[data-visibility="${key}"]`).tap();
+ for(const key of ['date','time','recipient','sender'])await page.locator(`[data-visibility="${key}"]`).tap();
  await page.locator('#mail-columns-close').click();
  assert.equal(await page.locator('.mail-list-columns [role="columnheader"]:visible').count(),1);
  const overflow=await page.locator('#message-list').evaluate(node=>node.scrollWidth>node.clientWidth);assert.equal(overflow,false,'hiding columns reduces the grid minimum width');
