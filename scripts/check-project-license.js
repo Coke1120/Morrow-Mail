@@ -29,8 +29,10 @@ async function run() {
     assert.ok(pkg.build.files.includes(file), "packaged license notice: " + file);
     assert.ok(read(file).trim());
   }
-  // Keep the previous canonical MIT notice byte-for-byte, including its grant.
-  assert.equal(crypto.createHash("sha256").update(read("LICENSE-MIT")).digest("hex"),
+  // Lock the complete canonical Git text, including its grant. A Windows Git
+  // checkout may convert LF to CRLF without changing the stored notice.
+  const previousMit = read("LICENSE-MIT").replace(/\r\n/g, "\n");
+  assert.equal(crypto.createHash("sha256").update(previousMit).digest("hex"),
     "4bb216147ad284417b5c28c5db2c2dbbc937ebdab74da31386cd5ce18078498f");
   assert.equal(read("THIRD_PARTY_NOTICES.md"), notices(root));
   for (const name of ["motion", "framer-motion", "motion-dom", "motion-utils"]) {
