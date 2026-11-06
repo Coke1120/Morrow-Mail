@@ -96,7 +96,7 @@ async function run() {
     loadList = async (network, offset) => { loads.push({network,offset,sort:{...state.listSort}}); };
     paintMailListColumns($('message-list'));
   `);
-  assert.equal(dom.window.document.querySelectorAll('[role="columnheader"]').length, 4);
+  assert.equal(dom.window.document.querySelectorAll('[role="columnheader"]').length, 5);
   assert.equal(dom.window.document.querySelector('[data-sort-key="status"]'), null);
   for (const [replied, forwarded, expected] of [[true, false, ["replied"]], [false, true, ["forwarded"]], [true, true, ["replied", "forwarded"]], [false, false, []], [null, null, []], [true, null, ["replied"]]]) {
     ui.context.flagFixture = { id: "flags", subject: "Synthetic subject", replied, forwarded };
@@ -120,6 +120,24 @@ async function run() {
   assert.ok(ui.run("loads.every(row => row.offset === 0 && row.network === false)"));
   assert.equal(ui.run("readMailListSort().sortDirection"), "desc");
   assert.equal(ui.run(`mailListRequest({allInbox:true,listSort:state.listSort}).params.sortBy`), "subject");
+  await ui.run(`changeMailListSort('time');paintMailListColumns($('message-list'))`);
+  assert.equal(ui.run("state.listSort.sortBy"), "date", "Time uses the supported full-timestamp backend sort");
+  assert.equal(ui.run("state.listSort.sortDirection"), "desc");
+  assert.equal(ui.run("readMailListSortColumn()"), "time");
+  assert.equal(dom.window.document.querySelector('[data-sort-key="time"]').getAttribute("aria-sort"), "descending");
+  assert.equal(dom.window.document.querySelector('[data-sort-key="date"]').getAttribute("aria-sort"), "none");
+  assert.match(dom.window.document.querySelector('[data-sort-key="time"] button').getAttribute("aria-label"), /full date and time/);
+  for (const view of [{allInbox:true}, {accountId:"synthetic",folderId:"INBOX"}, {query:"needle"}]) {
+    ui.context.sortView = view;
+    assert.equal(ui.run("mailListRequest({...sortView,listSort:state.listSort}).params.sortBy"), "date");
+    assert.equal(ui.run("'sortColumn' in mailListRequest({...sortView,listSort:state.listSort}).params"), false);
+  }
+  await ui.run(`changeMailListSort('time')`);
+  assert.equal(ui.run("state.listSort.sortDirection"), "asc");
+  ui.run(`localStorage.setItem('morrow.mailListSort',JSON.stringify({sortBy:'sender',sortDirection:'desc'}))`);
+  assert.equal(ui.run("readMailListSortColumn()"), "sender", "old saved sorts keep their header");
+  ui.run(`localStorage.setItem('morrow.mailListSort',JSON.stringify({sortBy:'time',sortDirection:'asc'}))`);
+  assert.equal(ui.run("readMailListSort().sortBy"), "date", "unsupported backend keys still fall back safely");
   assert.equal(ui.run(`mailRecipientText({to:['first@fixture.invalid','second@fixture.invalid']})`), "first@fixture.invalid, second@fixture.invalid");
   ui.run(`
     state.emails = [{id:'refresh-flags',accountId:'synthetic',subject:'Flag refresh',replied:true,forwarded:false}];
@@ -138,6 +156,17 @@ async function run() {
   assert.ok([...dom.window.document.querySelectorAll('[role="columnheader"][aria-sort] button')].every(button => button.disabled));
   assert.equal(ui.run(`messageRow({id:"missing",to:[],date:""}).querySelector("time").textContent`), "");
   assert.equal(ui.run(`messageRow({id:"bad-date",to:[],date:"invalid"}).querySelector("time").textContent`), "");
+  for (const date of ["", "invalid"]) {
+    ui.context.stampFixture = {id:"unknown-stamp",date};
+    assert.equal(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').textContent`), "");
+    assert.equal(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').hasAttribute('datetime')`), false);
+    assert.equal(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').getAttribute('aria-label')`), "Time unavailable");
+  }
+  const timestamp = "2026-11-01T06:30:00.000Z";
+  ui.context.stampFixture = {id:"valid-stamp",date:timestamp};
+  assert.equal(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').dateTime`), timestamp);
+  assert.match(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').title`), /2026-11-01T06:30:00.000Z/);
+  assert.ok(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').textContent.length > 0`));
   ui.run(`paintFeatureCatalog()`);
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /sort all matching downloaded mail before paging/);
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reply \/ forward icons appear inline before Subject/);
@@ -156,6 +185,8 @@ async function run() {
   assert.doesNotMatch(dom.window.document.getElementById("features-catalog").textContent, /The Reply \/ forward column shows/);
   assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /first To recipient/);
   assert.match(dom.window.document.getElementById("mail-sort-help").textContent, /icons appear before the subject/);
+  assert.match(dom.window.document.getElementById("features-catalog").textContent, /Both headers sort by the full timestamp, including the date/);
+  assert.match(dom.window.document.getElementById("mail-columns-help").textContent, /separate Date and Time columns/);
   dom.window.close();
   console.log("mail-columns-ui-ok: toggles, persistence, page reset, reader retention, accessible headers and rendered Features help");
 }

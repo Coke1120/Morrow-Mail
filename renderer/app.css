@@ -538,7 +538,11 @@ textarea:focus-visible {
   font-size: 13px;
 }
 
-.about-links a {
+.project-invitation { font-size: 13px; line-height: 1.5; }
+.project-invitation a { white-space: nowrap; }
+
+.about-links a,
+.project-invitation a {
   color: var(--accent-ink);
   font-weight: 650;
   text-decoration: underline;
@@ -546,7 +550,9 @@ textarea:focus-visible {
 }
 
 .about-links a:hover,
-.about-links a:focus-visible { color: var(--ink); }
+.about-links a:focus-visible,
+.project-invitation a:hover,
+.project-invitation a:focus-visible { color: var(--ink); }
 
 #prefs {
   display: grid;
@@ -6098,7 +6104,7 @@ html[data-window="translate"] #reader .translate-column h2 {
 #messages #message-list .gutter { position: absolute; left: 0; width: 10px; }
 #messages #message-list .row-main { display: grid; grid-template-columns: var(--mail-columns); align-items: center; gap: 4px 10px; padding-right: 0; }
 #messages #message-list .row-main > * { min-width: 0; }
-#messages #message-list .when { display: block; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+#messages #message-list .when { display: block; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 #messages #message-list .recipient, #messages #message-list .from { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 #messages #message-list .snippet { grid-column: 1 / -1; }
 #messages.compact-list #message-list button.message { padding-top: 3px; padding-bottom: 3px; }
