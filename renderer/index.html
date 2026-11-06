@@ -1025,8 +1025,14 @@
             <button type="button" id="ai-mode-reply" role="radio" data-ai-mode="reply" aria-checked="false" tabindex="-1" aria-disabled="false">Reply from thread</button>
           </div>
           <p id="compose-ai-note" class="hint compose-ai-note" role="status" hidden></p>
+          <div id="compose-suggestions" class="compose-suggestions" hidden>
+            <p id="compose-suggest-label" class="hint">Suggested replies</p>
+            <p id="compose-suggest-status" class="hint" role="status" hidden></p>
+            <div id="compose-suggest-list" class="suggest-list" role="list"></div>
+          </div>
           <label class="sr" for="ai-prompt">Prompt</label>
-          <input id="ai-prompt" type="text" placeholder="Type your prompt..." autocomplete="off" />
+          <textarea id="ai-prompt" rows="4" placeholder="Type your prompt..." autocomplete="off" aria-describedby="compose-ai-prompt-help"></textarea>
+          <p class="hint" id="compose-ai-prompt-help">Drag the lower corner to enlarge. Enter adds a new line; Ctrl/⌘+Enter generates.</p>
           <p id="ai-write-error" class="error" role="status" hidden></p>
           <div class="compose-ai-actions">
             <button type="button" class="primary" id="ai-generate">Generate</button>
@@ -1037,11 +1043,7 @@
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
         <textarea id="compose-body" class="compose-body-source" tabindex="-1" aria-hidden="true"></textarea>
-        <div id="compose-suggestions" class="compose-suggestions" hidden>
-          <p id="compose-suggest-label" class="hint">Suggested replies</p>
-          <p id="compose-suggest-status" class="hint" role="status" hidden></p>
-          <div id="compose-suggest-list" class="suggest-list" role="list"></div>
-        </div>
+
         <div class="compose-files">
           <input id="compose-file" type="file" multiple hidden />
           <button type="button" class="ghost icon-label" id="compose-attach">
