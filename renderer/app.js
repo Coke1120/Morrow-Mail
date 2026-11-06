@@ -10,7 +10,7 @@ const state = {
   allInboxUnreadOnly: false,
   allInboxStarredOnly: false,
   toMeOnly: false,
-  mailColumnOrder: ["date", "recipient", "sender", "subject"],
+  mailColumnOrder: ["date", "time", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
   outbox: false,
   outboxRows: [],
@@ -20,6 +20,7 @@ const state = {
   folderId: null,
   emails: [],
   listSort: readMailListSort(),
+  listSortColumn: readMailListSortColumn(),
   listOffset: 0,
   listCursors: [],
   listTotal: 0,
@@ -912,6 +913,40 @@ function accountLabel(account) {
   return email || name || (account && account.id) || "";
 }
 
+function sidebarAccountIdentity(account) {
+  const email = String(account.email || account.displayEmail || "").trim();
+  const name = String(account.label || account.name || "").trim();
+  const profile = String(account.imapSmtpProfile || account.profile || account.platform || "").toLowerCase();
+  const provider = account.isLocal ? "On this computer"
+    : ({ gmail: "Gmail", outlook: "Outlook", yahoo: "Yahoo" }[profile] || "IMAP");
+  const detail = !account.isLocal && name && name !== email ? name + " · " + provider : provider;
+  const identity = document.createElement("span");
+  identity.className = "account-identity";
+  const address = document.createElement("span");
+  address.className = "account-address";
+  address.textContent = account.isLocal ? name || email || "Local Folders" : email || name || account.id;
+  const subtitle = document.createElement("span");
+  subtitle.className = "account-detail";
+  subtitle.textContent = detail;
+  subtitle.title = detail;
+  identity.append(address, subtitle);
+  return identity;
+}
+
+function sidebarFolderLabel(folder, account) {
+  // These are reserved Gmail API identities, not similarly named user labels.
+  const labels = { CATEGORY_PERSONAL: "Personal", CATEGORY_SOCIAL: "Social", CATEGORY_PROMOTIONS: "Promotions",
+    CATEGORY_UPDATES: "Updates", CATEGORY_FORUMS: "Forums", YELLOW_STAR: "Yellow star" };
+  if (folderProvider(account) === "gmail" && folder.providerId === folder.name && Object.hasOwn(labels, folder.providerId)) {
+    return labels[folder.providerId];
+  }
+  if (folder.depth > 0 && folder.name === folder.id) {
+    const delimiter = accountDelimiter(account);
+    return String(folder.name).slice(String(folder.name).lastIndexOf(delimiter) + delimiter.length);
+  }
+  return chipLabel(folder);
+}
+
 function allInboxUnread(accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
   const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
@@ -1004,9 +1039,9 @@ let mailColumnDrag = null;
 let mailColumnClickUntil = 0;
 let mailColumnSave = Promise.resolve();
 let mailColumnRevision = 0;
-const mailColumnLabels = { date: "Date", recipient: "Recipient", sender: "Sender", subject: "Subject" };
+const mailColumnLabels = { date: "Date", time: "Time", recipient: "Recipient", sender: "Sender", subject: "Subject" };
 function mailColumnOrder() {
-  return Array.isArray(state.mailColumnOrder) ? state.mailColumnOrder.filter(key => Object.hasOwn(mailColumnLabels, key)) : ["date", "recipient", "sender", "subject"];
+  return window.morrowMailColumns ? window.morrowMailColumns.normalize(state.mailColumnOrder) : Object.keys(mailColumnLabels);
 }
 function visibleMailColumns() {
   return window.morrowMailColumns ? window.morrowMailColumns.visible(mailColumnOrder(), state.mailHiddenColumns)
@@ -1197,17 +1232,31 @@ function readMailListSort() {
   try {
     const saved = JSON.parse(localStorage.getItem("morrow.mailListSort"));
     if (["date", "recipient", "sender", "subject"].includes(saved?.sortBy)
-      && ["asc", "desc"].includes(saved.sortDirection)) return saved;
+      && ["asc", "desc"].includes(saved.sortDirection)) return { sortBy: saved.sortBy, sortDirection: saved.sortDirection };
   } catch { /* Use the existing newest-first default. */ }
   return { sortBy: "date", sortDirection: "desc" };
 }
 
-async function changeMailListSort(sortBy) {
-  if (state.outbox || !["date", "recipient", "sender", "subject"].includes(sortBy)) return;
-  const sortDirection = state.listSort.sortBy === sortBy
+function readMailListSortColumn() {
+  const sort = readMailListSort();
+  try {
+    const saved = JSON.parse(localStorage.getItem("morrow.mailListSort"));
+    if (sort.sortBy === "date" && saved?.sortColumn === "time") return "time";
+  } catch { /* Older preferences select their existing sort header. */ }
+  return sort.sortBy;
+}
+
+async function changeMailListSort(column) {
+  if (state.outbox || !Object.hasOwn(mailColumnLabels, column)) return;
+  // Date and Time show different parts of one timestamp. Provider/cache sorting
+  // must keep full chronology, including the date, across pages and searches.
+  const sortBy = column === "time" ? "date" : column;
+  const sameColumn = state.listSort.sortBy === sortBy && (sortBy !== "date" || state.listSortColumn === column);
+  const sortDirection = sameColumn
     ? (state.listSort.sortDirection === "asc" ? "desc" : "asc") : (sortBy === "date" ? "desc" : "asc");
   state.listSort = { sortBy, sortDirection };
-  try { localStorage.setItem("morrow.mailListSort", JSON.stringify(state.listSort)); } catch { /* Keep window choice. */ }
+  state.listSortColumn = column;
+  try { localStorage.setItem("morrow.mailListSort", JSON.stringify({ ...state.listSort, sortColumn: column })); } catch { /* Keep window choice. */ }
   state.listCursors = [];
   await loadList(false, 0);
   $("message-list").scrollTop = 0;
@@ -1239,10 +1288,10 @@ function paintMailListColumns(list) {
     header.addEventListener("contextmenu", event => openMailColumnMenu(event, event.target.closest("button") || header.querySelector("button:not(:disabled)")));
     list.prepend(header);
   }
-  const widths = { date: "78px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
+  const widths = { date: "110px", time: "82px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
   const visible = visibleMailColumns();
   list.style.setProperty("--mail-columns", visible.map(key => widths[key]).join(" "));
-  const minimum = { date: 78, recipient: 130, sender: 130, subject: 180 };
+  const minimum = { date: 110, time: 82, recipient: 130, sender: 130, subject: 180 };
   list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + minimum[key], 54) + (visible.length - 1) * 10) + "px");
   const headerRow = header.querySelector('[role="row"]');
   mailColumnOrder().forEach((key, index) => {
@@ -1251,14 +1300,17 @@ function paintMailListColumns(list) {
     if (headerRow.children[index] !== cell) headerRow.insertBefore(cell, headerRow.children[index] || null);
   });
   for (const cell of header.querySelectorAll("[data-sort-key]")) {
-    const active = !state.outbox && cell.dataset.sortKey === state.listSort.sortBy;
+    const sortColumn = state.listSort.sortBy === "date" && state.listSortColumn === "time" ? "time" : state.listSort.sortBy;
+    const active = !state.outbox && cell.dataset.sortKey === sortColumn;
     const ascending = state.listSort.sortDirection === "asc";
     cell.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
     const button = cell.querySelector("button");
     button.disabled = state.outbox;
     button.textContent = button.dataset.label + (active ? (ascending ? " ↑" : " ↓") : "");
-    button.title = state.outbox ? "Outbox uses scheduled send order. Use Columns to change the layout." : "Click to sort by " + button.dataset.label.toLowerCase() + ". Drag to reorder, or press Alt + Left / Right.";
-    button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (cell.dataset.sortKey === "date" ? "descending" : "ascending")));
+    const timestampColumn = ["date", "time"].includes(cell.dataset.sortKey);
+    const sortHelp = timestampColumn ? " Sorts by the full date and time, in chronological order." : "";
+    button.title = state.outbox ? "Outbox uses scheduled send order. Use Columns to change the layout." : "Click to sort by " + button.dataset.label.toLowerCase() + "." + sortHelp + " Drag to reorder, or press Alt + Left / Right.";
+    button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (timestampColumn ? "descending" : "ascending")) + sortHelp);
   }
   return header;
 }
@@ -5263,7 +5315,7 @@ function filterSidebarTree(rows, query) {
   const keep = new Set();
   const match = new Set();
   for (const folder of list) {
-    if (!chipLabel(folder).toLowerCase().includes(q)) continue;
+    if (![chipLabel(folder), folder.name].some(value => String(value || "").toLowerCase().includes(q))) continue;
     const id = String(folder.id);
     match.add(id);
     keep.add(id);
@@ -5444,9 +5496,10 @@ function renderAccounts() {
   const folderQuery = String(folderFilterQuery() || "").trim().toLowerCase();
   // Sync status and folder selection do not change the folder tree.
   const key = JSON.stringify([
-    mailAccounts().map(account => [account.id, account.email, account.label, account.senderName, account.imapSmtpProfile,
+    mailAccounts().map(account => [account.id, account.email, account.displayEmail, account.label, account.name, account.senderName,
+      account.isLocal, account.platform, account.profile, account.imapSmtpProfile,
       account.needsReauth, account.reauthReason, account.delimiter,
-      foldersOf(account).map(folder => [folder.id, folder.name, folder.wellKnownName, folder.wellKnown, folder.type])]),
+      foldersOf(account).map(folder => [folder.id, folder.name, folder.providerId, folder.wellKnownName, folder.wellKnown, folder.type])]),
     state.accountId,
     state.prefs.gmailOpen,
     state.prefs.outlookOpen,
@@ -5510,18 +5563,21 @@ function renderAccounts() {
     const provider = folderProvider(account);
     const filtering = !!folderQuery;
     const expanded = filtering || accountFoldersExpanded(account);
-    const tree = folderTree(foldersOf(account), accountDelimiter(account));
+    const tree = folderTree(foldersOf(account), accountDelimiter(account))
+      .map(folder => ({ ...folder, label: sidebarFolderLabel(folder, account) }));
     const rows = expanded ? sidebarFolderRows(tree, account.id) : [];
     if (filtering && !rows.length) continue;
     shownFolder = true;
     const heading = document.createElement("button");
     heading.type = "button";
-    heading.className = "account";
+    heading.className = "account mailbox-account";
     heading.setAttribute("aria-expanded", expanded ? "true" : "false");
     heading.setAttribute("aria-label", filtering ? accountLabel(account) + ", expanded to show matching folders"
       : (expanded ? "Collapse " : "Expand ") + accountLabel(account));
     if (filtering) heading.setAttribute("aria-disabled", "true");
-    heading.append(folderTwistMark(expanded), accountLabel(account));
+    const identity = sidebarAccountIdentity(account);
+    heading.setAttribute("aria-description", identity.querySelector(".account-detail").textContent);
+    heading.append(folderTwistMark(expanded), identity);
     heading.title = accountLabel(account);
     heading.addEventListener("click", () => {
       folderNavKey = "account:" + account.id;
@@ -7183,10 +7239,19 @@ function messageRow(email) {
   subject.textContent = email.subject || "(no subject)";
   const when = document.createElement("time");
   when.className = "when";
-  if (email.date) when.dateTime = email.date;
-  when.textContent = listWhen(email.date);
+  const stamp = email.date ? new Date(email.date) : null;
+  const validStamp = stamp && !Number.isNaN(stamp.getTime());
+  const stampTitle = validStamp ? shownWhen(stamp, true) + " · " + stamp.toISOString() : "No date or time";
+  if (validStamp) when.dateTime = stamp.toISOString();
+  when.textContent = validStamp ? displayStamp(stamp, "date") : "";
+  const time = document.createElement("time");
+  time.className = "when mail-time";
+  if (validStamp) time.dateTime = stamp.toISOString();
+  time.textContent = validStamp ? displayStamp(stamp, "time") : "";
+  time.title = stampTitle;
+  time.setAttribute("aria-label", validStamp ? "Time: " + stampTitle : "Time unavailable");
   subject.title = subject.textContent;
-  when.title = email.date || "No date";
+  when.title = stampTitle;
   const recipient = document.createElement("span");
   recipient.className = "recipient";
   recipient.textContent = mailRecipientText(email) || "(no recipient)";
@@ -7199,7 +7264,7 @@ function messageRow(email) {
     ? accountLabel(mailbox) + " · "
     : (state.query && mailbox ? (mailbox.email || accountLabel(mailbox)) + " · " : "");
   snippet.textContent = prefix + (email.snippet || "");
-  const cells = { date: when, recipient, sender: from, subject: subjectLine };
+  const cells = { date: when, time, recipient, sender: from, subject: subjectLine };
   for (const key of visibleMailColumns()) { cells[key].dataset.mailColumn = key; main.append(cells[key]); }
   main.append(snippet);
   button.append(gutter, avatar, main);
@@ -11638,7 +11703,7 @@ async function renameAccountLabel(account) {
   if (!account || !account.id) return;
   const result = await askConfirm({
     title: "Rename account",
-    body: "This name is the label in the account list. Clear it to use the provider name, or the address when the provider has none. The address and From stay the same.",
+    body: "This label appears below the address in the account list. Clear it to use the provider's display name when available. The address and From stay the same.",
     confirm: "Save",
     cancel: "Cancel",
     needsName: true,

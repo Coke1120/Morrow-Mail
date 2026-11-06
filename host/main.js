@@ -11,7 +11,7 @@ const { complete, extractJson, modelIds, listModels } = require("./openai-client
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:aiConsentStatus", "host:aiConsentGrant", "host:aiConsentRevoke", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
-const { startupFailureDialog, startupStatusHtml, startupProgressScript } = require("./startup-error");
+const { startupFailureDialog, startupStatusHtml, startupProgressScript, isStartupExternalUrl } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
@@ -82,6 +82,8 @@ app.setAboutPanelOptions({
   applicationName: "Morrow Mail",
   applicationVersion: app.getVersion(),
   copyright: "Copyright (c) 2026 Leo Ho / HWL-HK",
+  credits: "Licensed under the Apache License 2.0. Earlier MIT and third-party notices are included with the app.",
+  website: "https://github.com/Coke1120/Morrow-Mail",
   iconPath: APP_ICON,
 });
 
@@ -774,6 +776,11 @@ async function presentBootStatus() {
     },
   });
   bootWindow = win;
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isStartupExternalUrl(url)) shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", event => event.preventDefault());
   win.on("close", event => {
     if (!bootFinished && !bootFailed) requestAppQuit(event);
   });
@@ -781,7 +788,7 @@ async function presentBootStatus() {
     if (bootWindow === win) bootWindow = null;
     if (!bootFinished && !bootFailed) app.quit();
   });
-  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(startupStatusHtml())}`);
+  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(startupStatusHtml(app.getVersion()))}`);
   if (!win.isDestroyed()) win.show();
   return win;
 }
