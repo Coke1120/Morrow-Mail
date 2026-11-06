@@ -20,6 +20,9 @@ readback, internal date and read/star state must match before success. Provider
 normalization that cannot pass these checks yields an uncertain result, not
 partial-message success.
 
+Local Folders sources use the archived message date. Their original server
+receiving time may be unavailable; the concrete review discloses this limitation.
+
 Gmail uses the official [messages.import API](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/import),
 covered by the existing gmail.modify grant. It never invokes Send. Calendar
 processing is off; standard classification is retained. Gmail sorts by the

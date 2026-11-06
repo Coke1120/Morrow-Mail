@@ -174,7 +174,10 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
   }
   async function review(ticket, id) {
     if (typeof id !== "string" || !id) throw unsupported("Choose a receiving folder or label.");
-    return lock([ticket.destination.accountId], () => connect(ticket.destination, () => check(ticket), transport => selected(transport, () => check(ticket), id)));
+    const selectedFolder = await lock([ticket.destination.accountId], () => connect(ticket.destination, () => check(ticket), transport => selected(transport, () => check(ticket), id)));
+    if (ticket.sources.some(source => source.local)) selectedFolder.notices = [...selectedFolder.notices,
+      "Local Folders uses its archived message date. The original server receiving time may not be available."];
+    return selectedFolder;
   }
   async function imapSnapshot(transport, locator, checked) {
     checked();

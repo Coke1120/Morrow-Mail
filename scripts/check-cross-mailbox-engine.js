@@ -8,7 +8,8 @@ async function scenario(kind){
   const {createJournal,digest}=require("../host/mail/copy-recovery"),Database=require("better-sqlite3");
   const file=path.join(dir,"mailbox-copy-recovery.sqlite"),RAW=Buffer.from("From: sender@fixture.invalid\r\nTo: recipient@fixture.invalid\r\nDate: Mon, 02 Nov 2026 03:04:05 +0000\r\nSubject: Synthetic engine copy\r\n\r\nComplete body"),DATE=Date.parse("2026-11-02T03:04:05Z");
   let uploads=0;
-  if(kind!=="copy"){
+  const realTransport=kind==="copy"||kind==="local-copy";
+  if(!realTransport){
     const journal=createJournal(file);journal.insert({id:"old",key:digest("old"),sourceKey:digest("old-source"),destinationKey:digest("old-destination"),phase:"unknown",updatedAt:1});journal.close();
     require("../host/mail/cross-mailbox-access").createAccess=()=>({capture:params=>({sources:params.items.map(row=>({id:row.emailId,accountId:row.accountId,label:row.accountId})),destination:{accountId:"destination"}}),
       async destinations(){return {accountId:"destination",copyEnabled:true,folders:[]}},async review(){return {id:"Archive",label:"Archive"}},
@@ -22,7 +23,7 @@ async function scenario(kind){
   const savedWith=remote.withClient;
   try{
     await engine.init();
-    if(kind!=="copy"){
+    if(!realTransport){
       if(kind==="corrupt-after")assert.equal((await engine.answer("mail:crossMailboxCopy",[{action:"destinations",items:[{emailId:"new",accountId:"source"}],destinationAccountId:"destination"}])).success,true);
       const other=new Database(file);other.prepare("UPDATE mailbox_copies SET body=? WHERE id='old'").run('{"corrupt":true}');other.close();
       const replies=[];
@@ -38,6 +39,12 @@ async function scenario(kind){
       imapHost:"imap.fixture.invalid",imapPort:993,imapTls:true,smtpHost:"smtp.fixture.invalid",smtpPort:465,smtpTls:true});secrets.setPassword(id,"synthetic-only");
       db.replaceFolders(id,[{path:"INBOX",name:"Inbox",wellKnown:"inbox"},{path:"Archive",name:"Archive",wellKnown:"archive"}]);}
     db.insertMessage({id:"source-message",accountId:"source",folderPath:"INBOX",uid:4,uidValidity:11,date:new Date(DATE).toISOString(),listSortTs:DATE,unread:true,bodyComplete:true,textBody:"Complete body"});
+    let sourceIdentity={id:"source-message",accountId:"source",folderId:"INBOX"};
+    if(kind==="local-copy"){
+      const local=require("../host/mail/local-folders"),store=local.createLocalStore(path.join(dir,"local-folders.sqlite"));
+      try{const saved=store.save(digest("synthetic-local-original"),local.ARCHIVE_ID,await local.parseArchive(RAW),{unread:true,isStarred:true});
+        sourceIdentity={id:saved.message_id,accountId:local.ACCOUNT_ID,folderId:local.ARCHIVE_ID};}finally{store.close()}
+    }
     const destination=new Map();let hold=null;
     remote.withClient=async(account,_secret,work)=>{
       const client={capabilities:new Map([["UIDPLUS",true]]),mailbox:null,
@@ -54,12 +61,17 @@ async function scenario(kind){
     const vm=require("node:vm");let bridge;
     vm.runInNewContext(fs.readFileSync(require.resolve("../renderer/preload"),"utf8"),{require:name=>{assert.equal(name,"electron");return {contextBridge:{exposeInMainWorld(name,value){if(name==="morrow")bridge=value}},ipcRenderer:{invoke:(channel,payload)=>engine.answer(channel,[payload]),on(){},removeListener(){}}}}});
     assert.ok(bridge);
-    const params=()=>{const views=engine.accountViews(),source=views.find(row=>row.id==="source"),target=views.find(row=>row.id==="destination"),policy=require("../shared/mail-context-owner");return {items:[{emailId:"source-message",accountId:"source"}],contextOwners:[policy.capture(source,{id:"source-message",accountId:"source",folderId:"INBOX"})],destinationAccountId:"destination",destinationOwner:{accountId:"destination",bodyEpoch:target.bodyEpoch,connection:policy.connection(target)},folderId:"Archive"}};
+    const params=()=>{const views=engine.accountViews(),source=views.find(row=>row.id==="source"),target=views.find(row=>row.id==="destination"),policy=require("../shared/mail-context-owner");return {items:[{emailId:sourceIdentity.id,accountId:sourceIdentity.accountId}],contextOwners:kind==="local-copy"?[]:[policy.capture(source,sourceIdentity)],destinationAccountId:"destination",destinationOwner:{accountId:"destination",bodyEpoch:target.bodyEpoch,connection:policy.connection(target)},folderId:"Archive"}};
     const reviewed=await bridge.invoke("mail:crossMailboxCopy",{action:"review",...params()});assert.equal(reviewed.success,true,JSON.stringify(reviewed.error));
-    const result=await bridge.invoke("mail:crossMailboxCopy",{action:"copy",reviewId:reviewed.data.reviewId,emailId:"source-message",accountId:"source"});assert.equal(result.success,true,JSON.stringify(result.error));assert.equal(result.data.status,"copied");assert.equal(uploads,1);
+    if(kind==="local-copy")assert.ok(reviewed.data.notices.some(value=>value.includes("archived message date")));
+    const result=await bridge.invoke("mail:crossMailboxCopy",{action:"copy",reviewId:reviewed.data.reviewId,emailId:sourceIdentity.id,accountId:sourceIdentity.accountId});assert.equal(result.success,true,JSON.stringify(result.error));assert.equal(result.data.status,"copied");assert.equal(uploads,1);
     assert.equal(db.messageById("source-message").folder_path,"INBOX");assert.equal(db.messageById("source-message").unread,1);
     const second=await bridge.invoke("mail:crossMailboxCopy",{action:"review",...params()});
-    const reuse=await bridge.invoke("mail:crossMailboxCopy",{action:"copy",reviewId:second.data.reviewId,emailId:"source-message",accountId:"source"});assert.equal(reuse.data.status,"reused");assert.equal(uploads,1);
+    const reuse=await bridge.invoke("mail:crossMailboxCopy",{action:"copy",reviewId:second.data.reviewId,emailId:sourceIdentity.id,accountId:sourceIdentity.accountId});assert.equal(reuse.data.status,"reused");assert.equal(uploads,1);
+    if(kind==="local-copy"){
+      const local=await engine.answer("mail:readCachedBody",[{accountId:sourceIdentity.accountId,emailId:sourceIdentity.id}]);
+      assert.equal(local.data.email.unread,true);assert.equal(local.data.email.isStarred,true);return;
+    }
     const stale=await bridge.invoke("mail:crossMailboxCopy",{action:"review",...params()});
     hold=async id=>{if(id==="source")db.updateAccountLogin("destination",{username:"changed@fixture.invalid",profile:"custom",authKind:"password",imapHost:"imap.fixture.invalid",imapPort:993,imapTls:true,smtpHost:"smtp.fixture.invalid",smtpPort:465,smtpTls:true})};
     const denied=await bridge.invoke("mail:crossMailboxCopy",{action:"copy",reviewId:stale.data.reviewId,emailId:"source-message",accountId:"source"});assert.equal(denied.success,false);assert.equal(uploads,1);
@@ -71,7 +83,7 @@ async function scenario(kind){
 if(process.argv[2]==="fixture")scenario(process.argv[3]).then(()=>process.exit(0)).catch(error=>{console.error(error);process.exit(1)});
 else{
   const {test}=require("node:test");
-  for(const kind of ["copy","corrupt-start","corrupt-after"])test(`actual engine/preload ${kind} preserves safe Copy admission`,()=>{
+  for(const kind of ["copy","local-copy","corrupt-start","corrupt-after"])test(`actual engine/preload ${kind} preserves safe Copy admission`,()=>{
     const child=spawnSync(process.execPath,[__filename,"fixture",kind],{encoding:"utf8",timeout:20000});assert.equal(child.status,0,child.stderr||child.stdout);
   });
 }
