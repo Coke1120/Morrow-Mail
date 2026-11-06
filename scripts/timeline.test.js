@@ -320,22 +320,17 @@ test("host rejects unbounded or malformed focus before any AI request", async co
 });
 test("a valid saved v2 grant cannot transmit sender/date evidence before renewed manual consent", async context => {
   const fixture = memory(context, { noPermission: true });
-  // Recreate a valid prior-version grant using the production module's v2
-  // version-bound persistence/target logic, not a record with missing metadata.
-  const priorModule = { exports: {} };
-  vm.runInNewContext(read("host/ai-consent.js").replace("const VERSION = 4;", "const VERSION = 2;"), {
-    module: priorModule, exports: priorModule.exports, URL, AbortController, AbortSignal,
-    require: require("node:module").createRequire(path.join(__dirname, "../host/ai-consent.js")),
-  });
-  const prior = priorModule.exports.createConsent({ directory: () => fixture.directory, config: fixture.dependencies.config });
-  prior.grant({ token: prior.status().token, manual: true, background: true });
-  assert.equal(prior.status().manual, true); assert.equal(prior.status().background, true);
   const filename = path.join(fixture.directory, "ai-consent.json");
-  const legacy = JSON.parse(fs.readFileSync(filename));
+  const cfg = fixture.dependencies.config();
+  const legacy = { id: uuid(), version: 2, manual: true, background: true,
+    fingerprint: crypto.createHash("sha256").update(JSON.stringify([2, cfg.authMode,
+      require("../host/ai-config").completionsUrl(cfg.baseUrl), cfg.model, "", cfg.apiKey])).digest("hex") };
+  fs.writeFileSync(filename, JSON.stringify(legacy));
   assert.equal(legacy.version, 2);
   assert.equal(VERSION, 4);
   const review = fixture.consent.status();
-  assert.equal(review.manual, false); assert.equal(review.background, false);
+  assert.equal(review.manual, true); assert.equal(review.background, true);
+  assert.equal(review.scopes.timeline, false); assert.equal(review.scopes.case, false);
   for (const text of [review.disclosure, review.dataSummary, review.purposes]) {
     assert.match(text, /sender names and addresses, mail timestamps and date provenance/);
     assert.match(text, /optional keywords and contact emails/);
@@ -1555,17 +1550,19 @@ test("case reduction admits every semantic item and retains citation mail-date a
   assert.ok(report.current_status.length > 0);
 });
 
-test("current v3 consent requires renewed case disclosure without restoring background permission", async context => {
+test("verified v3 consent keeps unchanged Thread Timeline/background uses while Case needs incremental approval", async context => {
   const f = memory(context, { noPermission: true });
-  const priorModule = { exports: {} };
-  vm.runInNewContext(read("host/ai-consent.js").replace("const VERSION = 4;", "const VERSION = 3;"), {
-    module: priorModule, exports: priorModule.exports, URL, AbortController, AbortSignal,
-    require: require("node:module").createRequire(path.join(__dirname, "../host/ai-consent.js")),
-  });
-  const prior = priorModule.exports.createConsent({ directory: () => f.directory, config: f.dependencies.config });
-  prior.grant({ token: prior.status().token, manual: true, background: true });
+  const cfg = f.dependencies.config();
+  fs.writeFileSync(path.join(f.directory, "ai-consent.json"), JSON.stringify({ id: uuid(), version: 3, manual: true, background: true,
+    fingerprint: crypto.createHash("sha256").update(JSON.stringify([3, cfg.authMode,
+      require("../host/ai-config").completionsUrl(cfg.baseUrl), cfg.model, "", cfg.apiKey])).digest("hex") }));
   const status = f.consent.status();
-  assert.equal(status.version, 4); assert.equal(status.manual, false); assert.equal(status.background, false);
+  assert.equal(status.version, 4); assert.equal(status.manual, true); assert.equal(status.background, true);
+  assert.equal(status.scopes.timeline, true); assert.equal(status.scopes.case, false);
+  const thread = await f.prepare(); assert.equal(thread.allowed, true);
+  const reviewedCase = await casePreparation(f); assert.equal(reviewedCase.allowed, false);
+  await assert.rejects(caseGeneration(f, reviewedCase), { code: "ai-consent-required" });
+  assert.equal(f.calls.length, 0);
   assert.match(status.disclosure, /cross-thread case synthesis/);
   assert.match(status.dataSummary, /Main\/Background selections/);
   f.consent.grant({ token: status.token, manual: true, background: false });
@@ -1688,4 +1685,20 @@ test("body-free Case contexts reject broadened input and retain owner/source/acc
   f.changeAccount();
   await assert.rejects(f.service.invoke(1, "timeline:check", { manifestToken: refreshed.manifestToken }), { code: "timeline-source-changed" });
   assert.equal(f.calls.length, 0); assert.equal(f.downloads.length, 0);
+});
+
+test('ordinary AI permission cannot admit Thread Timeline or Case without their reviewed scope', async t => {
+  const f = memory(t);
+  const grant = scopes => f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes });
+  grant(['core']);
+  const prepared = await f.prepare(); assert.equal(prepared.allowed, false);
+  await assert.rejects(generation(f, prepared), { code: 'ai-consent-required' });
+  assert.equal(f.calls.length, 0); assert.equal(f.artifacts.size, 0);
+  grant(['core', 'timeline']);
+  const thread = await f.prepare(); assert.equal(thread.allowed, true);
+  const done = await generation(f, thread); assert.equal((await done.terminal).phase, 'completed');
+  assert.equal(f.calls[0].request.consentScope, 'timeline');
+  const selectedCase = await casePreparation(f); assert.equal(selectedCase.allowed, false);
+  await assert.rejects(caseGeneration(f, selectedCase), { code: 'ai-consent-required' });
+  assert.equal(f.calls.length, 1); assert.equal(f.artifacts.size, 1);
 });
