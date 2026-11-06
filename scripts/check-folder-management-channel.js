@@ -82,6 +82,38 @@ async function fixture() {
         remote.withClient = normalClient;
       }
     }
+    // Legacy Google OAuth IMAP shares the Desktop client binding even though
+    // its mailbox transport is not gmail_api. Changing that client after real
+    // secretFor validation must retire both managed creation and old nesting.
+    const desktop = id => JSON.stringify({ installed: { client_id: id, client_secret: "fixture-only", redirect_uris: ["http://localhost"] } });
+    const originalGoogleClient = config.loadGoogleClient().clientId;
+    const originalGoogleEnv = process.env.MORROW_GOOGLE_OAUTH_JSON;
+    delete process.env.MORROW_GOOGLE_OAUTH_JSON;
+    for (const operation of ["create", "move"]) {
+      config.importGoogleDesktopJson(desktop(originalGoogleClient));
+      const id = "legacy-client-" + operation; seed(id, "gmail", "oauth2"); db.setMailTransport(id, "imap");
+      const boxes = ["Parent", "Source", "Destination"].map(name => ({ path: name, name, delimiter: "/", flags: new Set() }));
+      db.replaceFolders(id, boxes.map(box => ({ path: box.path, name: box.name, wellKnown: null })), "/");
+      let writing = false, writes = 0, changed = false;
+      const revision = secrets.revision(id), epoch = engine.accountViews().find(row => row.id === id).bodyEpoch;
+      const changeClient = () => { changed = true; config.importGoogleDesktopJson(desktop("replacement-folder-client.apps.googleusercontent.com")); assert.notEqual(config.loadGoogleClient().clientId, originalGoogleClient); };
+      remote.withClient = async (account, secret, work, options) => {
+        if (account.id !== id) return normalClient(account, secret, work, options);
+        assert.equal(secret, "synthetic-access-token");
+        if (writing && operation === "move") { await Promise.resolve(); changeClient(); }
+        return work({ async list() { if (writing && operation === "create") changeClient(); return boxes; },
+          async mailboxCreate() { writes++; }, async mailboxRename() { writes++; } });
+      };
+      let result;
+      if (operation === "create") {
+        const reviewed = await invoke(id, "review", { intent: "create", folderId: "Parent" }); assert.equal(reviewed.success, true);
+        writing = true; result = await invoke(id, "create", { reviewId: reviewed.data.reviewId, name: "Blocked" });
+      } else { writing = true; result = await engine.answer("mail:moveFolder", [{ accountId: id, folderId: "Source", destinationId: "Destination" }]); }
+      assert.equal(changed, true); assert.equal(result.success, false, operation + " must reject a replaced Google client"); assert.equal(writes, 0, operation + " writes");
+      assert.equal(secrets.revision(id), revision); assert.equal(engine.accountViews().find(row => row.id === id).bodyEpoch, epoch);
+      remote.withClient = normalClient; config.importGoogleDesktopJson(desktop(originalGoogleClient));
+    }
+    if (originalGoogleEnv === undefined) delete process.env.MORROW_GOOGLE_OAUTH_JSON; else process.env.MORROW_GOOGLE_OAUTH_JSON = originalGoogleEnv;
     assert.equal((await invoke("gmail", "list", { expectedEpoch: undefined })).success, false);
     assert.equal(requests.length, 0);
     for (const accountId of ["outlook", "yahoo", "custom", "legacy"]) {
