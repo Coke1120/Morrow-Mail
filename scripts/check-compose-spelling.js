@@ -1,6 +1,10 @@
 const test = require('node:test'), assert = require('node:assert/strict'), { EventEmitter } = require('node:events'), { JSDOM } = require('jsdom');
+const path = require('node:path'), { pathToFileURL } = require('node:url');
 const { installComposeEditingMenu, composePage } = require('../host/compose-editing-menu');
-const htmlFile = '/synthetic/renderer/index.html', url = 'file:///synthetic/renderer/index.html?role=compose';
+// Derive both sides from the same absolute path, including the Windows drive.
+const htmlFile = path.resolve(__dirname, '..', 'renderer', 'index.html'), fixtureUrl = pathToFileURL(htmlFile);
+fixtureUrl.searchParams.set('role', 'compose');
+const url = fixtureUrl.href;
 function fixture(t) {
   const dom = new JSDOM('<dialog id="compose" open><div id="compose-editor" contenteditable="true" tabindex="0">Wrod</div><input id="compose-subject" value="Wrod"><textarea id="ai-prompt">Wrod</textarea></dialog>', { runScripts: 'outside-only', url });
   t.after(() => dom.window.close());
@@ -74,6 +78,11 @@ for (const kind of ['navigated', 'destroyed', 'frame', 'new-menu', 'changed-text
 });
 
 test('only the exact first-party compose page is accepted', () => {
+  assert.ok(path.isAbsolute(htmlFile));
+  if (process.platform === 'win32') assert.match(fixtureUrl.pathname, /^\/[A-Za-z]:\//);
   assert.equal(composePage(url, htmlFile), true); assert.equal(composePage('morrow://local/index.html?role=compose', htmlFile), true);
-  for (const value of ['file://remote/synthetic/renderer/index.html?role=compose', 'file:///different/index.html?role=compose', 'morrow://user@local/index.html?role=compose', 'data:text/html,compose', 'https://local/index.html?role=compose']) assert.equal(composePage(value, htmlFile), false);
+  const otherFile = pathToFileURL(path.resolve(path.dirname(htmlFile), 'other.html'));
+  otherFile.searchParams.set('role', 'compose');
+  const changedCase = new URL(url); changedCase.pathname = changedCase.pathname.replace(/index\.html$/, 'INDEX.html');
+  for (const value of [otherFile.href, changedCase.href, 'file://remote/synthetic/renderer/index.html?role=compose', 'file:///different/index.html?role=compose', 'morrow://user@local/index.html?role=compose', 'data:text/html,compose', 'https://local/index.html?role=compose']) assert.equal(composePage(value, htmlFile), false);
 });
