@@ -92,7 +92,7 @@ test("selection callbacks keep reviewed IDs and Trash never uses permanent batch
   assert.match(f.action('Move to trash').title, /never deletes permanently/);
 });
 
-test("confirmation and transfer review survive navigation but reject replaced source accounts and remote destination tampering", async t => {
+test("confirmation and Local transfer survive navigation but reject replaced sources and an unreviewed remote destination", async t => {
   const f = fixture(t);
   f.ui.run("askConfirm=()=>new Promise(resolve=>globalThis.confirmLater=resolve)");
   f.open(); f.action('Move to trash').click(); await tick();
@@ -103,13 +103,13 @@ test("confirmation and transfer review survive navigation but reject replaced so
   const accounts = f.document.getElementById('local-transfer-account');
   assert.equal(accounts.value, f.ui.run('LOCAL_ACCOUNT_ID'));
   assert.equal(accounts.options.length, 3);
-  assert.equal(accounts.options[1].disabled, true);
-  assert.equal(accounts.options[2].disabled, true);
-  assert.match(f.document.getElementById('local-transfer-capability').textContent, /into another connected mailbox is not supported yet/);
+  assert.equal(accounts.options[1].disabled, false);
+  assert.equal(accounts.options[2].disabled, false);
+  assert.match(f.document.getElementById('local-transfer-capability').textContent, /Local Folders is available/);
   f.ui.run("call=async(channel,params)=>{hits.push({channel,params});return {status:'copied'}}; renderAccounts=async()=>{}; loadList=async()=>{};");
   accounts.value='b'; await f.ui.run('commitLocalTransfer()');
   assert.equal(f.ui.run('hits.some(row=>row.channel)'), false);
-  assert.match(f.document.getElementById('local-transfer-status').textContent, /Choose Local Folders/);
+  assert.match(f.document.getElementById('local-transfer-status').textContent, /Choose an enabled Copy destination/);
   accounts.value = f.ui.run('LOCAL_ACCOUNT_ID');
   f.ui.run("state.accountId='b'; state.selectedIds=['selected']; state.email=state.emails[1]");
   await f.ui.run('commitLocalTransfer()');
