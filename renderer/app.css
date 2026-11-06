@@ -3466,6 +3466,20 @@ button.account .folder-twist-mark { margin-right: 4px; vertical-align: middle; }
 
 button.account:hover { background: rgba(255, 255, 255, 0.1); }
 
+button.account.mailbox-account {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 5px 8px;
+}
+
+button.mailbox-account .folder-twist-mark { flex: none; margin: 0; }
+.account-identity { display: block; flex: 1 1 auto; min-width: 0; }
+.account-address, .account-detail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-address { color: #fff; font-size: 12px; line-height: 17px; font-weight: 650; }
+.account-detail { font-size: 11px; line-height: 15px; font-weight: 450; }
+
 button.all-account-mail {
   display: flex;
   align-items: center;
@@ -6190,7 +6204,7 @@ html[data-window="translate"] #reader .translate-column h2 {
 #local-transfer .row { flex-wrap: wrap; }
 #local-transfer :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
 #folders .local-account-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 10px 0 2px; min-width: 0; }
-#folders .local-account-heading > .account { flex: 1 1 120px; width: auto; min-height: 28px; margin: 0; }
+#folders .local-account-heading > .account { flex: 1 1 120px; width: auto; min-height: 44px; margin: 0; }
 #folders .local-folder-actions { display: flex; flex: none; gap: 4px; margin-left: auto; padding: 0 2px; }
 .local-folder-action svg { display: block; }
 #reader .local-reader-note { margin: 12px 20px; }
