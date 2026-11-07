@@ -303,6 +303,9 @@ async function run() {
     const mint = platform => auth.mint({ label: "Synthetic bot", platform, accountIds: ["a"], capabilities: ["mail.headers.read", "mail.bodies.read"] });
     assert.throws(() => mint("unknown"), /Choose Grok/);
     const legacy = mint(); assert.equal(legacy.grant.platform, "grok_bot");
+    const mcpAgent = mint("mcp_agent");
+    assert.equal(mcpAgent.grant.platform, "mcp_agent");
+    assert.equal(mcpAgent.grant.proactive, null, "new MCP grants never authorize background delivery implicitly");
     const file = path.join(temp, "bot-access.json"), stored = JSON.parse(fs.readFileSync(file));
     delete stored.grants[0].platform; delete stored.grants[0].proactive;
     fs.writeFileSync(file, JSON.stringify(stored));

@@ -5,6 +5,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const crypto = require("node:crypto"), { spawn } = require("node:child_process");
 const { PassThrough } = require("node:stream");
 const { once } = require("node:events");
+const http = require("node:http");
 const adapter = require("../host/bot/mcp-client");
 const mcp = require("../host/bot/mcp-catalog"), catalog = require("../host/bot/catalog");
 const root = path.join(__dirname, "..");
@@ -26,13 +27,13 @@ async function protocolChecks() {
     assert.match(row.tool.description, /untrusted data/);
   }
   const input = new PassThrough(), output = new PassThrough(), responses = [], invocations = [];
-  let text = "", resolveHeld;
+  let text = "", resolveHeld; const held = [];
   output.on("data", chunk => { text += chunk; let end; while ((end = text.indexOf("\n")) >= 0) {
     responses.push(JSON.parse(text.slice(0, end))); text = text.slice(end + 1);
   } });
   const running = adapter.start({ input, output, config: {}, invoke(...args) {
     invocations.push(args);
-    return new Promise(resolve => { resolveHeld = resolve; });
+    return new Promise(resolve => { resolveHeld = resolve; held.push(resolve); });
   } });
   const send = (id, method, params) => input.write(JSON.stringify({ jsonrpc: "2.0", ...(id !== undefined ? { id } : {}), method, params }) + "\n");
   send(1, "server/discover", {}); assert.equal(responses.at(-1).error.code, -32601, "modern discovery can identify the supported legacy handshake");
@@ -58,9 +59,29 @@ async function protocolChecks() {
   assert.equal(responses.at(-1).error.code, -32700);
   input.write(Buffer.from([0xff, 10])); assert.equal(responses.at(-1).error.code, -32700);
   send(11, "ping", {}); assert.deepEqual(responses.at(-1).result, {});
+  send(12, "tools/call", { name: tool("accounts.list"), arguments: {} });
+  send(13, "tools/call", { name: tool("accounts.list"), arguments: {} });
+  send(14, "tools/call", { name: tool("accounts.list"), arguments: {} });
+  assert.equal(responses.at(-1).error.code, -32000); assert.equal(invocations.length, 3, "a third concurrent request is never queued");
+  send(12, "tools/call", { name: tool("accounts.list"), arguments: {} });
+  assert.equal(responses.at(-1).error.code, -32600, "an in-flight MCP ID cannot be reused");
+  for (const resolve of held) resolve({ ok: true, data: {} }); await tick();
   input.write("x".repeat(adapter.MAX_INPUT + 1));
-  assert.equal(responses.at(-1).error.code, -32600); assert.equal(invocations.length, 1);
+  assert.equal(responses.at(-1).error.code, -32600); assert.equal(invocations.length, 3);
   running.stop(); input.destroy(); output.destroy();
+  for (const protocolVersion of adapter.PROTOCOLS) {
+    const input = new PassThrough(), output = new PassThrough(); const messages = [];
+    output.on("data", bytes => messages.push(JSON.parse(bytes.toString())));
+    const server = adapter.start({ input, output, config: {}, invoke: async () => ({ ok: true, data: {} }) });
+    input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { ...INIT, protocolVersion } }) + "\n");
+    assert.equal(messages[0].result.protocolVersion, protocolVersion);
+    input.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+    input.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool("accounts.list"), arguments: {} } }) + "\n");
+    await tick();
+    assert.equal(Object.hasOwn(messages[1].result, "structuredContent"), protocolVersion !== "2025-03-26");
+    assert.equal(JSON.parse(messages[1].result.content[0].text).ok, true);
+    server.stop(); input.destroy(); output.destroy();
+  }
 }
 
 function childClient(script, tokenFile, installationId, cwd) {
@@ -101,6 +122,54 @@ function childClient(script, tokenFile, installationId, cwd) {
     try { const [code] = await exited; assert.equal(code, 0); assert.equal(stderr, ""); }
     finally { clearTimeout(timer); }
   } };
+}
+
+async function transportChecks() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-mcp-wire-"));
+  const token = "mmb_v1_synthetickey." + "x".repeat(40), tokenFile = path.join(dir, "private-token");
+  fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+  const config = { tokenFile, installationId: crypto.randomUUID() };
+  let scenario = "ok", requests = 0;
+  const server = http.createServer((req, res) => {
+    requests++;
+    assert.equal(req.headers.authorization, "Bearer " + token);
+    assert.equal(req.headers["tailscale-app-capabilities"], catalog.markerJson());
+    const chunks = [];
+    req.on("data", chunk => chunks.push(chunk));
+    req.on("end", () => {
+      const request = JSON.parse(Buffer.concat(chunks));
+      const result = { apiVersion: "1.0", requestId: request.requestId, installationId: config.installationId, ok: true, data: {} };
+      res.setHeader("Content-Type", "application/json");
+      if (scenario === "redirect") { res.writeHead(302, { location: "https://untrusted.invalid/secret" }).end(); return; }
+      if (scenario === "html") { res.end("<html>RAW_ERROR_SENTINEL</html>"); return; }
+      if (scenario === "large") { res.end("x".repeat(128 * 1024 + 1)); return; }
+      if (scenario === "utf8") { res.end(Buffer.from([0xff])); return; }
+      if (scenario === "request-id") result.requestId = crypto.randomUUID();
+      if (scenario === "installation") result.installationId = crypto.randomUUID();
+      if (scenario === "dropped-write") { res.destroy(); return; }
+      res.end(JSON.stringify(result));
+    });
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(47831, "127.0.0.1", resolve); });
+  try {
+    assert.equal((await adapter.callBridge(config, "accounts.list", {}, crypto.randomUUID())).ok, true);
+    for (scenario of ["redirect", "html", "large", "utf8", "request-id", "installation"]) {
+      const before = requests;
+      await assert.rejects(adapter.callBridge(config, "accounts.list", {}, crypto.randomUUID()), error => {
+        assert.equal(error.code, "LOCAL_BRIDGE_UNAVAILABLE"); assert.ok(!error.message.includes("RAW_ERROR_SENTINEL")); return true;
+      });
+      assert.equal(requests, before + 1, "failed/foreign responses are never followed or retried: " + scenario);
+    }
+    scenario = "dropped-write";
+    const before = requests;
+    await assert.rejects(adapter.callBridge(config, "mail.send", { accountId: "alpha", to: ["synthetic@example.test"], subject: "s", bodyText: "b" }, crypto.randomUUID()), error => {
+      assert.equal(error.code, "WRITE_OUTCOME_UNCONFIRMED"); assert.match(error.message, /original requestId/); return true;
+    });
+    assert.equal(requests, before + 1, "uncertain writes never retry automatically");
+  } finally {
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function integrationChecks() {
@@ -221,6 +290,6 @@ async function integrationChecks() {
   }
 }
 
-async function run() { await protocolChecks(); await integrationChecks(); console.log("mcp-ok (stdio, standalone package, actual bridge permissions, receipts, CLI compatibility; synthetic mail only)"); }
+async function run() { await protocolChecks(); await transportChecks(); await integrationChecks(); console.log("mcp-ok (stdio, bounded/failed transport, standalone package, actual bridge permissions, receipts, CLI compatibility; synthetic mail only)"); }
 module.exports = { run };
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });
