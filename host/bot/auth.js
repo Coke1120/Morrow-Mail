@@ -13,7 +13,7 @@ const { accessPath, writePrivate } = require("./store");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN = /^mmb_v1_([A-Za-z0-9_-]{8,32})\.([A-Za-z0-9_-]{40,80})$/;
 const STORE_KEYS = ["version", "enabled", "installationId", "serveHost", "grants"];
-const PLATFORMS = { grok_bot: "Grok Bot", hermes_agent: "Hermes Agent" };
+const PLATFORMS = { mcp_agent: "MCP agent", grok_bot: "Grok Bot", hermes_agent: "Hermes Agent" };
 const listeners = new Set();
 function changed(clientId) { for (const fn of listeners) { try { fn(clientId); } catch { /* invalidation is best effort */ } } }
 function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -315,7 +315,7 @@ function mint(input) {
   const label = typeof body.label === "string" ? body.label.trim() : "";
   if (!label || label.length > 60) throw publicError("Name the client in 1 to 60 characters.");
   const platform = body.platform === undefined ? "grok_bot" : body.platform;
-  if (!Object.hasOwn(PLATFORMS, platform)) throw publicError("Choose Grok Bot or Hermes Agent.");
+  if (!Object.hasOwn(PLATFORMS, platform)) throw publicError("Choose MCP agent, Grok Bot or Hermes Agent.");
   const accountIds = normalizeAccounts(body.accountIds);
   const capabilities = normalizeCapabilities(body.capabilities || DEFAULT_CAPABILITIES);
   validateMailActionConsent(body.mailActionConsent, accountIds, capabilities);

@@ -75,6 +75,7 @@ function snapshot() {
     endpoints: catalog.endpoints(view.serveHost),
     serveCommands: catalog.serveCommands(view.serveHost),
     markerJson: catalog.markerJson(),
+    mcp: require("./mcp-setup").describe(),
     accounts: accounts(),
     grants: (view.grants || []).map(grant => ({ ...grant, proactiveStatus: proactiveStatuses[grant.clientId] || null })),
     platforms: auth.PLATFORMS,

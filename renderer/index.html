@@ -637,9 +637,10 @@
         <p class="hint" id="cli-runtime-queries">The offline runtime regression is <code>node scripts/check-runtime-10k.js</code>. It creates over 10,000 synthetic temporary rows and checks search ranking, per-message Gmail count/resume commits, held-unread aggregate plans, body-free action membership, optional thread omission and validated desktop refresh cursors. <code>node scripts/check-performance-storage.js</code> checks visited-row IMAP reconciliation; <code>node scripts/check-startup-preparation.js</code> checks tiny-journal age/cost gates and rotation. These use no real accounts or credentials. Internal desktop changes add no bot commands or permissions; existing bot offset pagination is unchanged. Checkpoint scheduling changes do not weaken durable acknowledgement or fsync.</p>
         <p class="hint" id="cli-ai-connection">AI authentication and AI data permission are configured in desktop Settings → AI or Morrow Mail → AI Setup. Existing connections require disclosure and affirmative approval before AI transfers. Background AI needs a separate opt-in. Cancel / revoke blocks pending and future AI transfers. ChatGPT sign-in, callback paste-back and credentials are not exposed through the CLI or bot bridge. The existing API key/custom endpoint choice remains available. ChatGPT adds no general-purpose model proxy. Ordinary bot mail operations do not grant AI permission.</p>
         <section class="cli-guide" aria-labelledby="cli-bot-title">
-          <h3 id="cli-bot-title">Bot access today</h3>
-          <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Bot access, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
-          <p id="cli-proactive">Grok Bot and Hermes Agent use the same Node client and HTTP operations below. Configure proactive notify in Settings → Bot access → Your bots: explicitly allow background delivery, choose granted mailboxes, interval (1–10080 minutes) or five-field cron in this computer’s time zone, folder and optional permitted cached text. Keep Morrow open and awake with bot access listening. The webhook receives <code>proactive.mail_digest</code> with <code>contentTrust: untrusted_mail_data</code> and a stable <code>deliveryId</code>; acknowledge with a small 2xx response and deduplicate that ID. Only private Tailscale HTTPS or loopback is allowed; no Funnel, redirects, attachment bytes or forced downloads. Up to 10 of the newest 50 cached rows per mailbox, 128 KiB per delivery, 2 attempts per slot; 2,000 successful IDs remembered per mailbox. Target/data-scope changes reset that cursor. Stop/revoke cannot recall delivered data. A failed acknowledgement/cursor save halts delivery until Morrow restarts; Settings shows Halted instead of a runnable next slot. Inspect storage before restarting because mail may repeat. Saving settings or toggling access does not resume delivery. The platform bot decides what to do; push never runs local AI, triage, drafts or sending. Proactive delivery grants no mail-change or send permission.</p>
+          <h3 id="cli-bot-title">Agent access / MCP and API compatibility</h3>
+          <p id="cli-mcp">Connect a local stdio MCP client in Settings → Agent access / MCP → Connect MCP. Install Node.js 20+ separately on the Morrow computer; keep Morrow open and access enabled. Installed builds containing this feature include <code>resources/morrow-mcp.cjs</code> (macOS: <code>Contents/Resources/morrow-mcp.cjs</code>); Settings supplies its full path. Source checkouts need <code>npm ci</code> and use <code>scripts/morrow-mcp.js</code>. Morrow does not bundle/check Node or configure an agent automatically. Copy the command/args into your client’s stdio configuration, merging with other servers. The config contains an absolute private token-file path and installation ID, never the secret. Node reads the owner-only file on each call; restrict its Windows ACL or use mode 0600 on macOS/Linux. Endpoint, token-file and installation overrides are not tool arguments; the adapter connects only to <code>127.0.0.1:47831</code>. There is no remote MCP endpoint. Supported handshake versions: 2025-03-26, 2025-06-18 and 2025-11-25; no resources, prompts, sampling or background MCP subscriptions. Tool names use <code>morrow_</code> plus the operation below with dots replaced by underscores, such as <code>morrow_mail_list_cached</code>. Current permission controls discovery and every call through the same authenticated bridge. Write tools require a UUID <code>requestId</code> argument separate from the MCP request ID; preserve it and exact arguments to inspect the original receipt. No automatic retry; pending is not provider confirmation. Cancellation cannot recall a submitted write. Existing API/CLI and separately reviewed proactive webhooks remain supported; a webhook acknowledgement does not prove agent completion. Run <code>npm run test:mcp</code> for synthetic protocol, permissions, packaged-adapter and compatibility checks.</p>
+          <p>The Node client calls the running app. Keep Morrow open, choose mailboxes and permissions in Settings → Agent access / MCP, then turn access on. Body text and attachment names need extra read permissions. Responses use JSON; mail text stays untrusted.</p>
+          <p id="cli-proactive">Grok Bot and Hermes Agent use the same Node client and HTTP operations below. Configure proactive notify in Settings → Agent access / MCP → Your bots: explicitly allow background delivery, choose granted mailboxes, interval (1–10080 minutes) or five-field cron in this computer’s time zone, folder and optional permitted cached text. Keep Morrow open and awake with bot access listening. The webhook receives <code>proactive.mail_digest</code> with <code>contentTrust: untrusted_mail_data</code> and a stable <code>deliveryId</code>; acknowledge with a small 2xx response and deduplicate that ID. Only private Tailscale HTTPS or loopback is allowed; no Funnel, redirects, attachment bytes or forced downloads. Up to 10 of the newest 50 cached rows per mailbox, 128 KiB per delivery, 2 attempts per slot; 2,000 successful IDs remembered per mailbox. Target/data-scope changes reset that cursor. Stop/revoke cannot recall delivered data. A failed acknowledgement/cursor save halts delivery until Morrow restarts; Settings shows Halted instead of a runnable next slot. Inspect storage before restarting because mail may repeat. Saving settings or toggling access does not resume delivery. The platform bot decides what to do; push never runs local AI, triage, drafts or sending. Proactive delivery grants no mail-change or send permission.</p>
           <p id="cli-hermes">Native Hermes Push: choose <strong>Hermes native webhook · HMAC V2</strong> in Proactive notify and supply its route signing secret in the password field. Existing saved Bearer settings keep their mode. Morrow signs the exact raw JSON with a fresh Unix timestamp (<code>X-Webhook-Signature-V2</code>, <code>X-Webhook-Timestamp</code>) and sends the stable delivery ID as <code>X-Request-ID</code> and <code>Idempotency-Key</code>. Retries preserve body/ID; keep clocks within Hermes’ 300-second replay window. To execute the email profile, configure Hermes multiplexing, serve that profile and bind the route with <code>profile: email</code>, then use <code>/p/email/webhooks/morrow-mail</code>. <code>deliver: email</code> selects an output destination. Same-host loopback reaches only this computer; a different host needs private Tailscale HTTPS with Funnel off. HTTP 202 accepts work for handling or buffering; HTTP 200 may mean duplicate, ignored or direct delivery. Neither confirms agent completion. Verify the intended Bot Chat result before disabling fallback cron. See <code>docs/BOT_BRIDGE.md</code> for setup and acceptance steps; this feature does not configure Hermes, activate Push or change cron for you.</p>
           <p id="cli-account-safety">Account-scoped calls require a connected, granted mailbox. A removed account returns <code>NOT_FOUND</code>, including direct message IDs, attachment metadata and proposal lists. These access checks do not automatically delete retained legacy data.</p>
           <dl class="cli-capabilities" id="cli-operations">
@@ -660,9 +661,9 @@
           <summary>Connect another device with Tailscale</summary>
           <ol>
             <li>Connect both devices to your tailnet. Use Tailscale v1.92+ for app-capability forwarding, with tailnet HTTPS and access to the chosen host/port. The tailnet policy must grant <code>com.coke1120.morrow-mail/bot-access</code> with <code>readBridge: true</code>.</li>
-            <li>In Settings → Bot access, create a bot with explicit mailboxes, permissions and expiry. Keep its secret in a private token file (mode <code>0600</code>), outside chat and command arguments. Record the installation ID.</li>
+            <li>In Settings → Agent access / MCP, create a bot with explicit mailboxes, permissions and expiry. Keep its secret in a private token file (mode <code>0600</code>), outside chat and command arguments. Record the installation ID.</li>
             <li>Keep Morrow open and turn on bot access. It listens only on <code>127.0.0.1:47831</code>. Joining Tailscale alone does not make that port reachable remotely.</li>
-            <li>On the Morrow computer, run the Serve command below. Save the exact Serve hostname and HTTPS port in Bot access, then use Check connection. Saving a hostname does not configure Serve or prove the link works.</li>
+            <li>On the Morrow computer, run the Serve command below. Save the exact Serve hostname and HTTPS port in Agent access / MCP, then use Check connection. Saving a hostname does not configure Serve or prove the link works.</li>
             <li>On the other device, use the paired HTTPS endpoint and installation ID with <code>bridge.describe</code>. Morrow does not install/configure Tailscale. Keep Funnel off; do not expose this service publicly.</li>
           </ol>
         </details>
@@ -1188,7 +1189,7 @@
         <button type="button" id="settings-tab-brain" data-fold="brain" role="tab" aria-controls="settings-brain" aria-selected="false" aria-current="false" tabindex="-1">Brain</button>
         <button type="button" id="settings-tab-ai" data-fold="ai" role="tab" aria-controls="settings-ai" aria-selected="false" aria-current="false" tabindex="-1">AI</button>
         <button type="button" id="settings-tab-ooo" data-fold="ooo" role="tab" aria-controls="settings-ooo" aria-selected="false" aria-current="false" tabindex="-1">Out of Office</button>
-        <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
+        <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Agent access / MCP</button>
         <button type="button" id="settings-tab-support" data-fold="support" role="tab" aria-controls="settings-support" aria-selected="false" aria-current="false" tabindex="-1">Support</button>
       </nav>
       <section class="settings-account-context" aria-label="Settings mailbox" hidden>
@@ -1587,19 +1588,19 @@
         </section>
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
-          <h3 id="settings-bot-title">Bot access</h3>
-          <p class="hint">Connect Grok Bot or Hermes Agent to only the mailboxes you choose. It cannot send mail unless you allow it. Follow the numbered steps in order.</p>
-          <div class="section-nav" id="bot-sections" role="tablist" aria-label="Bot access steps">
+          <h3 id="settings-bot-title">Agent access / MCP</h3>
+          <p class="hint">Connect an agent through local MCP to only the mailboxes you choose. Sending and mail changes need separate permission. Existing Grok Bot, Hermes, API, CLI and proactive webhook connections keep working.</p>
+          <div class="section-nav" id="bot-sections" role="tablist" aria-label="Agent access / MCP steps">
             <button type="button" id="bot-tab-grants" role="tab" data-bot-section="grants" aria-controls="bot-panel-grants" aria-selected="true" tabindex="0"><span class="bot-step-num" aria-hidden="true">1</span>Create bot</button>
             <button type="button" id="bot-tab-local" role="tab" data-bot-section="local" aria-controls="bot-panel-local" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">2</span>Turn on access</button>
-            <button type="button" id="bot-tab-tailscale" role="tab" data-bot-section="tailscale" aria-controls="bot-panel-tailscale" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">3</span>Another device <span class="bot-step-optional">optional</span></button>
-            <button type="button" id="bot-tab-agent" role="tab" data-bot-section="agent" aria-controls="bot-panel-agent" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">4</span>Bot setup</button>
+            <button type="button" id="bot-tab-agent" role="tab" data-bot-section="agent" aria-controls="bot-panel-agent" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">3</span>Connect MCP</button>
+            <button type="button" id="bot-tab-tailscale" role="tab" data-bot-section="tailscale" aria-controls="bot-panel-tailscale" aria-selected="false" tabindex="-1"><span class="bot-step-num" aria-hidden="true">4</span>Compatibility <span class="bot-step-optional">optional</span></button>
             <button type="button" id="bot-tab-activity" class="bot-tab-aside" role="tab" data-bot-section="activity" aria-controls="bot-panel-activity" aria-selected="false" tabindex="-1">Activity</button>
           </div>
           <p id="bot-status" role="status"></p>
           <div id="bot-panel-local" role="tabpanel" aria-labelledby="bot-tab-local" hidden>
           <h4>Turn on access on this computer</h4>
-          <p class="hint">Bot access starts a listener on this computer while Morrow is open. It listens only at <code>127.0.0.1:47831</code> and does not publish an HTTPS address.</p>
+          <p class="hint">Agent access / MCP starts a listener on this computer while Morrow is open. It listens only at <code>127.0.0.1:47831</code> and does not publish an HTTPS address.</p>
           <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Turn on bot access on this computer</label>
           <p id="bot-enable-help" class="hint">Create a bot that has not expired first.</p>
           <p id="bot-listen" class="hint" role="status"></p>
@@ -1614,7 +1615,8 @@
           </details>
           </div>
           <div id="bot-panel-tailscale" role="tabpanel" aria-labelledby="bot-tab-tailscale" hidden>
-          <h4>Reach from another device</h4>
+          <h4>Existing API connections from another device</h4>
+          <p class="hint">Compatibility only: this private HTTPS setup is for the existing API and CLI. MCP in this version uses local stdio on the Morrow computer; there is no remote MCP endpoint.</p>
           <p class="hint">Morrow does not forward HTTPS to <code>http://127.0.0.1:47831</code>. On this computer, Tailscale Serve is what makes a private HTTPS address reach the listener. Saving a name here does not set that up.</p>
           <p id="bot-remote-status" class="hint" role="status">Not checked.</p>
           <div class="bot-remote-step">
@@ -1693,7 +1695,7 @@
           <summary>Add a bot</summary>
           <form id="bot-mint">
             <label for="bot-platform">Platform</label>
-            <select id="bot-platform"><option value="grok_bot">Grok Bot</option><option value="hermes_agent">Hermes Agent</option></select>
+            <select id="bot-platform"><option value="mcp_agent">MCP agent</option><option value="grok_bot">Grok Bot (existing integration)</option><option value="hermes_agent">Hermes Agent</option></select>
             <label for="bot-label">Bot name</label>
             <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. My assistant" />
             <fieldset id="bot-accounts" aria-describedby="bot-account-help">
@@ -1756,10 +1758,27 @@
           <ul id="bot-audit" aria-label="Recent bot calls"></ul>
           </div>
           <div id="bot-panel-agent" role="tabpanel" aria-labelledby="bot-tab-agent" hidden>
-          <h4>Connect your bot</h4>
-          <p class="hint">Copy or download the setup prompt for this installation. Morrow fills the operations, marker, and budgets. The prompt tells the bot how to call Morrow; it does not grant access.</p>
-          <label for="bot-setup-client">Bot</label>
-          <select id="bot-setup-client" aria-label="Bot for setup prompt"></select>
+          <h4>Connect your agent through MCP</h4>
+          <p class="hint">Your MCP client starts the adapter over stdio on this computer. Keep Morrow open with access on. Install Node.js 20 or newer separately; an installed Morrow app alone is not a Node runtime. No port or remote MCP address is added.</p>
+          <label for="bot-setup-client">Agent</label>
+          <select id="bot-setup-client" aria-label="Agent for MCP or compatibility setup"></select>
+          <p id="bot-mcp-launcher" class="hint"></p>
+          <label for="bot-mcp-node">Node command or full executable path</label>
+          <input id="bot-mcp-node" value="node" autocomplete="off" spellcheck="false" aria-describedby="bot-mcp-node-help" />
+          <p id="bot-mcp-node-help" class="hint">Use the full Node executable path if your MCP client does not inherit your terminal PATH. Morrow does not install Node or check this executable.</p>
+          <label for="bot-mcp-token-file">Private secret file · absolute path</label>
+          <input id="bot-mcp-token-file" autocomplete="off" spellcheck="false" aria-describedby="bot-mcp-token-help" />
+          <p id="bot-mcp-token-help" class="hint">Put the secret shown once in an owner-only file yourself: mode 0600 on macOS/Linux; restrict the Windows file ACL to your user. Enter only its path here. This form is not saved and never reads or copies the secret into config.</p>
+          <pre id="bot-mcp-config" class="bot-command" aria-label="MCP client configuration"></pre>
+          <div class="row"><button type="button" class="primary icon-label" id="bot-mcp-copy" disabled>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span>Copy MCP configuration</span>
+          </button></div>
+          <p id="bot-mcp-status" class="hint" role="status" aria-live="polite"></p>
+          <p class="hint">Merge this entry into your client’s MCP configuration; do not overwrite other servers. Client formats vary: use this command and args as a stdio server. Configuration does not grant permission. Tools recheck access on every call; writes require the original UUID requestId. Cancel cannot recall a submitted write. Activity shows the existing receipts and audit history.</p>
+          <p class="hint">Proactive notify stays under Your bots with its separate background review and existing Bearer or Hermes HMAC webhook. It is not an MCP subscription and is never enabled by copying configuration.</p>
+          <details class="settings-disclosure" id="bot-legacy-setup"><summary>Existing API / CLI setup</summary>
+          <p class="hint">Existing credentials, HTTP operations and Node CLI remain supported. Copy or download the compatibility setup prompt for this installation; it grants no new access.</p>
           <fieldset id="bot-setup-target">
             <legend>Setup target</legend>
             <label class="check"><input type="radio" name="bot-setup-target" value="local" checked /> This computer</label>
@@ -1776,6 +1795,7 @@
             </button>
             <button type="button" class="ghost" id="bot-download-skill">Download SKILL.md</button>
           </div>
+          </details>
           </div>
           </div>
         </section>
@@ -1887,7 +1907,7 @@
           <button type="button" class="ghost" id="bot-secret-close">Close</button>
         </div>
         <details class="settings-disclosure"><summary>Lost a secret?</summary>
-          <p class="hint">Replace it under Bot access → Your bots. The old secret stops working immediately. Morrow stores only a verifier.</p>
+          <p class="hint">Replace it under Agent access / MCP → Your bots. The old secret stops working immediately. Morrow stores only a verifier.</p>
         </details>
       </form>
     </dialog>
