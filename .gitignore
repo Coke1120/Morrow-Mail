@@ -15,5 +15,6 @@ out/
 Library/
 resources/ui.asar
 resources/google-oauth.json
+resources/morrow-mcp.cjs
 github-update.json
 .env
