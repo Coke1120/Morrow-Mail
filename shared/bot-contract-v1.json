@@ -32,7 +32,8 @@
   },
   "platforms": [
     "grok_bot",
-    "hermes_agent"
+    "hermes_agent",
+    "mcp_agent"
   ],
   "mailChanges": {
     "capabilities": ["mail.archive", "mail.read_state.write", "mail.trash"],

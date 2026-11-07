@@ -18010,7 +18010,8 @@ function cliCatalog() {
     { group: "Verify", command: "node scripts/check-windows-icon.js \"path/to/Morrow Mail.exe\"", action: "On Windows, check the installed executable icon and version strings. This does not clear the system icon cache." },
     { group: "Verify", command: "codesign --verify --deep --strict --verbose=2 \"dist/mac-arm64/Morrow Mail.app\"", action: "After a local ARM64 pack, this has to succeed. Ad hoc signing is not Developer ID or notarization." },
     { group: "Verify", command: "codesign -dv --verbose=4 \"dist/mac-arm64/Morrow Mail.app\"", action: "Print the signature. Expect Signature=adhoc and no Developer ID or TeamIdentifier." },
-    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "Call the loopback bridge while Morrow is open and bot access is on. params.json is {}. Replace placeholders; use --token-file, never --token." },
+    { group: "MCP", command: "node scripts/morrow-mcp.js --token-file /absolute/path/to/morrow-agent-token --installation '<installation-id-from-settings>'", action: "Source-checkout stdio adapter: npm ci and a separate Node.js 20+ runtime are required. Installed builds use the standalone adapter path from Agent access / MCP instead. Keep Morrow open and access on. No remote endpoint, secret argument or automatic retry." },
+    { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "Compatibility: call the loopback bridge while Morrow is open and agent access is on. params.json is {}. Replace placeholders; use --token-file, never --token." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --endpoint https://your-mac.your-tailnet.ts.net:8443/api/bot/v1/call --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation bridge.describe --params-file ./params.json", action: "After the Tailscale steps, use the exact paired HTTPS endpoint. TLS is verified; redirects and non-loopback plain HTTP are rejected." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.list_cached --params-file ./list.json", action: "List the granted account's cached inbox with the list.json example above. This does not fetch new mail or mark it read." },
     { group: "Bot bridge", command: "node scripts/morrow-bot-call.js --token-file /path/to/morrow-bot-token --installation '<installation-id-from-settings>' --operation mail.send --request-id '<uuid>' --params-file ./send.json", action: "Sends immediately with mail.send permission. Use the send.json example; keep the same UUID and content for retries. Mail-provider submission cannot be recalled once it begins. A complete IMAP reply records its indicator and attempts a server flag; flag failure never resends mail." },
@@ -19357,7 +19358,7 @@ const settingsFoldLoadingLabels = {
   compose: "Loading compose defaults…",
   brain: "Loading Brain settings…",
   ooo: "Checking Out of Office status…",
-  bot: "Loading Bot access…",
+  bot: "Loading Agent access / MCP…",
 };
 function setSettingsFoldLoading(fold, label) {
   if (!fold) return;
@@ -26375,13 +26376,13 @@ function botListenerStatus(access) {
   const listen = (access && access.listen) || {};
   const where = "This is the listener on this computer.";
   if (listen.listening) return `${where} Listening on ${listen.address || "127.0.0.1"}:${listen.port || 47831}.`;
-  if (listen.error === "port_in_use") return `${where} Could not start: port 47831 is in use. Bot access is not listening. Quit the other program using port 47831, or restart Morrow.`;
-  if (listen.error) return `${where} Could not start. Bot access is not listening. ${listen.error}`;
-  return `${where} Bot access is not listening.`;
+  if (listen.error === "port_in_use") return `${where} Could not start: port 47831 is in use. Agent access / MCP is not listening. Quit the other program using port 47831, or restart Morrow.`;
+  if (listen.error) return `${where} Could not start. Agent access / MCP is not listening. ${listen.error}`;
+  return `${where} Agent access / MCP is not listening.`;
 }
 
 function botPlatformLabel(platform) {
-  return platform === "hermes_agent" ? "Hermes Agent" : "Grok Bot";
+  return platform === "hermes_agent" ? "Hermes Agent" : platform === "mcp_agent" ? "MCP agent" : "Grok Bot";
 }
 
 function botDeliveryResult(code) {
@@ -26438,7 +26439,7 @@ function botProactiveForm(grant) {
     label.append(document.createTextNode(title), input);
     form.append(label); fields[name] = input; return input;
   }
-  select("platform", "Platform", [["grok_bot", "Grok Bot"], ["hermes_agent", "Hermes Agent"]], grant.platform || "grok_bot");
+  select("platform", "Platform", [["mcp_agent", "MCP agent"], ["grok_bot", "Grok Bot"], ["hermes_agent", "Hermes Agent"]], grant.platform || "grok_bot");
   const mode = select("webhookMode", "Webhook authentication", [["bearer", "Bearer webhook (existing receivers)"],
     ["hermes_hmac_v2", "Hermes native webhook · HMAC V2"]], saved.webhookMode || (grant.proactive ? "bearer" : grant.platform === "hermes_agent" ? "hermes_hmac_v2" : "bearer"));
   const url = field("webhookUrl", "Webhook URL", "url", saved.webhookUrl);
@@ -26757,6 +26758,33 @@ function paintBotMailActions(rows, available = true) {
   }
 }
 
+function botMcpConfiguration(access, selectedId, nodeCommand, tokenFile) {
+  const info = access?.mcp;
+  const grant = access?.grants?.find(row => row.clientId === selectedId && row.live);
+  if (!info?.launcherAvailable || !info.launcherPath) throw Error("The MCP adapter is unavailable. Use a complete installed build or run npm ci in the source checkout.");
+  if (!grant || !access.installationId) throw Error("Choose an agent with valid access. MCP does not add permissions to an existing grant.");
+  const command = String(nodeCommand || "").trim(), file = String(tokenFile || "").trim();
+  if (!command || command.length > 1024 || /[\u0000-\u001f\u007f]|mmb_v1_/.test(command)) throw Error("Enter the Node command or executable path, without a secret.");
+  const absolute = info.platform === "win32" ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)/.test(file) : file.startsWith("/");
+  if (!absolute || file.length > 4096 || /[\u0000-\u001f\u007f]|mmb_v1_/.test(file)) throw Error("Enter an absolute private secret-file path, not the secret itself.");
+  return { mcpServers: { "morrow-mail": { command, args: [info.launcherPath, "--token-file", file, "--installation", access.installationId] } } };
+}
+
+function paintBotMcp() {
+  const config = $("bot-mcp-config"), status = $("bot-mcp-status"), button = $("bot-mcp-copy");
+  if (!config || !status || !button) return;
+  const info = state.botAccess?.mcp;
+  const launcher = $("bot-mcp-launcher");
+  if (launcher) launcher.textContent = info?.launcherAvailable
+    ? `${info.sourceCheckout ? "Source-checkout adapter (npm ci required)" : "Adapter included with this installed app"}: ${info.launcherPath}. A separate Node.js 20+ runtime is required; its availability is not checked.`
+    : "No runnable MCP adapter was found in this build.";
+  try {
+    const value = botMcpConfiguration(state.botAccess, $("bot-setup-client").value, $("bot-mcp-node").value, $("bot-mcp-token-file").value);
+    config.textContent = JSON.stringify(value, null, 2); button.disabled = false;
+    status.textContent = "Configuration only; connection and Node runtime are not tested. Your client launches this on the Morrow computer.";
+  } catch (error) { config.textContent = ""; button.disabled = true; status.textContent = error.message; }
+}
+
 function paintBotAccess(data) {
   ++botAccessVersion;
   const access = data || {};
@@ -26799,6 +26827,7 @@ function paintBotAccess(data) {
   }
   paintBotAccounts(access.accounts || []);
   paintBotGrants(grants);
+  if (typeof paintBotMcp === "function") paintBotMcp();
   paintBotDrafts(access.draftsAvailable === false ? null : (access.drafts || []));
   if (typeof paintBotAudit === "function") paintBotAudit(access.audit || []);
   if (typeof paintBotSends === "function") paintBotSends(access.sends || []);
@@ -27021,6 +27050,17 @@ function wireBotSections() {
 
 function wireBot() {
   wireBotSections();
+  for (const id of ["bot-mcp-node", "bot-mcp-token-file"]) $(id)?.addEventListener("input", paintBotMcp);
+  $("bot-setup-client")?.addEventListener("change", paintBotMcp);
+  $("bot-mcp-copy")?.addEventListener("click", async () => {
+    paintBotMcp();
+    if ($("bot-mcp-copy").disabled) return;
+    try {
+      if (!navigator.clipboard) throw Error("clipboard");
+      await navigator.clipboard.writeText($("bot-mcp-config").textContent);
+      $("bot-mcp-status").textContent = "MCP configuration copied. It contains a file path, never the secret. Merge it into your client’s config and keep Morrow open.";
+    } catch { $("bot-mcp-status").textContent = "Could not copy. Select the configuration above and copy it manually."; }
+  });
   $("bot-review-link").addEventListener("click", () => {
     showBotSection("activity");
     $("bot-review").open = true;
@@ -27062,7 +27102,7 @@ function wireBot() {
       try {
         const access = await call("bot:setEnabled", { enabled: want });
         paintBotAccess(access);
-        setBotStatus(want ? botListenerStatus(access) : "Bot access off. New bot calls are blocked; saved grants are retained.", want && !(access.listen && access.listen.listening));
+        setBotStatus(want ? botListenerStatus(access) : "Agent access / MCP off. New bot calls are blocked; saved grants are retained.", want && !(access.listen && access.listen.listening));
       } catch (error) {
         await loadBotAccess().catch(() => {});
         throw error;
@@ -27167,7 +27207,7 @@ function wireBot() {
       paintBotAccess(minted.access);
       $("bot-label").value = "";
       const access = minted.access || {};
-      setBotStatus("Bot created. " + (access.listen && access.listen.listening ? "Bot access is already on." : access.enabled ? "Access is set to on, but the listener is not running." : "Access is still off."));
+      setBotStatus("Bot created. " + (access.listen && access.listen.listening ? "Agent access / MCP is already on." : access.enabled ? "Access is set to on, but the listener is not running." : "Access is still off."));
     });
   });
   $("bot-secret-copy").addEventListener("click", () => {

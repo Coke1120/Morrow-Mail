@@ -116,7 +116,7 @@ function configure(input) {
     throw invalid("Choose a bot with valid access.");
   }
   const platform = input.platform;
-  if (!Object.hasOwn(auth.PLATFORMS, platform)) throw invalid("Choose Grok Bot or Hermes Agent.");
+  if (!Object.hasOwn(auth.PLATFORMS, platform)) throw invalid("Choose Grok Bot, Hermes Agent or MCP agent.");
   // An unconditional stop needs no URL, secret or fresh affirmative consent.
   if (input.stop === true) {
     return auth.mutate(grant.clientId, row => {

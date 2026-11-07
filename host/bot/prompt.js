@@ -38,7 +38,7 @@ function renderSetup(facts) {
   const sendBudget = send && send.budgets
     ? ` Send budgets are ${send.budgets.perGrantPerMinute} per calendar minute per grant, ${send.budgets.perGrantPerDay} per UTC day per grant, and ${send.budgets.perInstallationPerDay} per UTC day for the installation.`
     : "";
-  const platform = source.platform === "hermes_agent" ? "Hermes Agent" : "Grok Bot";
+  const platform = source.platform === "hermes_agent" ? "Hermes Agent" : source.platform === "mcp_agent" ? "MCP agent" : "Grok Bot";
   const lines = [
     `Set up ${platform} as a Morrow Mail bot.${source.botId ? " Bot id: " + source.botId + "." : ""}`,
     baseLine(source),

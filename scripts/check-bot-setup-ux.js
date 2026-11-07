@@ -47,7 +47,7 @@ function run() {
   const botSection = DomUtils.findOne(n => n.attribs?.id === 'settings-bot', doc.children);
   const steps = DomUtils.findAll(n => n.attribs?.['data-bot-section'], botSection.children)
     .map(n => n.attribs['data-bot-section']);
-  assert.deepEqual(steps, ['grants','local','tailscale','agent','activity'], 'steps follow dependency then activity');
+  assert.deepEqual(steps, ['grants','local','agent','tailscale','activity'], 'MCP follows local access; compatibility and activity remain available');
   const activity = DomUtils.findOne(n => n.attribs?.id === 'bot-panel-activity', doc.children);
   const create = DomUtils.findOne(n => n.attribs?.id === 'bot-panel-grants', doc.children);
   for (const id of ['bot-drafts','bot-sends','bot-audit']) {
