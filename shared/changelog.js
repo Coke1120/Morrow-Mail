@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.6": [
+      "Settings → Agent access / MCP connects compatible agents on this computer through a bundled local stdio adapter. Morrow must remain open; a separate Node.js 20+ runtime is required.",
+      "MCP uses the existing mailbox and operation grants, budgets, revocation, audit and durable write receipts. Setup copies command arguments and a private token-file path, never the one-time secret, and does not configure clients or grant new access automatically.",
+      "Existing HTTP API, CLI and Grok/Hermes proactive webhooks remain supported under the compatibility controls. MCP cancellation cannot recall a submitted operation, and uncertain writes are never retried automatically.",
+    ],
     "0.4.5": [
       "Mailbox headings and folder rows share a consistent appearance across Gmail, Outlook, Yahoo, IMAP and Local Folders, while real folders keep their expansion hierarchy.",
       "Folders & Labels adds clearer mailbox switching and reviewed creation. Gmail label deletion requires confirm and offers 30 seconds to cancel before removal; unsafe folder deletion on other server transports stays unavailable.",

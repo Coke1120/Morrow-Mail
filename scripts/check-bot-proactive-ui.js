@@ -105,7 +105,7 @@ async function run() {
     const $ = id => dom.window.document.getElementById(id);
     ui.run("showBotSecret = () => {}; wireBot();");
     await ui.run("loadBotAccess()");
-    assert.equal($("bot-platform").value, "grok_bot");
+    assert.equal($("bot-platform").value, "mcp_agent", "new grants lead with MCP; existing platform grants are retained");
     $("bot-platform").value = "hermes_agent"; $("bot-label").value = "Hermes fixture";
     $("bot-accounts").querySelector("input").checked = true;
     $("bot-mint").dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
