@@ -9496,12 +9496,13 @@ function appendSendPreviewBody(parent, email) {
   return appendMessageBody(parent, content, false);
 }
 
-function bodyRetryButton(email, refresh) {
+function bodyRetryButton(email, refresh, label = "Retry download") {
   const retry = document.createElement("button");
   retry.type = "button";
   retry.className = "ghost";
   retry.dataset.action = "retry-body";
-  retry.textContent = "Retry download";
+  retry.textContent = label;
+  retry.title = "Download this message again to replace its cached body and recheck the text encoding.";
   retry.addEventListener("click", () => guard(async () => {
     retry.disabled = true;
     try {
@@ -9520,6 +9521,10 @@ function renderBody(pane, email, refresh) {
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
+  } else if (!isLocalMail(email) && !email?.isDraft && state.accounts.some(account => account.id === email?.accountId && account.mailTransport === "gmail_api")) {
+    // Older corrupted bodies can contain no replacement characters and carry no
+    // warning. Keep recovery explicit and available without scanning the cache.
+    pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   const key = JSON.stringify([email?.accountId, email?.id]);

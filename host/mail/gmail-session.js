@@ -5,6 +5,7 @@ const { isGmail } = require("./gmail-policy");
 const { recipientHeaders } = require("./recipient-headers");
 const textEncoding = require("./text-encoding");
 const decoding = require("./mime-decoding");
+const { isRateLimit } = require("./provider-http");
 const ALL = "__gmail_all__";
 const SYSTEM = { INBOX: ["INBOX", "Inbox", "inbox"], SENT: ["[Gmail]/Sent Mail", "Sent", "sentitems"],
   DRAFT: ["[Gmail]/Drafts", "Drafts", "drafts"], TRASH: ["[Gmail]/Trash", "Trash", "deleteditems"], SPAM: ["[Gmail]/Spam", "Spam", "junkemail"] };
@@ -26,6 +27,17 @@ function parts(root, malformed = () => {}) {
   visit(root); return result;
 }
 function stringAddresses(value) { return (value?.value || []).map(row => row.name ? `${row.name} <${row.address}>` : row.address).filter(Boolean); }
+
+function ambiguousBody(bytes, declaredText) {
+  // Gmail's full representation can contain normalized UTF-8 under the original
+  // MIME charset. Valid UTF-8 alone is not proof: genuine legacy bytes can also
+  // be valid UTF-8 (for example literal Windows-1252 "Ã©"). Resolve disagreements
+  // against original MIME instead of choosing whichever text looks cleaner.
+  try {
+    const utf8 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return /[^\x00-\x7f]/.test(utf8) && utf8 !== declaredText;
+  } catch { return false; }
+}
 
 function createSession(account, token, { api, check = () => {}, signal, accessToken } = {}) {
   const incarnation = account.gmail_generation;
@@ -78,7 +90,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
   }
   async function normalize(data, full = false) {
     alive();
-    let complete = true, bodyWarning = "";
+    let complete = true, bodyWarning = "", originalNeeded = false, textSizeMismatch = false;
     const warn = () => { complete = false; bodyWarning = "Some message content could not be decoded. The available content is shown; reopen the message to retry."; };
     const list = parts(data.payload, warn);
     const headers = (Array.isArray(data.payload?.headers) ? data.payload.headers : []).filter(row => row && typeof row.name === "string" && typeof row.value === "string");
@@ -98,12 +110,16 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       if (part.body?.data != null) {
         try { bytes = decodePartData(part.body.data); }
         catch { warn(); continue; }
-        if (Number.isSafeInteger(part.body.size) && part.body.size !== bytes.length) warn();
+        if (Number.isSafeInteger(part.body.size) && part.body.size !== bytes.length) {
+          if (file) warn();
+          else textSizeMismatch = true;
+        }
       }
       if (!file) {
         if (!bytes && part.body?.attachmentId && full) bytes = await api.attachment(data.id, part.body.attachmentId);
         if (!bytes && (part.body?.attachmentId || Number(part.body?.size) > 0)) { complete = false; continue; }
         const value = decoding.decode(bytes || Buffer.alloc(0), decoding.charsetOf(header(part, "content-type")));
+        originalNeeded ||= !!bytes && ambiguousBody(bytes, value.text);
         decoding.note(decodedQuality, value, type);
         body[type === "text/html" ? "html" : "text"].push(value.text);
       } else {
@@ -112,6 +128,39 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
           size: Number(part.body?.size) || 0, contentId: contentId || null, isInlineFromApi: !!contentId && !/attachment/i.test(disposition) });
       }
     }
+    if (originalNeeded) {
+      try {
+        // One bounded, read-only original-message request resolves all body
+        // alternatives together. Gmail part IDs/attachment metadata stay intact.
+        const original = await api.raw(data.id);
+        alive();
+        if (original.id !== data.id || !Buffer.isBuffer(original.source) || !original.source.length) throw new Error("Original Gmail message did not match.");
+        const originalParsed = await simpleParser(original.source, { skipHtmlToText: true, skipTextToHtml: true, skipImageLinks: true });
+        alive();
+        if (parsed.messageId && originalParsed.messageId !== parsed.messageId) throw new Error("Original Gmail headers did not match.");
+        const originalQuality = await decoding.inspectSource(original.source);
+        alive();
+        if (!originalQuality.hasText && !originalQuality.hasHtml) throw new Error("Original Gmail body was unavailable.");
+        decoding.noteHeaders(originalQuality, originalParsed);
+        decoding.noteHeaders(originalQuality, parsed);
+        body.text = typeof originalParsed.text === "string" ? [originalParsed.text] : [];
+        body.html = typeof originalParsed.html === "string" ? [originalParsed.html] : [];
+        Object.assign(decodedQuality, originalQuality);
+        // Full-payload text sizes can describe the pre-normalization encoding.
+        // Original MIME validates these body bytes independently of those sizes.
+        textSizeMismatch = false;
+      } catch (error) {
+        alive();
+        // Preserve provider quota/auth/reconnect control flow and Retry-After.
+        // Representation/parser failures may expose available text, but must not
+        // turn a rejected provider read into a successful sync checkpoint.
+        if (error?.gmailDiagnostic || Number(error?.status) >= 400 || isRateLimit(error)
+          || error?.code && !["provider_network", "provider", "invalid"].includes(error.code)) throw error;
+        decodedQuality.uncertain = true;
+        warn();
+      }
+    }
+    if (textSizeMismatch) warn();
     let html = body.html.join("\n") || null;
     // Inline images belong to the displayed body. Ordinary attachment files stay on demand.
     for (const attachment of attachments.filter(row => row.isInlineFromApi && row.mimeType.startsWith("image/"))) {
