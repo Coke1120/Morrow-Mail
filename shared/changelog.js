@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.8": [
+      "Folders under each mailbox heading, including Inbox, Sent and Drafts, sit 14 pixels in from the account name. Nested folders keep their extra indent, and unread badges stay aligned on the right.",
+      "When a Gmail message is valid non-ASCII UTF-8 but disagrees with its declared character set, Morrow reads the original message once instead of guessing. Received Gmail messages can use Reload message to replace an older cached body; a failed reload keeps that copy, and pending drafts are not replaced.",
+      "Timeline counts included message text as UTF-8 bytes, up to 512,000 bytes, and reuses an exact repeated quotation only when that full text is already in the same AI request. The source review shows the planned size, and those counts clear when the selection, focus or account changes.",
+    ],
     "0.4.7": [
       "Forward brings the original message’s attachments into the reviewed draft, with removable file chips. Failed attachment preparation keeps the forward closed for retry. Cancelled or stale downloads cannot change another compose window.",
       "Reply and Reply All keep your new text separate from a collapsible original-message history. Preview and outgoing mail retain the reviewed quoted content; hiding the history does not remove it from the message.",
