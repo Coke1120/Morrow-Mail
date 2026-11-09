@@ -444,6 +444,7 @@ function localAnswer(channel, params, event) {
     if (channel === "mail:openEmail") return ok({ email: store.verify(id), isThread: false, threadMessages: [] });
     if (["mail:readEmail", "mail:readCachedBody"].includes(channel)) return ok(channel === "mail:readCachedBody" ? { email: store.verify(id) } : store.verify(id));
     if (["mail:listThreadMessages", "mail:getLocalThreadMembers"].includes(channel)) return ok([]);
+    if (channel === "mail:prepareForward") return updateGate.run(() => prepareForward(params, event?.sender));
     if (["mail:downloadAttachment", "mail:downloadAttachmentsZip", "mail:fetchAttachmentBytes", "mail:openAttachmentExternally"].includes(channel)) return attachmentOperation(channel, params, event?.sender);
     if (channel === "mail:moveLocalMessage") {
       if (!["copy", "move"].includes(params.mode)) return fail("invalid", "Choose Copy or Move locally.");
@@ -3598,6 +3599,51 @@ async function attachmentOperation(channel, params, owner) {
   } finally { request?.finish(); }
 }
 
+async function prepareForward(params, owner) {
+  let request;
+  try {
+    request = attachmentRequests.begin(params, owner);
+    // A forward owns every original file. A stale renderer selection must not
+    // turn preparation into a successful partial forward.
+    const selection = attachmentSelection({ ...params, attachmentIds: undefined }, true);
+    if (!selection) throw new Error("That message is no longer available.");
+    const { row, files } = selection;
+    request.accountId = row.account_id;
+    const snapshot = attachmentSnapshot(row);
+    const check = () => { request.signal.throwIfAborted(); snapshot.assertSnapshot(); };
+    check();
+    const ids = files.map(file => String(file.id));
+    if (!Array.isArray(params.attachmentIds) || JSON.stringify(params.attachmentIds.map(String)) !== JSON.stringify(ids)
+        || files.length !== db.jsonList(row.attachments_json).length
+        || files.some(file => !file?.id) || new Set(ids).size !== files.length || (!files.length && row.has_attachments)) {
+      throw new Error("The original attachments changed. Reopen the message before forwarding.");
+    }
+    if (files.reduce((sum, file) => sum + (Number(file.size) || 0), 0) > ATTACHMENT_CAP) {
+      throw new Error("The original files exceed the 25 MiB outgoing attachment limit.");
+    }
+    const parts = await attachmentParts(row, files, { signal: request.signal, onProgress: value => request.report(value) });
+    check();
+    if (parts.some(part => !part.data.length) || parts.reduce((sum, part) => sum + part.data.length, 0) > ATTACHMENT_CAP) {
+      throw new Error("An original file is empty or the files exceed the 25 MiB outgoing attachment limit.");
+    }
+    // Publish only after every read succeeds, without editing the original mail.
+    const attachments = db.transaction(() => {
+      check();
+      return files.map((file, index) => {
+        const part = parts[index];
+        if (String(file.storageUrl || "").startsWith("local:")) return { ...file, size: part.data.length };
+        const id = crypto.randomBytes(9).toString("hex");
+        db.saveBlob(id, file.filename || part.name, file.mimeType || "application/octet-stream", part.data);
+        return { ...file, id, storageUrl: `local:${id}`, size: part.data.length };
+      });
+    });
+    return ok({ emailId: row.id, accountId: row.account_id, attachments });
+  } catch (error) {
+    if (request?.signal.aborted || error?.code === "cancelled" || error?.name === "AbortError") return fail("cancelled", "cancelled");
+    return fail(error?.code || "forward_prepare", (error.message || String(error)) + " The forward was not opened. Retry from the original message; nothing was sent.");
+  } finally { request?.finish(); }
+}
+
 async function prepareDraft(params, owner) {
   let request;
   try {
@@ -4738,6 +4784,8 @@ function answer(channel, args, event) {
       if (!Number.isSafeInteger(params?.bodyEpoch) || params.bodyEpoch !== (accountEpochs.get(row.account_id) || 0)) return fail("message_changed", "The mailbox connection changed. Reopen the message.");
       return ok({ email: cachedBody(row) });
     }
+    case "mail:prepareForward":
+      return updateGate.run(() => prepareForward(params || {}, event?.sender));
     case "mail:prepareDraft":
       return updateGate.run(() => prepareDraft(params || {}, event?.sender));
     case "mail:readEmail":

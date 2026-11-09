@@ -5070,13 +5070,12 @@ function replyBody(email) {
   return `\n\n${who} wrote:\n${quoted}`;
 }
 
-// shortcut: names only, upgrade when compose can attach the open message's blobs.
 function attachmentNote(email) {
   const files = ((email && email.attachments) || []).filter((item) => item && (item.filename || item.id));
   if (files.length) {
-    return `Original attachment names: ${files.map((item) => item.filename || "attachment").join(", ")}. Files are not included in this forward.`;
+    return `Original attachment names: ${files.map((item) => item.filename || "attachment").join(", ")}.`;
   }
-  if (email && email.hasAttachments) return "The original message has attachments. Files are not included in this forward.";
+  if (email && email.hasAttachments) return "The original message has attachments.";
   return "";
 }
 
@@ -8034,7 +8033,8 @@ function rowAction(action, label, run, iconNode) {
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    guard(run);
+    if (action === "forward") { if (!state.busy) attachmentAction(run); }
+    else guard(run);
   });
   return button;
 }
@@ -8674,7 +8674,10 @@ function readerButton(action, label, run, iconNode) {
   const text = document.createElement("span");
   text.textContent = label;
   button.appendChild(text);
-  button.addEventListener("click", () => guard(run));
+  button.addEventListener("click", () => {
+    if (action === "forward") { if (!state.busy) attachmentAction(run); }
+    else guard(run);
+  });
   return button;
 }
 
@@ -9993,12 +9996,13 @@ function cancelAttachmentTask(task) {
 }
 
 function startAttachmentTask(channel, email, files, label) {
-  const zip = channel === "mail:downloadAttachmentsZip", prepare = channel === "mail:prepareDraft";
+  const zip = channel === "mail:downloadAttachmentsZip", draft = channel === "mail:prepareDraft", forward = channel === "mail:prepareForward";
+  const prepare = draft || forward;
   const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
   const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
-  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? "Draft attachments" : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
+  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? (forward ? "Forward attachments" : "Draft attachments") : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
   attachmentTasks.set(key, task);
   const off = typeof api.on === "function" ? api.on("mail:attachmentProgress", value => {
     if (value?.requestId !== task.requestId || task.done) return;
@@ -10006,7 +10010,7 @@ function startAttachmentTask(channel, email, files, label) {
     if (task === attachmentPreviewRequest && $("attachment-preview-status")) $("attachment-preview-status").textContent = attachmentTaskCopy(task);
   }) : () => {};
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
-    ...(prepare ? { draftRevision: email.draftRevision } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
+    ...(draft ? { draftRevision: email.draftRevision } : forward ? { accountId: email.accountId, attachmentIds: ids } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
   });
@@ -14876,9 +14880,6 @@ function paintComposeNote() {
       ? " Reviewing a draft proposal. Nothing is sent until you press Send."
       : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
   }
-  if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
-    text += " Original files are not copied into this forward. Use Attach files to add them.";
-  }
   const delayLabel = formatScheduleDelay(state.prefs.scheduleDelay);
   if (live && !review && delayLabel) {
     text += " Send schedules " + delayLabel + " ahead. Send now delivers immediately.";
@@ -16715,12 +16716,46 @@ function cloneComposeSeed(seed) {
   }
 }
 
-async function presentCompose(seed) {
-  if (api && typeof api.openComposeWindow === "function") {
-    await api.openComposeWindow(cloneComposeSeed(seed));
-    return;
+function forwardNeedsFiles(seed) {
+  return seed?.kind === "forward" && !seed.draftId && !seed.recoveredSnapshot
+    && seed.quoteEmail && (seed.quoteEmail.hasAttachments || seed.quoteEmail.attachments?.length);
+}
+
+async function prepareForwardCompose(seed) {
+  if (!forwardNeedsFiles(seed)) return seed;
+  const source = { ...seed.quoteEmail, accountId: seed.accountId };
+  const files = Array.isArray(source.attachments) ? source.attachments : [];
+  const task = startAttachmentTask("mail:prepareForward", source, files, "Prepare forward");
+  const prepared = await task.promise;
+  // Cancel may arrive after the host has published its result. It still owns
+  // whether this renderer opens a new compose window.
+  if (task.cancelRequested) throw new Error("cancelled");
+  if (!prepared || prepared.emailId !== source.id || prepared.accountId !== source.accountId
+      || !Array.isArray(prepared.attachments) || !prepared.attachments.length
+      || composeAttachmentList(prepared.attachments).length !== prepared.attachments.length
+      || (files.length && prepared.attachments.length !== files.length)) {
+    throw new Error("The original files could not be prepared. Reopen the message and retry; nothing was sent.");
   }
-  await openCompose(seed || {});
+  return { ...seed, attachments: prepared.attachments };
+}
+
+const forwardComposes = new Map();
+function presentCompose(seed) {
+  const open = async fields => {
+    if (api && typeof api.openComposeWindow === "function") {
+      await api.openComposeWindow(cloneComposeSeed(fields));
+      return;
+    }
+    await openCompose(fields || {});
+  };
+  if (!forwardNeedsFiles(seed)) return open(seed);
+  const key = JSON.stringify([seed.accountId, seed.sourceMessageId]);
+  if (forwardComposes.has(key)) return forwardComposes.get(key);
+  const pending = prepareForwardCompose(seed).then(open).finally(() => {
+    if (forwardComposes.get(key) === pending) forwardComposes.delete(key);
+  });
+  forwardComposes.set(key, pending);
+  return pending;
 }
 
 function publishComposeTitle(text) {
@@ -18177,8 +18212,10 @@ function runMailShortcut(action) {
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
     const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
-    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
-      ? replyFromList(target, kind) : openReaderCompose(kind, target));
+    const run = () => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? replyFromList(target, kind) : openReaderCompose(kind, target);
+    if (kind === "forward") { if (!state.busy) attachmentAction(run); }
+    else guard(run);
     return;
   }
   const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";
