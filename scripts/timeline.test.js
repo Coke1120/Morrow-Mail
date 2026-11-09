@@ -1159,6 +1159,9 @@ test("oversized optional focus stays source-bound, disables Generate and can be 
   await fixture.ui.mounted.open(fixture.ui.email);
   const blocked = fixture.hostCalls.find(value => value.channel === "timeline:prepare").data;
   assert.equal(blocked.budget.kind, "focus-bytes");
+  assert.equal(blocked.processing.planned, false);
+  assert.match(fixture.node("timeline-processing-counts").textContent, /No valid body-processing or extraction plan/);
+  assert.doesNotMatch(fixture.node("timeline-processing-counts").textContent, /Planned extraction: 0/);
   assert.equal(fixture.node("timeline-generate").disabled, true);
   assert.match(fixture.node("timeline-status").textContent, /Shorten optional keywords and contacts/);
   assert.match(fixture.node("timeline-status").textContent, /No AI request was started/);
@@ -1914,4 +1917,13 @@ test("account invalidation hides stale processing counts and blocks generation",
   assert.equal(fixture.node("timeline-processing").hidden, true);
   assert.equal(fixture.node("timeline-generate").disabled, true);
   assert.equal(fixture.calls.length, 0);
+});
+
+
+test("provider-reported input tokens retain a separate token-unit ceiling", async () => {
+  const source = { ...metadata(), subject: "Synthetic", text: "A complete fictional update." };
+  await assert.rejects(extract({ sources: [source], envelope: envelopeFor([source]),
+    complete: async messages => ({ ...modelResponse(messages), usage: { inputTokens: LIMITS.inputTokens + 1, outputTokens: 100 } }) }), error => {
+    assert.deepEqual(error.budget, { kind: "input-tokens", actual: LIMITS.inputTokens + 1, limit: LIMITS.inputTokens }); return true;
+  });
 });
