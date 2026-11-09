@@ -4793,6 +4793,14 @@ button.attachment-name:hover { text-decoration: underline; }
 
 .compose-quote-body .remote-gate { margin: 8px 12px 0; }
 
+.compose-quote-message + .compose-quote-message {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 8px;
+}
+
+.compose-history-note { margin: 8px 12px; }
+
 .compose-split-handle {
   position: relative;
   flex: 0 0 10px;
