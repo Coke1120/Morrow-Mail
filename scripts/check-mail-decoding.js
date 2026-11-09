@@ -31,6 +31,17 @@ function multipart(plain, html) {
   return Buffer.from("Content-Type: multipart/alternative; boundary=synthetic\r\n\r\n"
     + "--synthetic\r\n" + source(plain).toString() + "\r\n--synthetic\r\n" + source(html, "utf-8", "text/html").toString() + "\r\n--synthetic--\r\n");
 }
+function originalMime(payload) {
+  const children = payload.parts || [], boundary = "original-fixture-" + ++serial;
+  const headers = (payload.headers || []).filter(row => !/^content-transfer-encoding$/i.test(row.name)
+    && !(children.length && /^content-type$/i.test(row.name)));
+  if (!headers.some(row => /^content-type$/i.test(row.name))) headers.push({ name: "Content-Type", value: children.length
+    ? `${payload.mimeType}; boundary="${boundary}"` : payload.mimeType || "text/plain" });
+  if (!children.length) headers.push({ name: "Content-Transfer-Encoding", value: "base64" });
+  const body = children.length ? children.map(child => `--${boundary}\r\n${originalMime(child)}\r\n`).join("") + `--${boundary}--\r\n`
+    : Buffer.from(payload.body?.data || "", "base64url").toString("base64");
+  return Buffer.from(headers.map(row => `${row.name}: ${row.value}\r\n`).join("") + "\r\n" + body);
+}
 function imapClient(raw, uid = 7) {
   return { mailbox: { uidValidity: 1 }, async getMailboxLock() { return { release() {} }; },
     async *fetch(_range, fields) { yield { uid, source: raw.subarray(0, fields.source.maxLength), envelope: { subject: "Synthetic mail" }, flags: new Set() }; } };
@@ -63,15 +74,18 @@ async function run() {
       imapHost: "imap.fixture.invalid", imapPort: 993, imapTls: true, smtpHost: "smtp.fixture.invalid", smtpPort: 465, smtpTls: true });
     db.enableGmail("gmail");
     db.replaceFolders("gmail", [{ path: "INBOX", name: "Inbox", wellKnown: "inbox", providerId: "INBOX" }]);
-    const service = new Map(), fetches = [];
-    const api = { getMessage: async (id, options) => { fetches.push({ id, options }); return structuredClone(service.get(id)); }, attachment: async () => Buffer.from("External 日本語") };
+    const service = new Map(), originals = new Map(), fetches = [], attachmentReads = [];
+    const api = { getMessage: async (id, options) => { fetches.push({ id, options }); return structuredClone(service.get(id)); },
+      raw: async id => { fetches.push({ id, options: { format: "raw" } }); return { id, source: originals.get(id) }; },
+      attachment: async (id, partId) => { attachmentReads.push({ id, partId }); return Buffer.from("External 日本語"); } };
     const session = createSession(db.accountById("gmail"), "synthetic-only", { api });
     remote.withClient = async (_account, _secret, work) => work({ gmail: session });
     secrets.setPassword("gmail", JSON.stringify({ provider: "google", googleClientId: "decoding-fixture.apps.googleusercontent.com", purpose: "imap", accessToken: "synthetic-only", refreshToken: "synthetic-only", expiresAt: Date.now()+3600000,
       grantedScopes: require("../host/mail/oauth-config").SCOPES.google }));
-    async function gmail(payload, name = "case-" + ++serial) {
+    async function gmail(payload, name = "case-" + ++serial, original = payload) {
       const data = message(name); data.snippet = ""; data.payload = { ...payload, headers: [...data.payload.headers, ...payload.headers] };
       service.set(name, data);
+      originals.set(name, originalMime({ ...original, headers: [...message(name).payload.headers, ...original.headers] }));
       return session.adopt(data, { full: true });
     }
     async function read(id, retry = false) {
@@ -106,6 +120,108 @@ async function run() {
     const literalMail = await gmail(part(iconv.encode(literalLatin,"windows-1252"),"windows-1252"));
     assert.equal(literalMail.textBody,literalLatin); assert.equal((await read(db.gmailCopies("gmail",literalMail.providerId)[0].id)).textBody,literalLatin);
     assert.equal((await imap(source(iconv.encode(literalLatin,"windows-1252"),"windows-1252"))).textBody,literalLatin,"declared encodings are not guessed again as UTF-8");
+    assert.equal(literalMail.bodyComplete, true, "canonical MIME preserves genuine legacy text even when its bytes are valid UTF-8");
+    // Gmail can normalize body.data to UTF-8 while retaining the original MIME
+    // charset and original byte size. Resolve the representation, never guess.
+    const normalizedText = "繁體測試 郵件 敬啟者 2026", normalizedHtml = `<p>${normalizedText}</p>`;
+    const originalParts = [part(iconv.encode(normalizedText, "gbk"), "gb2312"), part(iconv.encode(normalizedHtml, "gbk"), "gb2312", "text/html")];
+    const normalizedParts = [part(Buffer.from(normalizedText), "gb2312"), part(Buffer.from(normalizedHtml), "gb2312", "text/html")];
+    normalizedParts.forEach((value, index) => { value.body.size = originalParts[index].body.size; });
+    const originalPayload = { mimeType: "multipart/alternative", headers: [], parts: originalParts };
+    const normalizedPayload = { ...originalPayload, parts: normalizedParts };
+    const rawBefore = fetches.filter(value => value.options?.format === "raw").length;
+    const normalized = await gmail(normalizedPayload, "normalized-gbk", originalPayload);
+    assert.equal(normalized.textBody, normalizedText); assert.equal(normalized.htmlBody, normalizedHtml);
+    assert.equal(normalized.bodyComplete, true); assert.equal(normalized.bodyWarning, ""); assert.equal(normalized.decoding.lossy, false);
+    assert.equal(fetches.filter(value => value.options?.format === "raw").length, rawBefore + 1, "one original read resolves both alternatives");
+    assert.equal((await session.adopt(service.get("normalized-gbk"), { full: false })).textBody, normalizedText, "inline sync resolves the ambiguity too");
+    for (const [charset, bytes, expected] of [["gbk", Buffer.from([0xc2,0xa9]), "漏"], ["cp932", Buffer.from([0xc2,0xa9]), "ﾂｩ"]]) {
+      const collision = await gmail(part(bytes, charset));
+      assert.equal(collision.textBody, expected); assert.equal(collision.bodyComplete, true); assert.equal(collision.decoding.lossy, false);
+    }
+    for (const [charset, expected] of [["cp932", "日本語メール"], ["big5", "繁體郵件"], ["windows-1252", "Café €"], ["gb18030", "Literal � 😀"]]) {
+      const canonical = part(iconv.encode(expected, charset), charset);
+      const provider = part(Buffer.from(expected), charset);
+      const value = await gmail(provider, undefined, canonical);
+      assert.equal(value.textBody, expected, "normalized provider bytes: " + charset); assert.equal(value.decoding.lossy, false);
+    }
+    const htmlOnly = await gmail(normalizedParts[1], "normalized-html-only", originalParts[1]);
+    assert.equal(htmlOnly.htmlBody, normalizedHtml); assert.equal(htmlOnly.decoding.hasText, false); assert.equal(htmlOnly.decoding.hasHtml, true);
+    const normalizedExternal = part(Buffer.alloc(0), "gb2312"); normalizedExternal.body = { attachmentId: "normalized-external", size: 20 };
+    assert.equal((await gmail(normalizedExternal, "normalized-external", part(iconv.encode("External 日本語", "gbk"), "gb2312"))).textBody,
+      "External 日本語", "external text leaves use the same canonical resolution after fetching their bytes");
+    const corruptOriginal = await gmail(normalizedParts[0], "corrupt-original", part(Buffer.from([0x81]), "gbk"));
+    assert.equal(corruptOriginal.decoding.lossy, true, "genuine loss in original MIME remains disclosed");
+    assert.match(presented(corruptOriginal).warning, /losing characters/);
+    const inline = { mimeType: "image/png", filename: "inline.png", partId: "inline", headers: [
+      { name: "Content-ID", value: "<synthetic-inline>" }, { name: "Content-Disposition", value: "inline" }], body: { data: Buffer.from("synthetic image").toString("base64url"), size: 15 } };
+    const ordinary = { mimeType: "application/octet-stream", filename: "ordinary.bin", partId: "ordinary", headers: [
+      { name: "Content-Disposition", value: "attachment; filename=ordinary.bin" }], body: { attachmentId: "ordinary-file", size: 16 } };
+    const imageHtml = `<p>${normalizedText}</p><img src="cid:synthetic-inline">`;
+    const inlinePayload = { mimeType: "multipart/related", headers: [], parts: [part(Buffer.from(imageHtml), "gb2312", "text/html"), inline, ordinary] };
+    const inlineOriginal = { ...inlinePayload, parts: [part(iconv.encode(imageHtml, "gbk"), "gb2312", "text/html"), inline,
+      { ...ordinary, body: { data: Buffer.from("synthetic binary").toString("base64url"), size: 16 } }] };
+    const readsBefore = attachmentReads.length, inlineMessage = await gmail(inlinePayload, "normalized-inline", inlineOriginal);
+    assert.match(inlineMessage.htmlBody, /data:image\/png;base64,/); assert.equal(inlineMessage.attachments[1].id, "gmail:ordinary");
+    assert.equal(attachmentReads.length, readsBefore, "ordinary files are not separately downloaded or cached");
+    const headerOnlyInline = await session.adopt(service.get("normalized-inline"), { full: false });
+    assert.match(headerOnlyInline.htmlBody, /cid:synthetic-inline/); assert.equal(headerOnlyInline.bodyComplete, false, "raw read does not bypass gated inline hydration");
+    const badSibling = part(Buffer.from("ignored")); badSibling.body.data = "A";
+    const malformedSibling = await gmail({ ...normalizedPayload, parts: [...normalizedParts, badSibling] }, "normalized-bad-sibling", originalPayload);
+    assert.equal(malformedSibling.bodyComplete, false, "canonical text cannot clear an independent malformed-part warning");
+    const wrongImageSize = structuredClone(inlinePayload); wrongImageSize.parts[1].body.size++;
+    assert.equal((await gmail(wrongImageSize, "normalized-bad-image-size", inlineOriginal)).bodyComplete, false, "canonical text cannot clear an attachment size mismatch");
+    const qpOriginal = Buffer.concat([Buffer.from("Message-ID: <normalized-qp@fixture.invalid>\r\n"), source(iconv.encode(normalizedText, "gbk"), "gb2312", "text/plain", "quoted-printable")]);
+    await gmail(normalizedParts[0], "normalized-qp", originalParts[0]); originals.set("normalized-qp", qpOriginal);
+    assert.equal((await session.adopt(service.get("normalized-qp"))).textBody, normalizedText, "original quoted-printable is decoded exactly once");
+    const savedRaw = api.raw;
+    for (const kind of ["network", "wrong-id", "wrong-headers", "empty"]) {
+      api.raw = async id => {
+        if (kind === "network") throw Object.assign(new Error("Synthetic original read failed"), { code: "provider_network" });
+        return { id: kind === "wrong-id" ? "another-message" : id, source: kind === "empty" ? Buffer.alloc(0)
+          : kind === "wrong-headers" ? source(Buffer.from("Another body")) : originals.get(id) };
+      };
+      const failedOriginal = await session.adopt(service.get("normalized-gbk"));
+      assert.equal(failedOriginal.bodyComplete, false, kind); assert.ok(failedOriginal.bodyWarning); assert.equal(failedOriginal.decoding.uncertain, true);
+    }
+    for (const metadata of [{ code: "rate_limit", status: 429, retryAfterMs: 120000 }, { code: "scope_missing", status: 403 },
+      { code: "auth", status: 401 }, { code: "oauth_refresh_unavailable" }]) {
+      const error = Object.assign(new Error("Synthetic provider control failure"), metadata);
+      api.raw = async () => { throw error; };
+      await assert.rejects(session.adopt(service.get("normalized-gbk")), value => value === error, "raw provider errors retain their typed recovery/backoff metadata");
+    }
+    for (const kind of ["abort", "account-change"]) {
+      const controller = new AbortController(); let changed = false;
+      const interrupted = createSession(db.accountById("gmail"), "synthetic-only", { api, signal: controller.signal,
+        check: () => { if (changed) throw Object.assign(new Error("Synthetic account changed"), { code: "account_removed" }); } });
+      api.raw = async id => { if (kind === "abort") controller.abort(); else changed = true; return savedRaw(id); };
+      await assert.rejects(interrupted.adopt(service.get("normalized-gbk")), error => kind === "abort" ? error.name === "AbortError" : error.code === "account_removed");
+    }
+    api.raw = savedRaw;
+    const normalizedCache = db.gmailCopies("gmail", "normalized-gbk")[0];
+    const corrupt = iconv.decode(Buffer.from(normalizedText), "gbk");
+    db.updateMessage(normalizedCache.id, { text_body: corrupt, html_body: null, body_complete: 1, body_warning: null, decoding_json: decoding.serialize(decoding.quality()) });
+    const recovered = await read(normalizedCache.id, true);
+    assert.equal(recovered.textBody, normalizedText); assert.equal(recovered.encodingWarning, ""); assert.equal(recovered.bodyWarning, "");
+    const completeRecovered = db.messageById(normalizedCache.id).text_body;
+    api.raw = async () => { throw new Error("Synthetic original retry failed"); };
+    assert.equal((await engine.answer("mail:readEmail", [{ emailId: normalizedCache.id, retry: true }])).success, false);
+    assert.equal(db.messageById(normalizedCache.id).text_body, completeRecovered, "failed canonical retry retains complete cached content");
+    api.raw = savedRaw;
+    ui.run("state.accounts=[{id:'gmail',mailTransport:'gmail_api'}]");
+    const cleanPane = render({ ...recovered, accountId: "gmail", isDraft: false });
+    assert.equal(cleanPane.querySelector('[data-action="retry-body"]').textContent, "Reload message", "clean historical caches have explicit recovery too");
+    assert.equal(render({ ...recovered, accountId: "gmail", isDraft: true }).querySelector('[data-action="retry-body"]'), null, "drafts never gain the clean-cache reload action");
+    ui.context.fixtureMail = { ...recovered, accountId: "gmail", isDraft: false };
+    const peekPane = ui.run("(() => { const pane=document.createElement('div'); globalThis.peekReloads=0; renderBody(pane,fixtureMail,async()=>{peekReloads++}); return pane; })()");
+    peekPane.querySelector('[data-action="retry-body"]').click(); await new Promise(setImmediate);
+    assert.equal(ui.run("peekReloads"), 1, "peek reload uses its explicit refresh callback");
+    const normalizedLatin = await gmail(part(Buffer.from("Café"), "windows-1252"), "normalized-latin", part(iconv.encode("Café", "windows-1252"), "windows-1252"));
+    const latinCache = db.gmailCopies("gmail", normalizedLatin.providerId)[0];
+    db.updateMessage(latinCache.id, { text_body: "CafÃ©", body_complete: 1, body_warning: null, decoding_json: decoding.serialize(decoding.quality()) });
+    const oldLatin = await read(latinCache.id);
+    assert.equal(oldLatin.textBody, "CafÃ©"); assert.equal(oldLatin.encodingWarning, "", "historical double decoding need not produce replacement characters");
+    assert.equal((await read(latinCache.id, true)).textBody, "Café", "explicit reload repairs the clean-but-corrupt cache without guessing cached text");
     for (const contentType of ['text/plain; x-note="charset=utf-8"; charset=big5', "text/plain; charset*=us-ascii''big5", 'text/plain; charset*0="bi"; charset*1="g5"', 'text/plain; CHARSET = "Big5"']) {
       assert.equal((await gmail(part(big5, "big5", "text/plain", contentType))).textBody, text);
       assert.equal((await imap(source(big5, "big5", "text/plain", "base64", contentType))).textBody, text);
@@ -225,6 +341,8 @@ async function run() {
     ui.run(`paintFeatureCatalog()`);
     assert.match(dom.window.document.getElementById("features-catalog").textContent, /Message text encoding/);
     assert.match(dom.window.document.getElementById("features-catalog").textContent, /already lost/);
+    assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reload message/);
+    assert.match(dom.window.document.getElementById("features-catalog").textContent, /35 MiB/);
     console.log("mail-decoding-ok: MIME parameters, provider parity, loss disclosure, cache/retry, safe plain text, boundaries and Features");
   } finally {
     remote.withClient = original; require("node:net").Socket.prototype.connect = socket;

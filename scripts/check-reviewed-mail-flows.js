@@ -236,7 +236,7 @@ test("failed partial-body refresh keeps cached HTML, exposes retry, and clears w
       await until(() => f.db.messageById(target.id).body_complete === 1);
       await f.engine.settleAccount("gmail"); await tick();
       assert.equal(f.db.messageById(target.id).body_warning, null);
-      assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+      assert.equal(view.pane.querySelector('[data-action="retry-body"]').textContent, "Reload message", "healthy Gmail keeps an explicit cache-reload action");
     } finally { view.dom.window.close(); }
   });
 });
