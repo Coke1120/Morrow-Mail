@@ -5070,13 +5070,12 @@ function replyBody(email) {
   return `\n\n${who} wrote:\n${quoted}`;
 }
 
-// shortcut: names only, upgrade when compose can attach the open message's blobs.
 function attachmentNote(email) {
   const files = ((email && email.attachments) || []).filter((item) => item && (item.filename || item.id));
   if (files.length) {
-    return `Original attachment names: ${files.map((item) => item.filename || "attachment").join(", ")}. Files are not included in this forward.`;
+    return `Original attachment names: ${files.map((item) => item.filename || "attachment").join(", ")}.`;
   }
-  if (email && email.hasAttachments) return "The original message has attachments. Files are not included in this forward.";
+  if (email && email.hasAttachments) return "The original message has attachments.";
   return "";
 }
 
@@ -5106,6 +5105,12 @@ function quoteSource(email) {
   const message = email || {};
   return {
     id: message.id ? String(message.id) : "",
+    accountId: message.accountId || "",
+    threadId: message.threadId || "",
+    bodyEpoch: message.bodyEpoch,
+    bodyComplete: message.bodyComplete,
+    bodyWarning: message.bodyWarning || "",
+    encodingWarning: message.encodingWarning || "",
     from: message.from || "",
     replyTo: Array.isArray(message.replyTo) ? message.replyTo : [],
     to: message.to || "",
@@ -5243,6 +5248,87 @@ function quoteStateFromSeed(fields) {
     kind: (fields && fields.kind) || "",
     images: false,
   };
+}
+
+// Keep the source captured by the reply action. Local history reads neither
+// download mail nor mark older messages read, and never follow later selection.
+async function fillComposeReplyHistory(fields, session) {
+  const quote = state.composeQuote;
+  const source = quote && quote.email;
+  if (!source || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
+      || !fields.accountId || !fields.threadId || !source.id || source.id !== fields.sourceMessageId
+      || (source.accountId && source.accountId !== fields.accountId) || (source.threadId && source.threadId !== fields.threadId)) return;
+  const current = () => state.composeSession === session && state.composeQuote === quote;
+  quote.historyNote = "Loading earlier conversation messages…";
+  paintQuoteBody();
+  try {
+    const rows = await call("mail:listThreadMessages", {
+      accountId: fields.accountId, threadId: fields.threadId, emailId: source.id, headersOnly: true,
+    });
+    if (!current()) return;
+    const members = Array.isArray(rows) ? rows : [];
+    const index = members.findIndex(row => row.id === source.id && row.accountId === fields.accountId && row.threadId === fields.threadId);
+    if (index < 0) throw new Error("The source conversation is no longer available.");
+    const epoch = members[index].bodyEpoch;
+    if (!Number.isSafeInteger(epoch) || (source.bodyEpoch != null && source.bodyEpoch !== epoch)) {
+      throw new Error("The mailbox connection changed.");
+    }
+    const seen = new Set([source.id]);
+    const earlier = members.slice(0, index).reverse().filter(row => {
+      if (!row.id || seen.has(row.id) || row.accountId !== fields.accountId || row.threadId !== fields.threadId || row.isDraft) return false;
+      seen.add(row.id);
+      return true;
+    });
+    const messages = [source];
+    let text = quote.text || "";
+    const unquote = value => String(value).replace(/\r\n?/g, "\n").replace(/^[ \t]*(?:>[ \t]?)+/gm, "").trim();
+    let chars = text.length + (source.htmlBody || "").length + (source.textBody || "").length;
+    let omitted = Math.max(0, earlier.length - 100), unavailable = 0;
+    let incomplete = source.bodyComplete === false || source.bodyWarning || source.encodingWarning ? 1 : 0;
+    for (const header of earlier.slice(0, 100)) {
+      if (header.bodyEpoch !== epoch) throw new Error("The mailbox connection changed.");
+      let email = header;
+      if (header.hasBody !== false) {
+        const data = await call("mail:readCachedBody", { accountId: fields.accountId, emailId: header.id, bodyEpoch: epoch });
+        if (!current()) return;
+        email = data && data.email;
+        if (!email || email.id !== header.id || email.accountId !== fields.accountId
+            || email.threadId !== fields.threadId || email.bodyEpoch !== epoch) throw new Error("An earlier message changed.");
+      }
+      if (!email.textBody && !email.htmlBody) {
+        messages.push({ ...quoteSource(header), historyUnavailable: true });
+        unavailable++;
+        continue;
+      }
+      const block = replyBody(email);
+      // A complete, attributed quote from an earlier Morrow reply is already
+      // present. Identical unquoted messages are still separate deliveries.
+      if (block.trim() && messages.some(message => !message.historyUnavailable && unquote(readable(message)).includes(unquote(block)))) continue;
+      const cost = block.length + (email.htmlBody || "").length + (email.textBody || "").length;
+      if (chars + cost > 2000000) { omitted++; continue; }
+      chars += cost;
+      text = outgoingBody(text, block);
+      messages.push(quoteSource(email));
+      if (email.bodyComplete === false || email.bodyWarning || email.encodingWarning) incomplete++;
+    }
+    if (!current()) return;
+    quote.text = text;
+    quote.messages = messages;
+    quote.historyNote = [
+      unavailable ? `${unavailable} earlier message(s) have no downloaded body and are not included.` : "",
+      incomplete ? `${incomplete} message(s) have incomplete or uncertain text. Only the available text is included.` : "",
+      omitted ? `${omitted} earlier message(s) are not included. Reply history is limited to 100 earlier messages and 2 million characters.` : "",
+    ].filter(Boolean).join(" ");
+  } catch {
+    if (!current()) return;
+    quote.historyNote = "Earlier conversation messages could not be loaded. Only the quoted original is included. Close and reopen this reply to retry.";
+  }
+  if (!current()) return;
+  // History is initial content. An untouched reply can still close without
+  // a discard prompt while the independent sender-identity check is pending.
+  if (!Object.values(state.composeInputVersions).some(Boolean)) state.composeBaseline = fields.body ? "" : composeSnapshot();
+  paintQuoteBody();
+  paintComposeChrome();
 }
 
 function composeSeed(email, kind, self) {
@@ -8034,7 +8120,8 @@ function rowAction(action, label, run, iconNode) {
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    guard(run);
+    if (action === "forward") { if (!state.busy) attachmentAction(run); }
+    else guard(run);
   });
   return button;
 }
@@ -8674,7 +8761,10 @@ function readerButton(action, label, run, iconNode) {
   const text = document.createElement("span");
   text.textContent = label;
   button.appendChild(text);
-  button.addEventListener("click", () => guard(run));
+  button.addEventListener("click", () => {
+    if (action === "forward") { if (!state.busy) attachmentAction(run); }
+    else guard(run);
+  });
   return button;
 }
 
@@ -9993,12 +10083,13 @@ function cancelAttachmentTask(task) {
 }
 
 function startAttachmentTask(channel, email, files, label) {
-  const zip = channel === "mail:downloadAttachmentsZip", prepare = channel === "mail:prepareDraft";
+  const zip = channel === "mail:downloadAttachmentsZip", draft = channel === "mail:prepareDraft", forward = channel === "mail:prepareForward";
+  const prepare = draft || forward;
   const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
   const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
-  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? "Draft attachments" : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
+  const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? (forward ? "Forward attachments" : "Draft attachments") : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
   attachmentTasks.set(key, task);
   const off = typeof api.on === "function" ? api.on("mail:attachmentProgress", value => {
     if (value?.requestId !== task.requestId || task.done) return;
@@ -10006,7 +10097,7 @@ function startAttachmentTask(channel, email, files, label) {
     if (task === attachmentPreviewRequest && $("attachment-preview-status")) $("attachment-preview-status").textContent = attachmentTaskCopy(task);
   }) : () => {};
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
-    ...(prepare ? { draftRevision: email.draftRevision } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
+    ...(draft ? { draftRevision: email.draftRevision } : forward ? { accountId: email.accountId, attachmentIds: ids } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
   });
@@ -14876,9 +14967,6 @@ function paintComposeNote() {
       ? " Reviewing a draft proposal. Nothing is sent until you press Send."
       : " This compose no longer matches the reviewed draft. Nothing is sent until you press Send.";
   }
-  if (state.composeQuote && state.composeQuote.kind === "forward" && attachmentNote(state.composeQuote.email)) {
-    text += " Original files are not copied into this forward. Use Attach files to add them.";
-  }
   const delayLabel = formatScheduleDelay(state.prefs.scheduleDelay);
   if (live && !review && delayLabel) {
     text += " Send schedules " + delayLabel + " ahead. Send now delivers immediately.";
@@ -16260,8 +16348,7 @@ function paintQuoteBody() {
   root.replaceChildren();
   const quote = state.composeQuote;
   if (!quote) return;
-  const email = quote.email;
-  if (!email) {
+  if (!quote.email) {
     const text = String(quote.text || "").trim();
     if (!text) return;
     const block = document.createElement("p");
@@ -16270,66 +16357,84 @@ function paintQuoteBody() {
     root.appendChild(block);
     return;
   }
-  const head = document.createElement("div");
-  head.className = "compose-quote-meta";
-  const from = document.createElement("p");
-  from.className = "meta";
-  from.textContent = email.from || "";
-  head.appendChild(from);
-  if (email.date) {
-    const when = document.createElement("p");
-    when.className = "meta";
-    const date = new Date(email.date);
-    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : shownWhen(date);
-    head.appendChild(when);
-  }
-  if (email.subject) {
-    const subject = document.createElement("p");
-    subject.className = "meta";
-    subject.textContent = email.subject;
-    head.appendChild(subject);
-  }
-  for (const pair of [["To", email.to], ["Cc", email.cc]]) {
-    const text = people(pair[1]);
-    if (!text) continue;
-    const line = document.createElement("p");
-    line.className = "meta";
-    line.textContent = pair[0] + " " + text;
-    head.appendChild(line);
-  }
-  root.appendChild(head);
-  const images = remoteImageSrcs(email.htmlBody);
-  const allowed = quoteImagesOn(email);
-  if (images.length && !allowed) {
-    const bar = document.createElement("div");
-    bar.className = "remote-gate";
+  if (quote.historyNote) {
     const note = document.createElement("p");
-    note.textContent = images.length === 1
-      ? "1 remote image is blocked."
-      : images.length + " remote images are blocked.";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "ghost";
-    button.textContent = "Load remote content";
-    button.addEventListener("click", () => {
-      if (email.id) {
-        state.remoteAllowed[email.id] = true;
-        if (state.email && state.email.id === email.id) renderReader(false);
-      } else if (state.composeQuote) {
-        state.composeQuote.images = true;
-      }
-      paintQuoteBody();
-    });
-    bar.append(note, button);
-    root.appendChild(bar);
+    note.className = "hint compose-history-note";
+    note.setAttribute("role", "status");
+    note.textContent = quote.historyNote;
+    root.appendChild(note);
   }
-  appendMessageBody(root, email, allowed);
-  const files = attachmentNote(email);
-  if (files) {
-    const line = document.createElement("p");
-    line.className = "meta";
-    line.textContent = files;
-    root.appendChild(line);
+  const container = root;
+  for (const email of quote.messages || [quote.email]) {
+    const root = document.createElement("section");
+    root.className = "compose-quote-message";
+    container.appendChild(root);
+    const head = document.createElement("div");
+    head.className = "compose-quote-meta";
+    const from = document.createElement("p");
+    from.className = "meta";
+    from.textContent = email.from || "";
+    head.appendChild(from);
+    if (email.date) {
+      const when = document.createElement("p");
+      when.className = "meta";
+      const date = new Date(email.date);
+      when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : shownWhen(date);
+      head.appendChild(when);
+    }
+    if (email.subject) {
+      const subject = document.createElement("p");
+      subject.className = "meta";
+      subject.textContent = email.subject;
+      head.appendChild(subject);
+    }
+    for (const pair of [["To", email.to], ["Cc", email.cc]]) {
+      const text = people(pair[1]);
+      if (!text) continue;
+      const line = document.createElement("p");
+      line.className = "meta";
+      line.textContent = pair[0] + " " + text;
+      head.appendChild(line);
+    }
+    root.appendChild(head);
+    const images = remoteImageSrcs(email.htmlBody);
+    const allowed = quoteImagesOn(email);
+    if (images.length && !allowed) {
+      const bar = document.createElement("div");
+      bar.className = "remote-gate";
+      const note = document.createElement("p");
+      note.textContent = images.length === 1
+        ? "1 remote image is blocked."
+        : images.length + " remote images are blocked.";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost";
+      button.textContent = "Load remote content";
+      button.addEventListener("click", () => {
+        if (email.id) {
+          state.remoteAllowed[email.id] = true;
+          if (state.email && state.email.id === email.id) renderReader(false);
+        } else if (state.composeQuote) {
+          state.composeQuote.images = true;
+        }
+        paintQuoteBody();
+      });
+      bar.append(note, button);
+      root.appendChild(bar);
+    }
+    if (email.historyUnavailable) {
+      const missing = document.createElement("p");
+      missing.className = "hint compose-history-note";
+      missing.textContent = "Body not downloaded. This message is not included in the reply.";
+      root.appendChild(missing);
+    } else appendMessageBody(root, email, allowed);
+    const files = quote.kind === "forward" ? attachmentNote(email) : "";
+    if (files) {
+      const line = document.createElement("p");
+      line.className = "meta";
+      line.textContent = files;
+      root.appendChild(line);
+    }
   }
 }
 
@@ -16345,6 +16450,12 @@ function paintComposeChrome() {
   const body = $("compose-quote-body");
   if (!dialog || !toggle || !pane || !handle || !note) return;
   const has = !!(quote && (quote.email || quote.text));
+  const history = has && ((quote.messages && quote.messages.length > 1) || quote.historyNote);
+  const label = $("compose-quote-label");
+  if (label) label.textContent = history ? "Conversation history" : "Original message";
+  note.textContent = history
+    ? "The quoted original and available earlier message text are included when you save, send, or schedule."
+    : "The quoted original is still included when you save, send, or schedule.";
   dialog.classList.toggle("is-quoting", has);
   toggle.hidden = !has;
   if (!has) {
@@ -16715,12 +16826,46 @@ function cloneComposeSeed(seed) {
   }
 }
 
-async function presentCompose(seed) {
-  if (api && typeof api.openComposeWindow === "function") {
-    await api.openComposeWindow(cloneComposeSeed(seed));
-    return;
+function forwardNeedsFiles(seed) {
+  return seed?.kind === "forward" && !seed.draftId && !seed.recoveredSnapshot
+    && seed.quoteEmail && (seed.quoteEmail.hasAttachments || seed.quoteEmail.attachments?.length);
+}
+
+async function prepareForwardCompose(seed) {
+  if (!forwardNeedsFiles(seed)) return seed;
+  const source = { ...seed.quoteEmail, accountId: seed.accountId };
+  const files = Array.isArray(source.attachments) ? source.attachments : [];
+  const task = startAttachmentTask("mail:prepareForward", source, files, "Prepare forward");
+  const prepared = await task.promise;
+  // Cancel may arrive after the host has published its result. It still owns
+  // whether this renderer opens a new compose window.
+  if (task.cancelRequested) throw new Error("cancelled");
+  if (!prepared || prepared.emailId !== source.id || prepared.accountId !== source.accountId
+      || !Array.isArray(prepared.attachments) || !prepared.attachments.length
+      || composeAttachmentList(prepared.attachments).length !== prepared.attachments.length
+      || (files.length && prepared.attachments.length !== files.length)) {
+    throw new Error("The original files could not be prepared. Reopen the message and retry; nothing was sent.");
   }
-  await openCompose(seed || {});
+  return { ...seed, attachments: prepared.attachments };
+}
+
+const forwardComposes = new Map();
+function presentCompose(seed) {
+  const open = async fields => {
+    if (api && typeof api.openComposeWindow === "function") {
+      await api.openComposeWindow(cloneComposeSeed(fields));
+      return;
+    }
+    await openCompose(fields || {});
+  };
+  if (!forwardNeedsFiles(seed)) return open(seed);
+  const key = JSON.stringify([seed.accountId, seed.sourceMessageId]);
+  if (forwardComposes.has(key)) return forwardComposes.get(key);
+  const pending = prepareForwardCompose(seed).then(open).finally(() => {
+    if (forwardComposes.get(key) === pending) forwardComposes.delete(key);
+  });
+  forwardComposes.set(key, pending);
+  return pending;
 }
 
 function publishComposeTitle(text) {
@@ -17029,6 +17174,10 @@ async function openCompose(seed) {
   state.composeBaseline = fields.body && !fields.draftId ? "" : composeSnapshot();
   openDialog("compose");
   scheduleComposeLayout();
+  // Start both before the user can type: identity resolution snapshots the
+  // recipient edit versions and must not mistake edits during history loading
+  // for its initial recipients.
+  const history = fillComposeReplyHistory(fields, replySession);
   try { await initializeComposeIdentity(fields); }
   catch (error) {
     if (replySession !== state.composeSession) return;
@@ -17036,6 +17185,7 @@ async function openCompose(seed) {
     $("compose-from-note").textContent = "Could not resolve the From address. Close and reopen compose to retry. " + error.message;
     setComposeStatus("From address could not be loaded. Your text is retained.", true);
   }
+  await history;
   if (replySession !== state.composeSession) return;
   const initial = composeSnapshot();
   if (!fields.partialReceipt) await fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot || state.composeInputVersions.body > 0);
@@ -18177,8 +18327,10 @@ function runMailShortcut(action) {
   }
   if (action === "reply" || action === "reply-all" || action === "forward") {
     const kind = action === "reply" ? "reply" : action === "reply-all" ? "all" : "forward";
-    guard(() => !isReaderWindow() && effectiveMailViewLayout() === "window"
-      ? replyFromList(target, kind) : openReaderCompose(kind, target));
+    const run = () => !isReaderWindow() && effectiveMailViewLayout() === "window"
+      ? replyFromList(target, kind) : openReaderCompose(kind, target);
+    if (kind === "forward") { if (!state.busy) attachmentAction(run); }
+    else guard(run);
     return;
   }
   const commandId = action === "send" ? "compose-send" : action === "save-draft" ? "compose-save" : action === "send-confirm" ? "compose-preview-confirm" : "";

@@ -1,5 +1,14 @@
 # Shell parity
 
+Fresh reply windows show the source message and available earlier cached thread
+messages in their history pane. That same quoted text reaches Save draft,
+Preview Send, Send and Schedule; hiding/collapsing the pane does not remove it.
+History stays with the captured source while mailbox selection changes. Context
+loading blocks save/send/schedule but preserves typing and Close. Missing,
+partial and bounded-out history is disclosed; no provider download/read flag or
+AI transfer is added. Resumed/recovered content is not rebuilt. Synthetic DOM and
+native Electron fixtures cover these flows with synthetic mail only.
+
 Message readers disclose checked decoding loss and unsupported charsets without
 repeatedly fetching complete bodies. They prefer verified plain text over lossy
 HTML and offer an HTML/plain-text view switch when both are available. The safe
@@ -143,3 +152,5 @@ Settings → Brain offers Daily (default), Weekly, and Manual only for automatic
 
 
 Agent access / MCP now leads with local stdio setup: Create bot, Turn on access, Connect MCP, optional Compatibility, then Activity. Existing API/CLI prompts remain in a disclosure and existing private Tailscale controls remain available. Installed builds include a standalone resources/morrow-mcp.cjs adapter; a separate Node.js 20+ runtime is required. Source checkouts use scripts/morrow-mcp.js after npm ci. Configuration contains only trusted executable/adapter/token-file paths and the installation ID, never the one-time secret, and copying it changes no grant or webhook setting. Discovery and calls use the original authenticated host catalog, scopes, budgets, audit and durable write receipts. There is no remote MCP endpoint. See [MCP setup and limits](MCP.md).
+
+Forward copies every original attachment into compose after a cancellable preparation step. The same 25 MiB outgoing file limit applies. All reads must succeed against the same message/mailbox identity before local blobs are published; otherwise no forward opens. The original message is unchanged. Review the compose file list and preview, or remove a file explicitly. Save and Schedule retain the prepared bytes; nothing sends until the user chooses Send or Schedule.

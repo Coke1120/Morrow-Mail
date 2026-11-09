@@ -27,6 +27,18 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Fresh Reply and Reply All include available earlier cached conversation messages
+in the compose history pane and in the quote saved/sent/scheduled with the reply.
+The captured source mailbox/thread and chronological position bound the history;
+later messages and unsent drafts stay out. Cached reads never download bodies or
+mark earlier mail read. Missing bodies are labelled rather than replaced with
+snippets; partial/uncertain text and omissions are disclosed. Additional history
+is bounded to 100 earlier messages and a 2-million-character content budget
+(cached HTML/plain text plus outgoing quotes). The original is never truncated.
+Exact attributed quotes already included in newer text are not appended again;
+distinct unquoted deliveries remain distinct. Saved/recovered drafts retain their
+own content. See [reply history](adr/2026-11-09-reply-compose-history.md).
+
 The opening status window, What's new, and About & updates display the installed
 version, GitHub source and Apache License 2.0 links. Opening links uses the browser;
 the status window allows only the two fixed project/license HTTPS destinations.
@@ -266,3 +278,5 @@ Preview Send, scheduled-send previews and Outbox show safe HTML through the rece
 
 
 Agent access / MCP now leads with local stdio setup: Create bot, Turn on access, Connect MCP, optional Compatibility, then Activity. Existing API/CLI prompts remain in a disclosure and existing private Tailscale controls remain available. Installed builds include a standalone resources/morrow-mcp.cjs adapter; a separate Node.js 20+ runtime is required. Source checkouts use scripts/morrow-mcp.js after npm ci. Configuration contains only trusted executable/adapter/token-file paths and the installation ID, never the one-time secret, and copying it changes no grant or webhook setting. Discovery and calls use the original authenticated host catalog, scopes, budgets, audit and durable write receipts. There is no remote MCP endpoint. See [MCP setup and limits](MCP.md).
+
+Forward prepares every original attachment through `mail:prepareForward` before opening compose. It uses the shared identity-validated download/cache and Attachment transfers cancellation controls, then publishes local blobs atomically within the existing 25 MiB outgoing attachment limit. A failure, cancellation, oversized file set or changed source opens no partial forward. Retry from the original message; source mail is unchanged and nothing sends automatically. The compose file list and send preview show included names and sizes; removing a file is an explicit compose edit. Saved and scheduled forwards retain prepared bytes and inline content IDs. Bot attachment access is unchanged.

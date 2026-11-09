@@ -7,6 +7,10 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.7": [
+      "Forward brings the original message’s attachments into the reviewed draft, with removable file chips. Failed attachment preparation keeps the forward closed for retry. Cancelled or stale downloads cannot change another compose window.",
+      "Reply and Reply All keep your new text separate from a collapsible original-message history. Preview and outgoing mail retain the reviewed quoted content; hiding the history does not remove it from the message.",
+    ],
     "0.4.6": [
       "Settings → Agent access / MCP connects compatible agents on this computer through a bundled local stdio adapter. Morrow must remain open; a separate Node.js 20+ runtime is required.",
       "MCP uses the existing mailbox and operation grants, budgets, revocation, audit and durable write receipts. Setup copies command arguments and a private token-file path, never the one-time secret, and does not configure clients or grant new access automatically.",
