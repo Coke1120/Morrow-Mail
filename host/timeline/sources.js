@@ -83,19 +83,19 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
       omitted.push({ accountId: row.account_id, messageId: row.id });
       continue;
     }
-    bodyBytes += Buffer.byteLength(text);
-    if (bodyBytes > LIMITS.inputTokens) throw budget("source-bytes", bodyBytes, LIMITS.inputTokens);
     try {
       const metadata = metadataOf(row, account, db.timeline, threadId);
       validateMetadata(metadata);
       if ((row.subject || "").length > 500) throw failure("timeline-metadata");
+      bodyBytes += Buffer.byteLength(text);
       sources.push({ ...metadata, ...(phase ? { phase } : {}), subject: row.subject || "", text });
     } catch { invalidMetadata++; }
+    if (bodyBytes > LIMITS.sourceBytes) throw budget("source-bytes", bodyBytes, LIMITS.sourceBytes);
   }
   const coverage = { selected_message_count: rows.length, included_message_count: sources.length,
     omitted_message_count: rows.length - sources.length, selection_truncated: false };
   const snapshot = { accounts: [...accounts].map(([id, account]) => ({ id, stamp: account.stamp, email: account.saved.email })),
-    records, sources, omitted, coverage, sourceThreads: [...sourceThreads].map(([thread_id, selected_message_count]) => ({ thread_id, selected_message_count })),
+    records, sources, omitted, coverage, bodyBytes, sourceThreads: [...sourceThreads].map(([thread_id, selected_message_count]) => ({ thread_id, selected_message_count })),
     search: selection.search ? { matched, expanded: selection.expandThreads, localOnly: true, ordinaryDisplayCap: 100 } : null, missingBodies, invalidMetadata };
   snapshot.digest = hash([snapshot.accounts, records, coverage]);
   return snapshot;

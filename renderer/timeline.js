@@ -42,12 +42,12 @@
       if (error?.code === "timeline-validation" && Object.hasOwn(stages, validation?.stage) && Object.hasOwn(reasons, validation?.category) && validation.attempts === 2) {
         text = `${stages[validation.stage]} failed after one retry: ${reasons[validation.category]}. Earlier saved timelines remain unchanged.`;
       }
-      const labels = { "source-bytes": "Downloaded mail size", "metadata-bytes": "Message header and attachment-name size", "focus-bytes": "Optional focus size",
-        "request-bytes": "Request input size", "planned-input-bytes": "Planned extraction input size", "chunk-count": "Planned extraction requests",
-        "call-count": "AI requests", "input-bytes": "Run input size", "output-tokens": "AI output tokens", "duration-ms": "Run time in milliseconds", "consolidation-bytes": "Summary consolidation input size" };
+      const labels = { "source-bytes": "Email body text bytes", "metadata-bytes": "Message header and attachment-name bytes", "focus-bytes": "Optional focus bytes",
+        "request-bytes": "Request input bytes", "planned-input-bytes": "Planned extraction input bytes", "chunk-count": "Planned extraction requests",
+        "call-count": "AI requests", "input-bytes": "Run input bytes", "input-tokens": "Provider-reported input tokens", "output-tokens": "AI output tokens", "duration-ms": "Run time in milliseconds", "consolidation-bytes": "Summary consolidation input bytes" };
       const detail = error?.budget;
       if (error?.code === "timeline-budget" && labels[detail?.kind] && Number.isSafeInteger(detail.actual) && Number.isSafeInteger(detail.limit)) {
-        text = `${labels[detail.kind]}: ${detail.actual.toLocaleString()} / ${detail.limit.toLocaleString()} limit. ${["focus-bytes", "request-bytes"].includes(detail.kind) ? "Shorten optional keywords and contacts." : "Open a smaller downloaded thread; focus does not filter messages."}`;
+        text = `${labels[detail.kind]}: ${detail.kind === "source-bytes" ? "at least " : ""}${detail.actual.toLocaleString()} / ${detail.limit.toLocaleString()} limit. ${["focus-bytes", "request-bytes"].includes(detail.kind) ? "Shorten optional keywords and contacts." : "Open a smaller downloaded thread; focus does not filter messages."}`;
       }
       if (Number.isSafeInteger(error?.calls) && error.calls >= 0) text += error.calls
         ? ` ${error.calls} AI request${error.calls === 1 ? " was" : "s were"} attempted. Data may already have reached the saved provider and cannot be recalled. Retrying sends the reviewed mail again.`
@@ -97,13 +97,20 @@
       prepared = value;
       const coverage = value.coverage;
       if (!previous || previous.selected_message_count !== coverage.selected_message_count || previous.omitted_message_count !== coverage.omitted_message_count) node("timeline-partial").checked = false;
-      node("timeline-preview").textContent = `${coverage.included_message_count} included / ${coverage.selected_message_count} selected · ${value.threads} threads · ${coverage.omitted_message_count} omitted (missing, incomplete or unsupported). AI: ${value.provider} · ${value.destination} · ${value.model}. ${caseMode() ? "Case overview adds synthesis requests under the same run limits; the estimate covers initial extraction only. " : ""}AI receives body text (including quoted history), subject, sender, mail dates/provenance, attachment names and optional focus. To/Cc remain local evidence; body text and focus can still contain recipient addresses. No attachment file contents. ${value.locality || ""} ${value.providerTerms || ""}`;
+      node("timeline-preview").textContent = `${coverage.included_message_count} included / ${coverage.selected_message_count} selected · ${value.threads} threads · ${coverage.omitted_message_count} omitted (missing, incomplete or unsupported). AI: ${value.provider} · ${value.destination} · ${value.model}. ${caseMode() ? "Case overview adds synthesis requests under the same run limits; the estimate covers initial extraction only. " : ""}AI receives body text (including quoted history; exact repeated quotes may reference a complete source in the same request), subject, sender, mail dates/provenance, attachment names and optional focus. To/Cc remain local evidence; body text and focus can still contain recipient addresses. No attachment file contents. ${value.locality || ""} ${value.providerTerms || ""}`;
+      const processing = value.processing;
+      node("timeline-processing").hidden = !processing;
+      const bodyCounts = processing ? `Email body text: ${processing.sourceBytes.toLocaleString()} bytes / ${value.limits.sourceBytes.toLocaleString()}-byte capture limit.` : "";
+      const planCounts = processing?.planned === false ? " No valid body-processing or extraction plan; reduce selection or focus. No AI request was started." : processing ? ` Literal body text processed: ${processing.processedBodyBytes.toLocaleString()} bytes; ${processing.repeatedBytes.toLocaleString()} repeated quote bytes shared through ${processing.sharedQuotes} exact references. Planned extraction: ${value.chunks} requests, ${value.estimatedInputBytes.toLocaleString()} serialized input bytes / ${value.limits.inputBytes.toLocaleString()}-byte run budget. Retries and synthesis also use the run budget.` : "";
+      node("timeline-processing-counts").textContent = `${bodyCounts}${planCounts} Up to ${value.limits.calls} AI requests, ${value.limits.outputTokens.toLocaleString()} output tokens and ${value.limits.jobMs / 60000} minutes; no exact price estimate.`;
+      node("timeline-processing-sources").replaceChildren(...(processing?.messages || []).map(message => element("li", `${message.from?.name || message.from?.address || "Unknown sender"} · ${message.occurredAt || "Unknown mail date"} · ${message.subject || "No subject"}: ${message.bodyBytes.toLocaleString()} body bytes${processing.planned === false ? ". Processing plan unavailable." : `, ${message.processedBodyBytes.toLocaleString()} literal bytes, ${message.sharedQuotes} shared quotes.`}`)));
       node("timeline-partial-choice").hidden = !coverage.omitted_message_count;
       if (value.budget) report({ code: "timeline-budget", budget: value.budget, calls: 0 });
       else if (!value.allowed) report({ code: "ai-consent-required" });
       else if (!coverage.included_message_count) report({ code: "timeline-partial" });
     }
     async function prepare(current) {
+      node("timeline-processing").hidden = true;
       let value;
       try { value = await invoke("timeline:prepare", { selection: source, options: options(), ...(sourceToken ? { manifestToken: sourceToken } : {}) }); }
       catch (error) {
@@ -124,6 +131,7 @@
       prepared = null; preparationFailed = false;
       node("timeline-case-confirm").checked = false;
       node("timeline-partial").checked = false;
+      node("timeline-processing").hidden = true;
       node("timeline-preview").textContent = "Selection or focus changed. Review selected mail again before Generate.";
       buttons();
     }
@@ -216,6 +224,7 @@
       source = { messages: [{ accountId: email.accountId, messageId: email.id }], expandThreads: true };
       origin = { source, accountId: email.accountId, email };
       selected = new Map(); candidates = []; searchSerial++; evidenceSerial++;
+      node("timeline-processing").hidden = true;
       node("timeline-mode").value = "thread";
       node("timeline-case").hidden = true;
       node("timeline-case-confirm").checked = false;
@@ -354,7 +363,10 @@
         jobId = null; prepared = null; cancelRequested = false; cancelling = false; buttons();
         if (value.phase === "completed") {
           if (dialog.open) { await load(value.timelineId); await savedList(); }
-        } else report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls, validation: value.validation });
+        } else {
+          if (["timeline-source-changed", "timeline-manifest"].includes(value.code)) node("timeline-processing").hidden = true;
+          report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls, validation: value.validation });
+        }
       } else status(`${value.phase === "merging" ? "Consolidating validated summaries" : "Extracting downloaded messages"}: ${value.completed} / ${value.total} · ${value.calls} calls. Cancel stops later calls, not data already delivered.`);
     }
     dialog.addEventListener("keydown", event => event.stopPropagation());
@@ -403,7 +415,7 @@
       finally { if (serial === current) { working = false; buttons(); } }
     });
     node("timeline-case-confirm").addEventListener("change", buttons);
-    for (const id of ["timeline-keywords", "timeline-contacts", "timeline-case-title"]) node(id).addEventListener("input", () => { if (caseMode()) invalidateCase(); else { prepared = null; preparationFailed = false; node("timeline-partial").checked = false; buttons(); } });
+    for (const id of ["timeline-keywords", "timeline-contacts", "timeline-case-title"]) node(id).addEventListener("input", () => { if (caseMode()) invalidateCase(); else { prepared = null; preparationFailed = false; node("timeline-processing").hidden = true; node("timeline-partial").checked = false; buttons(); } });
     node("timeline-partial").addEventListener("change", buttons);
     node("timeline-export-confirm").addEventListener("change", buttons);
     node("timeline-form").addEventListener("submit", async event => {
@@ -458,6 +470,7 @@
         invoke("timeline:check", { manifestToken: snapshot }).catch(error => {
           if (serial !== current || sourceToken !== snapshot) return;
           serial++; prepared = null; source = null; working = false;
+          node("timeline-processing").hidden = true;
           report(error); buttons();
         });
       }

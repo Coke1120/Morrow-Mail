@@ -12,9 +12,9 @@ function buildCaseRequest(rows, { language = "English", retry = false, retryCate
 
 function batch(rows, options) {
   const groups = []; let group = [];
-  const fits = values => size(buildCaseRequest(values, { ...options, retry: true })) <= LIMITS.requestTokens;
+  const fits = values => size(buildCaseRequest(values, { ...options, retry: true })) <= LIMITS.requestBytes;
   for (const row of rows) {
-    if (!fits([row])) throw budget("consolidation-bytes", size(buildCaseRequest([row], { ...options, retry: true })), LIMITS.requestTokens);
+    if (!fits([row])) throw budget("consolidation-bytes", size(buildCaseRequest([row], { ...options, retry: true })), LIMITS.requestBytes);
     if (group.length && !fits([...group, row])) { groups.push(group); group = []; }
     group.push(row);
   }
