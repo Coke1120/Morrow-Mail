@@ -1,3 +1,10 @@
+Mail sidebar folders start 14 pixels inside each account heading, including Gmail,
+Outlook, Yahoo, custom IMAP and Local Folders. Real subfolders retain their extra
+nesting and flexible spacing on narrow sidebars. Root folders remain siblings,
+and unread badges keep their right edge.
+This is display spacing only; folder identities, parent routing, collapse choices
+and the separate All Account Mail section are unchanged.
+
 Settings → Brain chooses Daily (default), Weekly, or Manual only for automatic profile refresh. Page opens and the running app's checks share the selected 24-hour or seven-day interval. Failed automatic attempts persist their waiting period across restart; manual Refresh/Rebuild remain explicit retries. Repeated requests share one profile job. Background AI permission stays separate, and the existing global profile samples downloaded Sent/Inbox snippets across connected mailboxes. Settings shows last success, next eligibility and permission state. Skill schedules and Agent triage have their own controls. See [cadence lifecycle](adr/2026-11-05-brain-refresh-cadence.md).
 
 Fresh Reply/Reply All and Forward subjects keep Re:/Fwd:. Consecutive matching prefixes, recognized Chinese/Japanese forms, AW:/WG: and numeric counters normalize without losing Unicode subject text or mixed action history. User edits, resumed drafts and recovered scheduled messages keep their saved subject through preview, payload and MIME.

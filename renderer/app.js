@@ -6213,7 +6213,7 @@ function renderAccounts() {
     if (!account.isLocal) nav.appendChild(folderRootDrop("imap", account.id));
     for (const folder of rows) {
       const line = document.createElement("div");
-      line.className = "folder-line";
+      line.className = "folder-line account-folder-line";
       const indent = document.createElement("span");
       indent.className = "folder-indent";
       indent.style.width = ((folder.depth || 0) * 14) + "px";
