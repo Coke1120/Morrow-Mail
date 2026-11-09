@@ -234,3 +234,61 @@ test('metadata and unread refresh retain owner routing and custom names that res
   assert.equal(row().dataset.dropId,'YELLOW_STAR');
   assert.equal(row().dataset.dropAccount,'box-2');
 });
+
+
+test('account folders share a visual level without changing real hierarchy, routing or badge updates', async t => {
+  const f = fixture(t);
+  for (const account of f.accounts) {
+    account.folders.primary.push({id:'Sent',name:'Sent',wellKnownName:'sentitems'}, {id:'Drafts',name:'Drafts',wellKnownName:'drafts'});
+    account.folders.primary[0].unreadCount = 19146;
+    account.folders.more.push({id:'Reports/Annual/Q1',name:'Q1',unreadCount:7});
+  }
+  f.ui.run(`state.prefs.gmailOpen=state.prefs.outlookOpen=true;
+    state.localAccount={id:'__morrow_local__',isLocal:true,name:'Local Folders',email:'Local Folders',folders:{primary:[],more:[
+      {id:'local-root',name:'Archive',type:'local',unreadCount:3},
+      {id:'local-child',name:'Annual',type:'local',parentId:'local-root',unreadCount:1}
+    ]}};renderAccounts()`);
+  const row = (account, id) => f.window.document.querySelector(`button.folder[data-account-id="${account}"][data-folder-id="${id}"]`);
+  const indent = node => {
+    assert.ok(node.parentElement.classList.contains('account-folder-line'), 'every account folder gets the fixed inset');
+    return node.parentElement.querySelector('.folder-indent').style.width;
+  };
+  const css=fs.readFileSync(require.resolve('../renderer/app.css'),'utf8');
+  assert.match(css,/\.account-folder-line\s*\{\s*padding-left:\s*14px;/);
+  const before = JSON.stringify(f.accounts);
+  assert.equal(f.window.document.querySelector('#folders .account-folder-line > button.folder:not([data-account-id])'), null, 'the account inset does not reach All Account Mail');
+  for (const account of f.accounts) {
+    for (const id of ['INBOX','Sent','Drafts','Reports']) {
+      assert.equal(indent(row(account.id,id)), '0px');
+      assert.equal(row(account.id,id).dataset.navParent, 'account:'+account.id);
+    }
+    assert.equal(indent(row(account.id,'Reports/Annual')), '14px');
+    assert.equal(indent(row(account.id,'Reports/Annual/Q1')), '28px');
+    assert.equal(row(account.id,'Reports/Annual/Q1').dataset.navParent, 'folder:'+account.id+':Reports/Annual');
+    assert.equal(row(account.id,'INBOX').querySelector('.count').textContent, '19146');
+    assert.equal(row(account.id,'Reports/Annual/Q1').querySelector('.count').textContent, '7');
+  }
+  assert.equal(indent(row('__morrow_local__','local-root')), '0px');
+  assert.equal(indent(row('__morrow_local__','local-child')), '14px');
+  assert.equal(row('__morrow_local__','local-child').dataset.navParent, 'folder:__morrow_local__:local-root');
+  assert.equal(JSON.stringify(f.accounts), before, 'visual spacing leaves folder records unchanged');
+  const inbox = row('box-0','INBOX');
+  f.accounts[0].folders.primary[0].unreadCount = 23;
+  f.ui.run('renderAccounts()');
+  assert.equal(row('box-0','INBOX'), inbox, 'count-only repaint retains the row');
+  assert.equal(inbox.querySelector('.count').textContent, '23');
+  assert.equal(indent(inbox), '0px');
+  f.ui.run('globalThis.chosen=[];selectFolder=async(accountId,folderId)=>chosen.push({accountId,folderId})');
+  row('box-3','Drafts').click(); await tick();
+  assert.deepEqual(f.json('chosen'), [{accountId:'box-3',folderId:'Drafts'}]);
+  f.window.document.getElementById('folder-filter').value='Q1'; f.ui.run('renderAccounts()');
+  assert.equal(indent(row('box-0','Reports')), '0px');
+  assert.equal(indent(row('box-0','Reports/Annual/Q1')), '28px');
+  f.window.document.getElementById('folder-filter').value=''; f.ui.run('renderAccounts()');
+  await f.ui.run("toggleSidebarFolder('box-0','Reports')");
+  assert.equal(row('box-0','Reports/Annual'), null);
+  assert.equal(indent(row('box-0','Reports')), '0px');
+  await f.ui.run("toggleSidebarFolder('box-0','Reports')");
+  assert.equal(indent(row('box-0','Reports/Annual')), '14px');
+  assert.match(require('../renderer/features-catalog').items.find(item=>item.id==='mail-folder-navigation').blurb, /first-level folders 14 pixels.*unread badges stay right-aligned/);
+});

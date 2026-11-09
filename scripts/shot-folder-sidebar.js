@@ -258,6 +258,92 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await delay(100);
   }
   assert.equal(await evaluate("window.fixtureReady===true"), true, JSON.stringify(errors));
+  if (process.argv.includes("--account-indent-only")) {
+    await evaluate(`(() => {
+      state.accounts = ['custom','gmail','outlook','yahoo'].map(profile => ({
+        id:profile,email:profile+'@example.invalid',platform:'imap',imapSmtpProfile:profile,delimiter:'/',
+        folders:{primary:[{id:'INBOX',name:'Inbox',wellKnownName:'inbox',unreadCount:19146},
+          {id:'Sent',name:'Sent',wellKnownName:'sentitems',unreadCount:3},
+          {id:'Drafts',name:'Drafts',wellKnownName:'drafts'}],more:[
+          {id:'INBOX/Client',name:'A long client folder name with Unicode 資料',unreadCount:7},
+          {id:'INBOX/Client/Annual',name:'Annual',unreadCount:2}]}
+      }));
+      state.localAccount={id:'__morrow_local__',isLocal:true,name:'Local Folders',email:'Local Folders',folders:{primary:[],more:[
+        {id:'local-root',name:'Archive',type:'local',unreadCount:3},
+        {id:'local-child',name:'Local client archive with a long name',type:'local',parentId:'local-root',unreadCount:12}
+      ]}};
+      state.accountId='custom';state.folderId='INBOX';
+      state.prefs.gmailOpen=state.prefs.outlookOpen=true;state.prefs.accountExpanded={};renderAccounts();
+      window.indentMetrics=()=>[...document.querySelectorAll('#folders .folder-line > button.folder[data-account-id]')].map(row=>{
+        const line=row.parentElement, name=row.querySelector('.name'), icon=row.querySelector('.folder-icon'), count=row.querySelector('.count');
+        return {account:row.dataset.accountId,id:row.dataset.folderId,parent:row.dataset.navParent,
+          indent:parseFloat(line.querySelector('.folder-indent').style.width),accountInset:parseFloat(getComputedStyle(line).paddingLeft),iconLeft:icon.getBoundingClientRect().left,
+          nameLeft:name.getBoundingClientRect().left,countRight:count?.getBoundingClientRect().right,
+          lineRight:line.getBoundingClientRect().right,rowRight:row.getBoundingClientRect().right,
+          scrollWidth:line.scrollWidth,width:line.clientWidth};
+      });
+    })()`);
+    const results = [];
+    for (const [width,height,sidebar,theme] of [[1280,1000,260,'light'],[800,600,220,'dark'],[390,844,180,'light'],[390,844,180,'dark']]) {
+      await cdp("Emulation.setDeviceMetricsOverride", {width,height,deviceScaleFactor:1,mobile:false});
+      await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.documentElement.style.setProperty('--folders','${sidebar}px')`);
+      const actual=await evaluate('window.indentMetrics()');
+      assert.equal(actual.length,22,'all account folders remain present');
+      for (const row of actual) {
+        const depth=row.id==='local-child'?1:row.id.split('/').length-1;
+        assert.equal(row.indent,depth*14,`${row.account}:${row.id}`);
+        assert.equal(row.accountInset,14,'fixed account inset');
+        assert.ok(row.scrollWidth<=row.width+1,'folder line must not overflow');
+        assert.ok(Math.abs(row.rowRight-row.lineRight)<1,'row keeps the available right edge');
+      }
+      for (const account of ['custom','gmail','outlook','yahoo']) {
+        const roots=actual.filter(row=>row.account===account && row.indent===0);
+        assert.ok(roots.every(row=>Math.abs(row.iconLeft-roots[0].iconLeft)<1),'root siblings align');
+        const child=actual.find(row=>row.account===account && row.id==='INBOX/Client');
+        const grandchild=actual.find(row=>row.account===account && row.id==='INBOX/Client/Annual');
+        assert.ok(child.iconLeft>roots[0].iconLeft && grandchild.iconLeft>child.iconLeft,'real child nesting remains visible');
+      }
+      const local=actual.filter(row=>row.account==='__morrow_local__');
+      assert.ok(local[1].iconLeft>local[0].iconLeft,'Local Folders retains child nesting');
+      const badges=actual.filter(row=>row.countRight!==undefined);
+      assert.ok(badges.every(row=>Math.abs(row.countRight-badges[0].countRight)<1),'badges align across root and nested folders/providers');
+      await evaluate(`document.querySelectorAll('#folders .account-folder-line').forEach(node=>node.style.paddingLeft='0px')`);
+      const before=await evaluate('window.indentMetrics()');
+      await evaluate(`document.querySelectorAll('#folders .account-folder-line').forEach(node=>node.style.removeProperty('padding-left'))`);
+      for (const [index,row] of actual.entries()) {
+        if(row.indent===0) {
+          assert.ok(Math.abs(row.iconLeft-before[index].iconLeft-14)<1,'root icons move one fixed level');
+          assert.ok(Math.abs(row.nameLeft-before[index].nameLeft-14)<1,'root names move with icons');
+        }
+        if(row.countRight!==undefined) assert.ok(Math.abs(row.countRight-before[index].countRight)<1,'badge right edge is unchanged');
+      }
+      results.push({width,height,sidebar,theme,rows:actual.length,badges:badges.length});
+    }
+    await evaluate(`state.prefs.accountExpanded={gmail:false,outlook:false,yahoo:false};renderAccounts()`);
+    await cdp("Emulation.setDeviceMetricsOverride", {width:1280,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='light';document.documentElement.style.setProperty('--folders','260px');document.getElementById('folders').scrollTop=0`);
+    const clip=await evaluate(`(()=>{const r=document.getElementById('side-mail').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()`);
+    await shot('sidebar-folder-indent-light',clip);
+    await evaluate(`document.documentElement.dataset.theme='dark'`);
+    await shot('sidebar-folder-indent-dark',clip);
+    await clickSelector('[data-nav-key="account:custom"]');
+    await waitFor("state.prefs.accountExpanded.custom===false",'account collapse');
+    await clickSelector('[data-nav-key="account:custom"]');
+    await waitFor("state.prefs.accountExpanded.custom===true",'account reopens');
+    await clickSelector('.folder-line:has(button.folder[data-account-id=custom][data-folder-id=INBOX]) > button.folder-twist');
+    await waitFor("!document.querySelector('button.folder[data-account-id=custom][data-folder-id=\"INBOX/Client\"]')",'Inbox collapse');
+    await evaluate(`document.querySelector('button.folder[data-account-id=custom][data-folder-id=INBOX]').focus()`);
+    await pressKey('ArrowRight','ArrowRight',39);
+    await waitFor("!!document.querySelector('button.folder[data-account-id=custom][data-folder-id=\"INBOX/Client\"]')",'Inbox keyboard reopen');
+    await evaluate(`document.getElementById('folder-filter').value='Annual';renderAccounts()`);
+    assert.equal(await evaluate(`document.querySelector('button.folder[data-account-id=gmail][data-folder-id="INBOX/Client/Annual"]').parentElement.querySelector('.folder-indent').style.width`),'28px');
+    await evaluate(`document.getElementById('folder-filter').value='';renderAccounts();showPrimary('features','features-panel');paintFeatureCatalog()`);
+    assert.match(await evaluate(`document.getElementById('features-catalog').textContent`),/first-level folders 14 pixels.*unread badges stay right-aligned/);
+    assert.deepEqual(errors,[]);
+    fs.writeFileSync(path.join(output,'sidebar-folder-indent-results.json'),JSON.stringify({results,errors},null,2));
+    console.log('Account folder indentation browser checks passed: '+output);
+    return;
+  }
   if (process.argv.includes("--account-expansion-only")) {
     await evaluate(`(() => {
       for (const [id, profile] of [['yahoo','yahoo'],['custom2','custom'],['gmail2','gmail'],['outlook','outlook'],['outlook2','outlook']]) {
