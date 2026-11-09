@@ -7,6 +7,27 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.7": [
+      "Forward brings the original message’s attachments into the reviewed draft, with removable file chips. Failed attachment preparation keeps the forward closed for retry. Cancelled or stale downloads cannot change another compose window.",
+      "Reply and Reply All keep your new text separate from a collapsible original-message history. Preview and outgoing mail retain the reviewed quoted content; hiding the history does not remove it from the message.",
+    ],
+    "0.4.6": [
+      "Settings → Agent access / MCP connects compatible agents on this computer through a bundled local stdio adapter. Morrow must remain open; a separate Node.js 20+ runtime is required.",
+      "MCP uses the existing mailbox and operation grants, budgets, revocation, audit and durable write receipts. Setup copies command arguments and a private token-file path, never the one-time secret, and does not configure clients or grant new access automatically.",
+      "Existing HTTP API, CLI and Grok/Hermes proactive webhooks remain supported under the compatibility controls. MCP cancellation cannot recall a submitted operation, and uncertain writes are never retried automatically.",
+    ],
+    "0.4.5": [
+      "Mailbox headings and folder rows share a consistent appearance across Gmail, Outlook, Yahoo, IMAP and Local Folders, while real folders keep their expansion hierarchy.",
+      "Folders & Labels adds clearer mailbox switching and reviewed creation. Gmail label deletion requires confirm and offers 30 seconds to cancel before removal; unsafe folder deletion on other server transports stays unavailable.",
+      "Unchanged AI data permissions survive updates. Thread Timeline and cross-thread Case remain separate opt-ins; new or expanded data uses still require approval.",
+      "Suggested replies move into Write with AI. Its prompt supports multiple lines and vertical resizing; Enter inserts a line and Ctrl/Command+Enter generates. Selecting a suggestion does not generate or send.",
+      "Compose's native right-click menu offers available spelling corrections and editing actions without AI. Suggestions depend on the platform and dictionaries; this is not grammar checking.",
+      "Timeline gives clearer errors for invalid or incomplete AI replies, keeps retries bounded and preserves earlier saved timelines when generation fails.",
+      "Mail-row menus add read, star and safe Trash actions plus a combined Copy/Move dialog that preserves Local Folders.",
+      "Copy complete mail and attachments between supported Gmail and IMAP mailboxes after review. Full verification must pass before success, sources stay in place and uncertain uploads are never retried automatically.",
+      "After verified Copy, Gmail API sources can move originals to Gmail Trash through a separate review and confirmation. Other server sources remain Copy-only for connected receiving mailboxes; Local Folders transfers keep their existing options.",
+      "Date and Time are separate mail-list columns. Right-click a header or use Columns to hide or show Time; saved layouts, device timezone and full-timestamp sorting are preserved.",
+    ],
     "0.4.4": [
       "Local Folders now has compact New local folder and Import MBOX icon buttons beside its heading, with tooltips, accessible names and visible keyboard focus.",
       "The buttons remain separate from expand/collapse and keep the existing review, cancellation and focus-return behavior. Opening them does not create a folder or start an import.",

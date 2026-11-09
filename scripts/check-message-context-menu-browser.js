@@ -89,7 +89,12 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require("node:os").tmpd
     assert.deepEqual(await page.evaluate(() => menuCalls.find(row => row.action === "read").ids), ["clicked"]);
     assert.deepEqual(await page.evaluate(() => menuCalls.find(row => row.action === "read").accounts), ["a"]);
     await row.focus(); await page.keyboard.press("Shift+F10");
-    await menu.waitFor({ state: "visible" }); await page.keyboard.press("End");
+    await menu.waitFor({ state: "visible" });
+    await page.waitForFunction(() => {
+      const menu = document.getElementById("organize-menu");
+      return menu?.dataset.open === "1" && menu.contains(document.activeElement);
+    });
+    await page.keyboard.press("End");
     assert.equal(await page.evaluate(() => document.activeElement.textContent), "Archive");
     await page.keyboard.press("Escape"); assert.equal(await row.evaluate(node => node === document.activeElement), true);
     await page.setViewportSize({ width: 760, height: 640 });
