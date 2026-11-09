@@ -28,7 +28,14 @@ const message = {
   textBody: "The table of operations is ready for a second reading.",
   htmlBody: "<p>The table of operations is ready for a second reading.</p>",
   attachments: [],
+  bodyEpoch: 0,
+  bodyComplete: true,
 };
+
+const earlierMessage = { ...message, id: "msg-earlier", date: "2026-10-11T15:04:00.000Z",
+  from: "Mary Somerville <mary@example.com>",
+  textBody: "Earlier conversation: preserve the original table.",
+  htmlBody: "<p>Earlier conversation: preserve the original table.</p>" };
 
 const account = {
   id: "acct-ada",
@@ -89,6 +96,8 @@ function mailData(channel, payload) {
   if (channel === "mail:listAccounts") return [account];
   if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") return { emails: [message], total: 1, initialSyncDone: true };
   if (channel === "mail:openEmail") return { email: message, threadMessages: [message] };
+  if (channel === "mail:listThreadMessages") return [earlierMessage, message].map(({ textBody, htmlBody, ...row }) => ({ ...row, hasBody: true }));
+  if (channel === "mail:readCachedBody") return { email: payload.emailId === earlierMessage.id ? earlierMessage : message };
   if (channel === "mail:getComposeContext") return composeContext;
   if (channel === "mail:listSignatures") return { signatures: [], defaultSignatureId: null, defaultSignaturePerAccount: {} };
   if (channel === "mail:listScheduled" || channel === "mail:listImapSmtpPresets") return [];
@@ -287,18 +296,7 @@ app.whenReady().then(async () => {
   assert.equal(dirty.isDestroyed(), true);
   assert.equal(composeWindowsOpen().length, 0);
 
-  await shellWin.webContents.executeJavaScript(`presentCompose({
-    kind: "reply",
-    title: "Reply",
-    accountId: state.accountId,
-    to: "charles.babbage@example.com",
-    subject: "Re: Notes",
-    quote: "The table of operations is ready.",
-    quoteShown: true,
-    quoteEmail: { from: "Charles Babbage <charles.babbage@example.com>", subject: "Notes", textBody: "The table of operations is ready." },
-    aiWrite: true,
-    sourceMessageId: "msg-engine"
-  })`, true);
+  await shellWin.webContents.executeJavaScript(`presentCompose(composeSeed(${JSON.stringify(message)}, "reply", ${JSON.stringify(account.email)}))`, true);
   let reply = null;
   const replyStart = Date.now();
   while (Date.now() - replyStart < 15000) {
@@ -310,6 +308,10 @@ app.whenReady().then(async () => {
     await sleep(50);
   }
   assert.ok(reply, "reply opens a compose window with the quote");
+  assert.equal(await reply.webContents.executeJavaScript(`
+    document.getElementById("compose-quote-body").textContent.includes("Earlier conversation: preserve the original table.")
+    && composePayload(composeAccount()).body.includes("Earlier conversation: preserve the original table.")
+  `, true), true, "earlier history is visible and included in the outgoing quote");
   const shellStillClosed = await shellWin.webContents.executeJavaScript(`document.getElementById("compose").open === false`, true);
   assert.equal(shellStillClosed, true);
   await waitFor(reply, `document.title.includes("Reply")`, "reply title");
