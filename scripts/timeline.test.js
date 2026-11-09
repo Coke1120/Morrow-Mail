@@ -261,7 +261,7 @@ test("long-message consolidation sees validated summaries only", async () => {
   assert.equal(result.document.events.length, 1);
 });
 test("run limits reject excessive chunk plans and provider usage", async () => {
-  const source = { ...metadata(), text: "x".repeat(200000), subject: "Planning" };
+  const source = { ...metadata(), text: "x".repeat(500000), subject: "Planning" };
   assert.throws(() => planChunks([source]), { code: "timeline-budget" });
   source.text = "Planning";
   await assert.rejects(extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => ({ ...modelResponse(messages), usage: { outputTokens: 40000 } }) }), { code: "timeline-budget" });
@@ -568,7 +568,7 @@ function rendererFixture(replies = {}) {
   window.confirm = () => true;
   const prepared = { manifestToken: uuid(), optionsDigest: "synthetic-digest", accounts: ["owner@example.org"], threads: 1,
     coverage: { selected_message_count: 1, included_message_count: 1, omitted_message_count: 0, selection_truncated: false }, missingBodies: 0, invalidMetadata: 0,
-    search: null, chunks: 1, estimatedInputTokens: 100, limits: LIMITS, provider: "Synthetic provider", destination: "https://ai.example.org/v1", model: "synthetic", allowed: true,
+    search: null, chunks: 1, estimatedInputBytes: 100, limits: LIMITS, provider: "Synthetic provider", destination: "https://ai.example.org/v1", model: "synthetic", allowed: true,
     locality: "Remote destination", providerTerms: "Review provider terms" };
   const api = { async invoke(channel, input) { calls.push({ channel, input }); if (replies[channel]) return replies[channel](input); return { success: true, data: channel === "timeline:prepare" ? prepared : channel === "timeline:list" ? [] : channel === "timeline:generate" ? { jobId: "synthetic-job" } : { saved: true } }; }, on: (channel, work) => events.set(channel, work) };
   const handlers = new Map();
@@ -1107,7 +1107,7 @@ const lastTerminal = fixture => fixture.progress.filter(value => ["completed", "
 test("actual Generate clicks budget default contacts and CJK focus with exact request escaping", async context => {
   for (const keywords of ["", "界".repeat(1000)]) {
     const contacts = Array.from({ length: 99 }, (_, i) => `participant-${i}@example.org`);
-    const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: 'Synthetic "quoted" evidence. \\ '.repeat(145) })] }, keywords ? {} : { to: contacts, cc: [], replyTo: [] });
+    const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: 'Synthetic "quoted" evidence. \\ '.repeat(650) })] }, keywords ? {} : { to: contacts, cc: [], replyTo: [] });
     await fixture.ui.mounted.open(fixture.ui.email);
     fixture.node("timeline-keywords").value = keywords;
     fixture.node("timeline-keywords").dispatchEvent(new fixture.ui.window.Event("input"));
@@ -1116,8 +1116,8 @@ test("actual Generate clicks budget default contacts and CJK focus with exact re
     assert.equal(lastTerminal(fixture).phase, "completed");
     const prepared = fixture.hostCalls.filter(value => value.channel === "timeline:prepare").at(-1).data;
     assert.ok(prepared.chunks > 1);
-    assert.equal(prepared.estimatedInputTokens, fixture.calls.reduce((total, call) => total + Buffer.byteLength(JSON.stringify(call.messages)), 0));
-    assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestTokens));
+    assert.equal(prepared.estimatedInputBytes, fixture.calls.reduce((total, call) => total + Buffer.byteLength(JSON.stringify(call.messages)), 0));
+    assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestBytes));
     assert.equal(fixture.calls.flatMap(call => JSON.parse(call.messages[1].content)).map(value => value.text).join(""), fixture.rows.get("mail-1").text_body);
     assert.equal(fixture.consent.status().background, false);
   }
@@ -1130,10 +1130,10 @@ test("request planning reserves the fixed validation retry and preserves all Uni
   const calls = [];
   await extract({ sources: [source], envelope: envelopeFor([source]), language: "zh-Hant", focus,
     complete: async messages => { calls.push(messages); return ++count === 1 ? { text: "invalid", finishReason: "stop", usage: { outputTokens: 10 } } : modelResponse(messages); } });
-  assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens));
+  assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestBytes));
   assert.equal(calls.length, plan.chunks.length + 1);
   assert.equal(plan.chunks.flat().map(value => value.text).join(""), source.text);
-  assert.ok(plan.chunks.every(chunk => Buffer.byteLength(JSON.stringify(buildRequest(chunk, { language: "zh-Hant", focus, retry: true }))) <= LIMITS.requestTokens));
+  assert.ok(plan.chunks.every(chunk => Buffer.byteLength(JSON.stringify(buildRequest(chunk, { language: "zh-Hant", focus, retry: true }))) <= LIMITS.requestBytes));
 });
 test("a whole emoji fits at the request boundary even when its UTF-16 half does not", () => {
   const source = { ...metadata({ from: { address: "ada@example.org" }, occurred_at: null, date_source: "unknown", source_message_id: "00000000-0000-4000-8000-000000000001", attachments: [] }), subject: "Subject", text: "😀😀😀" };
@@ -1141,20 +1141,20 @@ test("a whole emoji fits at the request boundary even when its UTF-16 half does 
   const focus = { keywords: "", contact_emails };
   const part = { from: source.from, mail_timestamp: null, date_source: "unknown", source_token: `${source.source_message_id}:0`, subject: source.subject, attachment_names: [], text: "" };
   const size = text => Buffer.byteLength(JSON.stringify(buildRequest([{ ...part, text }], { focus, retry: true })));
-  let padding = LIMITS.requestTokens - size("😀");
+  let padding = LIMITS.requestBytes - size("😀");
   for (let i = 0; padding > 0 && i < contact_emails.length; i++) {
     const length = Math.min(200, padding); contact_emails[i] = "x".repeat(length) + contact_emails[i]; padding -= length;
   }
   assert.equal(padding, 0);
-  assert.ok(size("😀") <= LIMITS.requestTokens);
-  assert.ok(size("\ud83d") > LIMITS.requestTokens);
+  assert.ok(size("😀") <= LIMITS.requestBytes);
+  assert.ok(size("\ud83d") > LIMITS.requestBytes);
   const chunks = planChunks([source], { focus });
   assert.equal(chunks.flat().map(value => value.text).join(""), source.text);
   assert.equal(chunks.length, 3);
-  assert.ok(chunks.every(chunk => Buffer.byteLength(JSON.stringify(buildRequest(chunk, { focus, retry: true }))) <= LIMITS.requestTokens));
+  assert.ok(chunks.every(chunk => Buffer.byteLength(JSON.stringify(buildRequest(chunk, { focus, retry: true }))) <= LIMITS.requestBytes));
 });
 test("oversized optional focus stays source-bound, disables Generate and can be corrected", async context => {
-  const contacts = Array.from({ length: 99 }, (_, i) => `participant-${i}-${"x".repeat(50)}@example.org`);
+  const contacts = Array.from({ length: 99 }, (_, i) => `participant-${i}-${"x".repeat(170)}@example.org`);
   const fixture = integratedTimeline(context, {}, { to: contacts, cc: [], replyTo: [] });
   await fixture.ui.mounted.open(fixture.ui.email);
   const blocked = fixture.hostCalls.find(value => value.channel === "timeline:prepare").data;
@@ -1170,7 +1170,7 @@ test("oversized optional focus stays source-bound, disables Generate and can be 
   assert.equal(fixture.hostCalls.filter(value => value.channel === "timeline:prepare").at(-1).input.manifestToken, blocked.manifestToken);
 });
 test("oversized source and planned input never leave Generate apparently ready", async context => {
-  for (const size of [90000, 128001]) {
+  for (const size of [400000, LIMITS.sourceBytes + 1]) {
     const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: "x".repeat(size) })] });
     await fixture.ui.mounted.open(fixture.ui.email);
     assert.equal(fixture.node("timeline-generate").disabled, true);
@@ -1267,7 +1267,7 @@ test("failed option validation keeps the previous source proof for a correction"
 });
 test("long-message reductions bound every request and include all validated semantic items", async context => {
   const seen = new Set(); let part = 0, reductions = 0;
-  const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: "Synthetic planning evidence. ".repeat(320) })], complete: messages => {
+  const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: "Synthetic planning evidence. ".repeat(3000) })], complete: messages => {
     if (messages[0].content.includes("Consolidation.")) {
       reductions++;
       assert.doesNotMatch(messages[1].content, /Synthetic planning evidence/);
@@ -1282,16 +1282,16 @@ test("long-message reductions bound every request and include all validated sema
   assert.equal(lastTerminal(fixture).phase, "completed");
   assert.ok(reductions > 1);
   assert.equal(seen.size, part * 5);
-  assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestTokens));
+  assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestBytes));
   assert.equal(fixture.artifacts.size, 1);
 });
 test("large validated action arrays are divided without truncation, and non-compacting reductions stop", async () => {
-  const source = { ...metadata(), text: "Synthetic evidence. ".repeat(400), subject: "Planning" };
+  const source = { ...metadata(), text: "Synthetic evidence. ".repeat(1200), subject: "Planning" };
   for (const compact of [true, false]) {
     let calls = 0; const seen = new Set();
     const work = extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
       calls++;
-      assert.ok(Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens);
+      assert.ok(Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestBytes);
       if (messages[0].content.includes("Consolidation.")) {
         for (const match of messages[1].content.matchAll(/Evidence \d+ action \d+/g)) seen.add(match[0]);
         if (compact) return modelResponse(messages);
@@ -1304,7 +1304,7 @@ test("large validated action arrays are divided without truncation, and non-comp
   }
 });
 test("input and output budgets remain bounded with incomplete usage reporting", async () => {
-  const source = { ...metadata(), text: "Synthetic evidence. ".repeat(2100), subject: "Planning" };
+  const source = { ...metadata(), text: "Synthetic evidence. ".repeat(7000), subject: "Planning" };
   let count = 0;
   await assert.rejects(extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
     count++; return { ...modelResponse(messages), usage: {} };
@@ -1398,7 +1398,7 @@ test("case synthesis uses only reviewed evidence, excludes independent recipient
   const overview = f.calls.filter(value => value.messages[0].content.startsWith("Prepare a case overview"));
   assert.ok(overview.length > 0);
   assert.match(overview[0].messages[1].content, /background/);
-  assert.ok(f.calls.every(value => Buffer.byteLength(JSON.stringify(value.messages)) <= LIMITS.requestTokens));
+  assert.ok(f.calls.every(value => Buffer.byteLength(JSON.stringify(value.messages)) <= LIMITS.requestBytes));
   assert.equal(artifact.details.usage.calls, f.calls.length);
   assert.equal(artifact.document.events.length, 2);
   const forged = copy(artifact.document); forged.case_report.current_status[0].source_message_ids = [uuid()];
@@ -1635,8 +1635,8 @@ test("the opened account incarnation proof survives re-preparing different threa
 test("Case mode recovers from oversized thread capture using an account-bound context and explicit smaller selection", async context => {
   for (const kind of ["thread-bytes", "opened-message-bytes", "thread-count"]) {
     const rows = kind === "thread-count" ? Array.from({ length: 1001 }, (_, i) => row(`mail-${i + 1}`))
-      : [row(), row("large", { text_body: "X".repeat(LIMITS.inputTokens + 1) })];
-    if (kind === "opened-message-bytes") rows[0].text_body = "X".repeat(LIMITS.inputTokens + 1);
+      : [row(), row("large", { text_body: "X".repeat(LIMITS.sourceBytes + 1) })];
+    if (kind === "opened-message-bytes") rows[0].text_body = "X".repeat(LIMITS.sourceBytes + 1);
     rows.push(row("smaller-case", { thread_id: "other", subject: "Smaller reviewed case" }));
     const f = integratedTimeline(context, { rows });
     await f.ui.mounted.open(f.ui.email);
@@ -1669,7 +1669,7 @@ test("Case mode recovers from oversized thread capture using an account-bound co
 });
 
 test("body-free Case contexts reject broadened input and retain owner/source/account proofs", async context => {
-  const f = memory(context, { rows: [row("mail-1", { text_body: "X".repeat(LIMITS.inputTokens + 1) }), row("mail-2")] });
+  const f = memory(context, { rows: [row("mail-1", { text_body: "X".repeat(LIMITS.sourceBytes + 1) }), row("mail-2")] });
   const input = { contextOnly: true, options, selection: { messages: [{ accountId: "mailbox-1", messageId: "mail-1" }], expandThreads: false } };
   for (const extra of [{ contextOnly: false }, { options: { ...options, mode: "case" } },
     { selection: { ...input.selection, expandThreads: true } },
@@ -1737,13 +1737,14 @@ test("fixed retry feedback identifies each output failure without echoing provid
     assert.match(calls[1][0].content, new RegExp(`failed validation \\(${category}\\)`));
     assert.doesNotMatch(JSON.stringify(calls[1]), /PRIVATE_PROVIDER_DETAIL/);
     assert.deepEqual(calls[1].slice(1), calls[0].slice(1));
-    assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens));
+    assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestBytes));
   }
 });
 
-test("40,000-character mail reports the late 12-call consolidation failure and can correct it within the same retry budget", async () => {
+test("40,000-character mail reports a late consolidation failure and can correct it within the same retry budget", async () => {
   const source = { ...metadata(), subject: "Synthetic", text: "x".repeat(40000) };
-  assert.equal(planChunks([source]).length, 10);
+  const extractionCalls = planChunks([source]).length;
+  assert.ok(extractionCalls > 1);
   for (const correct of [false, true]) {
     const calls = [];
     const run = extract({ sources: [source], envelope: envelopeFor([source]), complete: async messages => {
@@ -1751,7 +1752,7 @@ test("40,000-character mail reports the late 12-call consolidation failure and c
       const consolidating = messages[0].content.includes("Consolidation.");
       if (!consolidating) return modelResponse(messages, { summary: `${calls.length}:` + "e".repeat(480) });
       assert.ok(JSON.parse(messages[1].content).every(row => !row.text.includes("x".repeat(100))));
-      if (correct && calls.length === 12) {
+      if (correct && calls.length === extractionCalls + 2) {
         assert.match(messages[0].content, /failed validation \(schema\)/);
         return modelResponse(messages, { summary: "The fictional correspondence requests a review; no outcome is recorded." });
       }
@@ -1761,8 +1762,8 @@ test("40,000-character mail reports the late 12-call consolidation failure and c
     else await assert.rejects(run, error => {
       assert.deepEqual(publicError(error).validation, { stage: "consolidation", category: "schema", attempts: 2 }); return true;
     });
-    assert.equal(calls.length, 12);
-    assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestTokens));
+    assert.equal(calls.length, extractionCalls + 2);
+    assert.ok(calls.every(messages => Buffer.byteLength(JSON.stringify(messages)) <= LIMITS.requestBytes));
   }
 });
 
@@ -1798,4 +1799,119 @@ test("all fixed retry categories fit the planner's reserved request size, includ
     const reserved = Buffer.byteLength(JSON.stringify(build(rows, { retry: true })));
     for (const retryCategory of ["parse", "schema", "reference", "incomplete"]) assert.ok(Buffer.byteLength(JSON.stringify(build(rows, { retry: true, retryCategory }))) <= reserved);
   }
+});
+
+test("146,586 bytes of unique body text fit bounded batches without attachment contents or truncation", async context => {
+  const text = "繁體🙂\\\"\n".repeat(16000).slice(0, 70000);
+  const body = "x".repeat(146586);
+  const fixture = integratedTimeline(context, { rows: [row("mail-1", { text_body: body,
+    attachments_json: JSON.stringify([{ filename: "evidence.pdf", size: 999999999, content: "PRIVATE_ATTACHMENT_BYTES" }]) })] });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  const prepared = fixture.hostCalls.find(call => call.channel === "timeline:prepare").data;
+  assert.equal(prepared.processing.sourceBytes, 146586);
+  assert.equal(prepared.processing.processedBodyBytes, 146586);
+  assert.ok(prepared.chunks > 1 && prepared.chunks < LIMITS.calls);
+  assert.equal(fixture.calls.length, 0);
+  assert.match(fixture.node("timeline-processing-counts").textContent, /146,586 bytes/);
+  assert.equal(fixture.node("timeline-processing-sources").children.length, 1);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  assert.equal(fixture.calls.flatMap(call => JSON.parse(call.messages[1].content)).map(part => part.text).join(""), body);
+  assert.doesNotMatch(JSON.stringify(fixture.calls), /PRIVATE_ATTACHMENT_BYTES|999999999/);
+  assert.ok(fixture.calls.every(call => Buffer.byteLength(JSON.stringify(call.messages)) <= LIMITS.requestBytes));
+  assert.ok(fixture.calls.reduce((sum, call) => sum + Buffer.byteLength(JSON.stringify(call.messages)), 0) <= LIMITS.inputBytes);
+  const unicode = { ...metadata(), subject: "Unicode", text };
+  assert.equal(preparePlan([unicode]).chunks.flat().map(part => part.text).join(""), text);
+});
+
+test("exact quoted bodies share only a directly visible complete source in the same batch", async context => {
+  const body = "An exact fictional project update preserves dates, amounts and uncertainty.\n".repeat(4).trimEnd();
+  const reply = `Please review this update.\n\n${body.split("\n").map(line => `> ${line}`).join("\n")}\nA distinct final request.`;
+  const fixture = memory(context, { rows: [row("mail-1", { text_body: body }), row("mail-2", { text_body: reply,
+    from_addr: "Bob <bob@example.org>", from_address: "bob@example.org", from_display_name: "Bob", date_iso: "2026-11-02T10:00:00Z" })] });
+  const originalFingerprints = [...fixture.rows.values()].map(fingerprint);
+  const prepared = await fixture.prepare();
+  assert.equal(prepared.processing.sharedQuotes, 1);
+  assert.ok(prepared.processing.repeatedBytes > 128);
+  const run = await generation(fixture, prepared);
+  assert.equal((await run.terminal).phase, "completed");
+  const rows = JSON.parse(fixture.calls[0].messages[1].content);
+  assert.equal(rows[0].text, body);
+  assert.equal(rows[1].text_segments[1].quoted_source_token, rows[0].source_token);
+  assert.equal(rows[1].text_segments.filter(segment => segment.text).map(segment => segment.text).join(""), "Please review this update.\n\nA distinct final request.");
+  assert.doesNotMatch(JSON.stringify(rows), /_quoteGroup|_wholeBody/);
+  assert.deepEqual([...fixture.rows.values()].map(fingerprint), originalFingerprints);
+  const events = [...fixture.artifacts.values()][0].document.events;
+  assert.equal(events.length, 2);
+  assert.equal(events[1].from.address, "bob@example.org");
+  assert.equal(events[1].occurred_at, "2026-11-02T10:00:00.000Z");
+  assert.match(fixture.calls[0].messages[0].content, /never as a new event or proof of its author/);
+});
+
+test("edited, unmarked, short, cross-thread, incomplete and cross-batch quotes remain literal", () => {
+  const { compactQuotes } = require("../host/timeline/quotes");
+  const body = "A sufficiently long exact fictional quoted source with distinct dates and amounts. ".repeat(3);
+  const original = { source_token: "one:0", _quoteGroup: "thread", _wholeBody: true, text: body };
+  const quoted = `> ${body}`;
+  for (const [prior, later] of [
+    [original, { text: quoted.replace("dates", "changes") }],
+    [original, { text: body }],
+    [{ ...original, text: "Agreed" }, { text: "> Agreed" }],
+    [original, { _quoteGroup: "other-thread", text: quoted }],
+    [{ ...original, _wholeBody: false }, { text: quoted }],
+  ]) {
+    const row = { source_token: "two:0", _quoteGroup: "thread", _wholeBody: true, ...later };
+    const result = compactQuotes([prior, row]);
+    assert.equal(result.sharedQuotes, 0);
+    assert.equal(result.rows[1].text, row.text);
+  }
+  assert.equal(compactQuotes([{ source_token: "two:0", _quoteGroup: "thread", _wholeBody: true, text: quoted }]).sharedQuotes, 0);
+  const sources = [metadata(), metadata()];
+  sources[1].source_thread_id = sources[0].source_thread_id;
+  const large = body.repeat(70);
+  sources[0] = { ...sources[0], text: large, subject: "Original" };
+  sources[1] = { ...sources[1], text: `Reply\n> ${large}`, subject: "Reply" };
+  const plan = preparePlan(sources);
+  assert.ok(plan.chunks.length > 1);
+  assert.equal(plan.processing.sharedQuotes, 0);
+  assert.equal(plan.chunks.flat().filter(part => part.source_token.startsWith(sources[1].source_message_id)).map(part => part.text).join(""), sources[1].text);
+});
+
+test("body capture diagnostics count only supported included sources and report UTF-8 bytes", context => {
+  const omitted = row("unsupported", { text_body: "x".repeat(LIMITS.sourceBytes), subject: "x".repeat(501) });
+  const fixture = memory(context, { rows: [row(), omitted] });
+  const snapshot = freezeSources(fixture.dependencies, fixture.selection);
+  assert.equal(snapshot.coverage.included_message_count, 1);
+  assert.equal(snapshot.bodyBytes, Buffer.byteLength(row().text_body));
+  fixture.rows.get("mail-1").text_body = "繁".repeat(90000);
+  fixture.rows.get("unsupported").subject = "Supported";
+  assert.throws(() => freezeSources(fixture.dependencies, fixture.selection), error => {
+    assert.deepEqual(error.budget, { kind: "source-bytes", actual: 270000 + LIMITS.sourceBytes, limit: LIMITS.sourceBytes });
+    return true;
+  });
+});
+
+test("processing help stays synchronized and stale counts disappear after edited focus", async context => {
+  const fixture = integratedTimeline(context);
+  await fixture.ui.mounted.open(fixture.ui.email);
+  assert.equal(fixture.node("timeline-processing").hidden, false);
+  assert.match(fixture.node("timeline-processing-counts").textContent, /serialized input bytes/);
+  assert.match(fixture.node("timeline-processing").textContent, /Edited, uncertain and cross-batch quotes stay intact/);
+  fixture.node("timeline-contacts").dispatchEvent(new fixture.ui.window.Event("input"));
+  assert.equal(fixture.node("timeline-processing").hidden, true);
+  assert.match(read("renderer/features-catalog.js"), /512,000 UTF-8 bytes/);
+  assert.match(read("renderer/features-catalog.js"), /Sources and text processing/);
+  assert.match(read("renderer/index.html"), /32,000 output-token and 10-minute protections remain/);
+});
+
+
+test("account invalidation hides stale processing counts and blocks generation", async context => {
+  const fixture = integratedTimeline(context);
+  await fixture.ui.mounted.open(fixture.ui.email);
+  assert.equal(fixture.node("timeline-processing").hidden, false);
+  fixture.changeAccount();
+  fixture.ui.events.get("mail:accountsUpdated")(); await settleTimeline();
+  assert.equal(fixture.node("timeline-processing").hidden, true);
+  assert.equal(fixture.node("timeline-generate").disabled, true);
+  assert.equal(fixture.calls.length, 0);
 });

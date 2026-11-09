@@ -270,7 +270,12 @@
           <textarea id="timeline-contacts" rows="3" maxlength="8192" spellcheck="false" aria-describedby="timeline-focus-help"></textarea>
           <p id="timeline-focus-help" class="hint">Add or remove emails, separated by commas or new lines. Keywords and contacts guide the summaries; they do not filter the included messages from the AI request. Leave either empty for no extra focus. Run limits include these fields.</p>
           <p id="timeline-preview" class="hint"></p>
-          <p id="timeline-limits-help" class="hint">Large downloaded threads can exceed run limits; nothing is silently truncated. A failed run may have sent earlier parts to AI. An explicit retry sends the reviewed mail again.</p>
+          <details id="timeline-processing" hidden><summary>Sources and text processing</summary>
+            <p id="timeline-processing-counts" class="hint"></p>
+            <p class="hint">Original cached mail and source dates/authors remain unchanged. Only exact repeated &gt;-quoted complete bodies already present in the same AI batch share a reference. Edited, uncertain and cross-batch quotes stay intact. Attachment file contents are excluded; names remain evidence.</p>
+            <ul id="timeline-processing-sources"></ul>
+          </details>
+          <p id="timeline-limits-help" class="hint">Body capture is limited to 512,000 UTF-8 bytes; AI input to 512,000 serialized bytes across at most 32 requests. The 32,000 output-token and 10-minute protections remain. Large downloaded threads can exceed run limits; nothing is silently truncated. A failed run may have sent earlier parts to AI. An explicit retry sends the reviewed mail again.</p>
           <label class="timeline-choice" id="timeline-partial-choice" hidden><input type="checkbox" id="timeline-partial" />I accept the omitted messages and partial coverage shown above.</label>
           <button type="submit" id="timeline-generate" disabled>Generate</button>
         </form>

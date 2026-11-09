@@ -175,19 +175,43 @@ limit, without silently dropping items. A non-compacting reduction stops. Final 
 again before one synchronous durable commit.
 
 Requests are sequential. Limits: 32 calls including retries/consolidation,
-128,000 conservative input units, 32,000 output tokens, 8,000 conservative input
-units per request, up to 4,096 output tokens per call, 120 seconds per request,
+512,000 serialized input bytes, 128,000 provider-reported input tokens, 32,000 output
+tokens, 16,000 serialized input bytes per request, up to 4,096 output tokens per call, 120 seconds per request,
 10 minutes per job. Input byte counts are conservative estimates, not tokenizer
 measurements. Reported provider usage is recorded; missing output usage charges
 the reserved output allowance. Providers must honor their output-limit contract.
 These are not precise monetary limits. Limits can stop a large selection after
 some calls; earlier provider charges cannot be refunded by cancellation.
 
-The 128,000-unit budget also bounds the complete cached source text. Fragments are
-at most 4,500 serialized bytes and eight fragments per extraction request. These
+A separate 512,000-byte ceiling bounds included complete cached body text.
+Unsupported metadata is omitted before counting; a source-byte rejection reports
+the running total at the first crossing, not an exhaustive selection total. Fragments are
+at most 12,000 serialized bytes and eight fragments per extraction request. These
 budgets can reject selections smaller than the 1,000-message / 200-thread ceiling;
 headers, attachment names, repeated quoted history and UTF-8 text all consume space.
-No model-context-size setting overrides these application limits.
+No model-context-size setting overrides these application limits. Source body bytes,
+serialized request bytes and provider-reported tokens have separate units and caps.
+Output, call and time protections are unchanged; a provider that omits usage can
+exhaust the conservative reserved output allowance sooner.
+
+Original cached bodies, fingerprints, message identities, authors and dates remain
+unchanged. Inside one extraction request only, an exact `>`-quoted block can refer
+to an earlier complete body in the same thread and request instead of repeating it.
+Matching removes only one quote prefix per line and permits a final newline; the
+matching body must be at least 128 UTF-8 bytes. No fuzzy, semantic or boilerplate
+matching is used. Referenced content is directly present, never only a prior AI
+summary or another reference. Edited, ambiguous, unmarked, short, split or
+cross-request quotes remain literal. One event per original message is still
+required, and case date checks use the unchanged original body. A reference proves
+text reuse, never authorship, agreement or completion.
+
+**Sources and text processing** previews included raw/literal body-byte totals,
+exact repeated-quote bytes shared, per-message author/date and counts, planned
+initial requests and serialized input bytes. Referenced quote evidence is still
+processed with its complete source, not omitted. Attachment file contents remain
+excluded; attachment names count only in serialized requests. Focus edits hide the
+stale processing preview until preparation succeeds again. No exact price or
+model-tokenizer estimate is claimed.
 
 Failure diagnostics contain only an allowlisted limit name, numeric usage/limit
 and the number of AI completion calls attempted. Zero attempts means no AI call

@@ -44,3 +44,5 @@ html[data-window="translate"] #reader-area { flex: 1 1 auto; }
 .timeline-event .timeline-day { font-size: 16px; margin: 0 0 12px; }
 .timeline-summary { font-weight: 600; font-size: 15px; }
 .timeline-evidence { font-size: 12px; }
+#timeline-processing { overflow-wrap: anywhere; }
+#timeline-processing-sources { padding-left: 20px; }
