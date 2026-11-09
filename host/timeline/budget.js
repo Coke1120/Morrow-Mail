@@ -1,10 +1,12 @@
 const { failure } = require("./validate");
 
-const LIMITS = Object.freeze({ messages: 1000, threads: 200, calls: 32, inputTokens: 128000,
-  outputTokens: 32000, requestTokens: 8000, outputPerCall: 4096, chunkBytes: 4500,
+// Byte ceilings are serialized UTF-8 sizes, not tokenizer estimates. The
+// separately reported provider-token ceiling and output/call/time guards remain.
+const LIMITS = Object.freeze({ messages: 1000, threads: 200, calls: 32, sourceBytes: 512000, inputBytes: 512000, inputTokens: 128000,
+  outputTokens: 32000, requestBytes: 16000, outputPerCall: 4096, chunkBytes: 12000,
   requestMs: 120000, jobMs: 600000 });
 const kinds = new Set(["source-bytes", "metadata-bytes", "focus-bytes", "request-bytes", "planned-input-bytes",
-  "chunk-count", "call-count", "input-bytes", "output-tokens", "duration-ms", "consolidation-bytes"]);
+  "chunk-count", "call-count", "input-bytes", "input-tokens", "output-tokens", "duration-ms", "consolidation-bytes"]);
 
 function budget(kind, actual, limit) {
   return Object.assign(failure("timeline-budget"), { budget: { kind, actual, limit } });

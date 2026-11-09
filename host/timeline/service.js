@@ -109,7 +109,11 @@ function createService(dependencies) {
       accounts: snapshot.accounts.map(account => account.email), threads: snapshot.sourceThreads.length,
       coverage: snapshot.coverage, missingBodies: snapshot.missingBodies, invalidMetadata: snapshot.invalidMetadata, search: snapshot.search,
       messages: snapshot.records.map(record => ({ ...messagePreview(db.timelineMessage(record.id)), phase: record.phase || "main" })), caseScope: snapshot.caseScope,
-      chunks: plan?.chunks.length || 0, estimatedInputTokens: plan?.estimatedInputTokens || 0, ...(blocked ? { budget: blocked } : {}),
+      chunks: plan?.chunks.length || 0, estimatedInputBytes: plan?.estimatedInputBytes || 0,
+      processing: plan?.processing || { planned: false, sourceBytes: snapshot.bodyBytes,
+        messages: snapshot.sources.map(source => ({ subject: source.subject, from: source.from,
+          occurredAt: source.occurred_at, bodyBytes: Buffer.byteLength(source.text) })) },
+      ...(blocked ? { budget: blocked } : {}),
       limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.scopes?.[entry.options.mode === "case" ? "case" : "timeline"] === true,
       locality: status.locality, providerTerms: status.providerTerms };
   }
