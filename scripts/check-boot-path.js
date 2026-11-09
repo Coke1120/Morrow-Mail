@@ -91,6 +91,7 @@ const syntax = [
   "scripts/check-send-previews.js",
   "scripts/check-send-previews-browser.js",
   "scripts/check-reply-history.js",
+  "scripts/check-reply-history-browser.js",
   "scripts/check-agent-todos.js",
   "scripts/check-agent-card-view.js",
   "scripts/check-agent-learning.js",

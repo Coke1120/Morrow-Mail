@@ -37,3 +37,8 @@ source scoping, repeated/hide-show operations, asynchronous typing/close races,
 missing and incomplete bodies, limits, attributed quotes and hostile HTML.
 `scripts/check-compose-window.js` exercises the separate Electron window and
 preload bridge using synthetic messages and no user accounts or provider writes.
+Optional `scripts/check-reply-history-browser.js` uses a fresh sandboxed Chromium
+profile, synthetic IPC and loopback-only requests. It checks wide/narrow layouts,
+light/dark themes, scrolling, collapse/hide/show, outgoing preview, and Close /
+Keep editing / Discard / reopen. Set `MORROW_PLAYWRIGHT_MODULE` and
+`MORROW_CHROMIUM` when those tools are outside the checkout.
