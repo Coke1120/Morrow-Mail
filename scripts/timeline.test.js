@@ -1927,3 +1927,15 @@ test("provider-reported input tokens retain a separate token-unit ceiling", asyn
     assert.deepEqual(error.budget, { kind: "input-tokens", actual: LIMITS.inputTokens + 1, limit: LIMITS.inputTokens }); return true;
   });
 });
+
+
+test("source invalidation during generation hides the obsolete processing preview", async context => {
+  let fixture;
+  fixture = integratedTimeline(context, { complete: messages => { fixture.changeAccount(); return modelResponse(messages); } });
+  await fixture.ui.mounted.open(fixture.ui.email);
+  assert.equal(fixture.node("timeline-processing").hidden, false);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).code, "timeline-source-changed");
+  assert.equal(fixture.node("timeline-processing").hidden, true);
+  assert.equal(fixture.artifacts.size, 0);
+});

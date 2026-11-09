@@ -363,7 +363,10 @@
         jobId = null; prepared = null; cancelRequested = false; cancelling = false; buttons();
         if (value.phase === "completed") {
           if (dialog.open) { await load(value.timelineId); await savedList(); }
-        } else report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls, validation: value.validation });
+        } else {
+          if (["timeline-source-changed", "timeline-manifest"].includes(value.code)) node("timeline-processing").hidden = true;
+          report({ code: value.code || "timeline-cancelled", budget: value.budget, calls: value.calls, validation: value.validation });
+        }
       } else status(`${value.phase === "merging" ? "Consolidating validated summaries" : "Extracting downloaded messages"}: ${value.completed} / ${value.total} · ${value.calls} calls. Cancel stops later calls, not data already delivered.`);
     }
     dialog.addEventListener("keydown", event => event.stopPropagation());
