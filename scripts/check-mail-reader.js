@@ -212,7 +212,7 @@ async function main() {
   await assertReaderKeepsTheSelectedMessage();
   await assertCachedIncompleteSkipsTheSpinner();
   await assertThreadStripCollapsesOlderMessages();
-  assertReaderWindowMatchesShellActions();
+  await assertReaderWindowMatchesShellActions();
   console.log('mail reader synthetic checks passed');
 }
 
@@ -753,7 +753,7 @@ function pressReaderKey(ui, key, extra) {
   return ui.context.prevented === true;
 }
 
-function assertReaderWindowMatchesShellActions() {
+async function assertReaderWindowMatchesShellActions() {
   const rows = [];
   for (let i = 0; i < 4; i += 1) rows.push(threadMember('r' + i, 'Reader snippet ' + i));
   const email = {
@@ -846,6 +846,7 @@ function assertReaderWindowMatchesShellActions() {
   assert.equal(pressReaderKey(ui, 'r'), true);
   pressReaderKey(ui, 'a');
   pressReaderKey(ui, 'f');
+  await Promise.resolve(); // Forward starts independent attachment work, outside guard.
   pressReaderKey(ui, 'Delete');
   pressReaderKey(ui, 'n', { metaKey: true });
   assert.equal(pressReaderKey(ui, 'f', { metaKey: true }), false);
