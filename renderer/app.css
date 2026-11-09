@@ -3800,6 +3800,9 @@ button.folder .name {
   min-width: 0;
 }
 
+/* Keep the account level fixed while deep folder spacers can still shrink on narrow sidebars. */
+.account-folder-line { padding-left: 14px; }
+
 .folder-indent {
   flex: 0 1 auto;
   min-width: 0;
