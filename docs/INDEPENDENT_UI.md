@@ -27,6 +27,18 @@ Body download failures, including IMAP responses without the requested source, s
 
 # Independent UI
 
+Fresh Reply and Reply All include available earlier cached conversation messages
+in the compose history pane and in the quote saved/sent/scheduled with the reply.
+The captured source mailbox/thread and chronological position bound the history;
+later messages and unsent drafts stay out. Cached reads never download bodies or
+mark earlier mail read. Missing bodies are labelled rather than replaced with
+snippets; partial/uncertain text and omissions are disclosed. Additional history
+is bounded to 100 earlier messages and a 2-million-character content budget
+(cached HTML/plain text plus outgoing quotes). The original is never truncated.
+Exact attributed quotes already included in newer text are not appended again;
+distinct unquoted deliveries remain distinct. Saved/recovered drafts retain their
+own content. See [reply history](adr/2026-11-09-reply-compose-history.md).
+
 The opening status window, What's new, and About & updates display the installed
 version, GitHub source and Apache License 2.0 links. Opening links uses the browser;
 the status window allows only the two fixed project/license HTTPS destinations.

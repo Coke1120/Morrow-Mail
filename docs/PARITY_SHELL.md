@@ -1,5 +1,14 @@
 # Shell parity
 
+Fresh reply windows show the source message and available earlier cached thread
+messages in their history pane. That same quoted text reaches Save draft,
+Preview Send, Send and Schedule; hiding/collapsing the pane does not remove it.
+History stays with the captured source while mailbox selection changes. Context
+loading blocks save/send/schedule but preserves typing and Close. Missing,
+partial and bounded-out history is disclosed; no provider download/read flag or
+AI transfer is added. Resumed/recovered content is not rebuilt. Synthetic DOM and
+native Electron fixtures cover these flows with synthetic mail only.
+
 Message readers disclose checked decoding loss and unsupported charsets without
 repeatedly fetching complete bodies. They prefer verified plain text over lossy
 HTML and offer an HTML/plain-text view switch when both are available. The safe

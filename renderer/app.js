@@ -5105,6 +5105,12 @@ function quoteSource(email) {
   const message = email || {};
   return {
     id: message.id ? String(message.id) : "",
+    accountId: message.accountId || "",
+    threadId: message.threadId || "",
+    bodyEpoch: message.bodyEpoch,
+    bodyComplete: message.bodyComplete,
+    bodyWarning: message.bodyWarning || "",
+    encodingWarning: message.encodingWarning || "",
     from: message.from || "",
     replyTo: Array.isArray(message.replyTo) ? message.replyTo : [],
     to: message.to || "",
@@ -5242,6 +5248,87 @@ function quoteStateFromSeed(fields) {
     kind: (fields && fields.kind) || "",
     images: false,
   };
+}
+
+// Keep the source captured by the reply action. Local history reads neither
+// download mail nor mark older messages read, and never follow later selection.
+async function fillComposeReplyHistory(fields, session) {
+  const quote = state.composeQuote;
+  const source = quote && quote.email;
+  if (!source || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
+      || !fields.accountId || !fields.threadId || !source.id || source.id !== fields.sourceMessageId
+      || (source.accountId && source.accountId !== fields.accountId) || (source.threadId && source.threadId !== fields.threadId)) return;
+  const current = () => state.composeSession === session && state.composeQuote === quote;
+  quote.historyNote = "Loading earlier conversation messages…";
+  paintQuoteBody();
+  try {
+    const rows = await call("mail:listThreadMessages", {
+      accountId: fields.accountId, threadId: fields.threadId, emailId: source.id, headersOnly: true,
+    });
+    if (!current()) return;
+    const members = Array.isArray(rows) ? rows : [];
+    const index = members.findIndex(row => row.id === source.id && row.accountId === fields.accountId && row.threadId === fields.threadId);
+    if (index < 0) throw new Error("The source conversation is no longer available.");
+    const epoch = members[index].bodyEpoch;
+    if (!Number.isSafeInteger(epoch) || (source.bodyEpoch != null && source.bodyEpoch !== epoch)) {
+      throw new Error("The mailbox connection changed.");
+    }
+    const seen = new Set([source.id]);
+    const earlier = members.slice(0, index).reverse().filter(row => {
+      if (!row.id || seen.has(row.id) || row.accountId !== fields.accountId || row.threadId !== fields.threadId || row.isDraft) return false;
+      seen.add(row.id);
+      return true;
+    });
+    const messages = [source];
+    let text = quote.text || "";
+    const unquote = value => String(value).replace(/\r\n?/g, "\n").replace(/^[ \t]*(?:>[ \t]?)+/gm, "").trim();
+    let chars = text.length + (source.htmlBody || "").length + (source.textBody || "").length;
+    let omitted = Math.max(0, earlier.length - 100), unavailable = 0;
+    let incomplete = source.bodyComplete === false || source.bodyWarning || source.encodingWarning ? 1 : 0;
+    for (const header of earlier.slice(0, 100)) {
+      if (header.bodyEpoch !== epoch) throw new Error("The mailbox connection changed.");
+      let email = header;
+      if (header.hasBody !== false) {
+        const data = await call("mail:readCachedBody", { accountId: fields.accountId, emailId: header.id, bodyEpoch: epoch });
+        if (!current()) return;
+        email = data && data.email;
+        if (!email || email.id !== header.id || email.accountId !== fields.accountId
+            || email.threadId !== fields.threadId || email.bodyEpoch !== epoch) throw new Error("An earlier message changed.");
+      }
+      if (!email.textBody && !email.htmlBody) {
+        messages.push({ ...quoteSource(header), historyUnavailable: true });
+        unavailable++;
+        continue;
+      }
+      const block = replyBody(email);
+      // A complete, attributed quote from an earlier Morrow reply is already
+      // present. Identical unquoted messages are still separate deliveries.
+      if (block.trim() && messages.some(message => !message.historyUnavailable && unquote(readable(message)).includes(unquote(block)))) continue;
+      const cost = block.length + (email.htmlBody || "").length + (email.textBody || "").length;
+      if (chars + cost > 2000000) { omitted++; continue; }
+      chars += cost;
+      text = outgoingBody(text, block);
+      messages.push(quoteSource(email));
+      if (email.bodyComplete === false || email.bodyWarning || email.encodingWarning) incomplete++;
+    }
+    if (!current()) return;
+    quote.text = text;
+    quote.messages = messages;
+    quote.historyNote = [
+      unavailable ? `${unavailable} earlier message(s) have no downloaded body and are not included.` : "",
+      incomplete ? `${incomplete} message(s) have incomplete or uncertain text. Only the available text is included.` : "",
+      omitted ? `${omitted} earlier message(s) are not included. Reply history is limited to 100 earlier messages and 2 million characters.` : "",
+    ].filter(Boolean).join(" ");
+  } catch {
+    if (!current()) return;
+    quote.historyNote = "Earlier conversation messages could not be loaded. Only the quoted original is included. Close and reopen this reply to retry.";
+  }
+  if (!current()) return;
+  // History is initial content. An untouched reply can still close without
+  // a discard prompt while the independent sender-identity check is pending.
+  if (!Object.values(state.composeInputVersions).some(Boolean)) state.composeBaseline = fields.body ? "" : composeSnapshot();
+  paintQuoteBody();
+  paintComposeChrome();
 }
 
 function composeSeed(email, kind, self) {
@@ -16261,8 +16348,7 @@ function paintQuoteBody() {
   root.replaceChildren();
   const quote = state.composeQuote;
   if (!quote) return;
-  const email = quote.email;
-  if (!email) {
+  if (!quote.email) {
     const text = String(quote.text || "").trim();
     if (!text) return;
     const block = document.createElement("p");
@@ -16271,66 +16357,84 @@ function paintQuoteBody() {
     root.appendChild(block);
     return;
   }
-  const head = document.createElement("div");
-  head.className = "compose-quote-meta";
-  const from = document.createElement("p");
-  from.className = "meta";
-  from.textContent = email.from || "";
-  head.appendChild(from);
-  if (email.date) {
-    const when = document.createElement("p");
-    when.className = "meta";
-    const date = new Date(email.date);
-    when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : shownWhen(date);
-    head.appendChild(when);
-  }
-  if (email.subject) {
-    const subject = document.createElement("p");
-    subject.className = "meta";
-    subject.textContent = email.subject;
-    head.appendChild(subject);
-  }
-  for (const pair of [["To", email.to], ["Cc", email.cc]]) {
-    const text = people(pair[1]);
-    if (!text) continue;
-    const line = document.createElement("p");
-    line.className = "meta";
-    line.textContent = pair[0] + " " + text;
-    head.appendChild(line);
-  }
-  root.appendChild(head);
-  const images = remoteImageSrcs(email.htmlBody);
-  const allowed = quoteImagesOn(email);
-  if (images.length && !allowed) {
-    const bar = document.createElement("div");
-    bar.className = "remote-gate";
+  if (quote.historyNote) {
     const note = document.createElement("p");
-    note.textContent = images.length === 1
-      ? "1 remote image is blocked."
-      : images.length + " remote images are blocked.";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "ghost";
-    button.textContent = "Load remote content";
-    button.addEventListener("click", () => {
-      if (email.id) {
-        state.remoteAllowed[email.id] = true;
-        if (state.email && state.email.id === email.id) renderReader(false);
-      } else if (state.composeQuote) {
-        state.composeQuote.images = true;
-      }
-      paintQuoteBody();
-    });
-    bar.append(note, button);
-    root.appendChild(bar);
+    note.className = "hint compose-history-note";
+    note.setAttribute("role", "status");
+    note.textContent = quote.historyNote;
+    root.appendChild(note);
   }
-  appendMessageBody(root, email, allowed);
-  const files = attachmentNote(email);
-  if (files) {
-    const line = document.createElement("p");
-    line.className = "meta";
-    line.textContent = files;
-    root.appendChild(line);
+  const container = root;
+  for (const email of quote.messages || [quote.email]) {
+    const root = document.createElement("section");
+    root.className = "compose-quote-message";
+    container.appendChild(root);
+    const head = document.createElement("div");
+    head.className = "compose-quote-meta";
+    const from = document.createElement("p");
+    from.className = "meta";
+    from.textContent = email.from || "";
+    head.appendChild(from);
+    if (email.date) {
+      const when = document.createElement("p");
+      when.className = "meta";
+      const date = new Date(email.date);
+      when.textContent = Number.isNaN(date.getTime()) ? String(email.date) : shownWhen(date);
+      head.appendChild(when);
+    }
+    if (email.subject) {
+      const subject = document.createElement("p");
+      subject.className = "meta";
+      subject.textContent = email.subject;
+      head.appendChild(subject);
+    }
+    for (const pair of [["To", email.to], ["Cc", email.cc]]) {
+      const text = people(pair[1]);
+      if (!text) continue;
+      const line = document.createElement("p");
+      line.className = "meta";
+      line.textContent = pair[0] + " " + text;
+      head.appendChild(line);
+    }
+    root.appendChild(head);
+    const images = remoteImageSrcs(email.htmlBody);
+    const allowed = quoteImagesOn(email);
+    if (images.length && !allowed) {
+      const bar = document.createElement("div");
+      bar.className = "remote-gate";
+      const note = document.createElement("p");
+      note.textContent = images.length === 1
+        ? "1 remote image is blocked."
+        : images.length + " remote images are blocked.";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost";
+      button.textContent = "Load remote content";
+      button.addEventListener("click", () => {
+        if (email.id) {
+          state.remoteAllowed[email.id] = true;
+          if (state.email && state.email.id === email.id) renderReader(false);
+        } else if (state.composeQuote) {
+          state.composeQuote.images = true;
+        }
+        paintQuoteBody();
+      });
+      bar.append(note, button);
+      root.appendChild(bar);
+    }
+    if (email.historyUnavailable) {
+      const missing = document.createElement("p");
+      missing.className = "hint compose-history-note";
+      missing.textContent = "Body not downloaded. This message is not included in the reply.";
+      root.appendChild(missing);
+    } else appendMessageBody(root, email, allowed);
+    const files = quote.kind === "forward" ? attachmentNote(email) : "";
+    if (files) {
+      const line = document.createElement("p");
+      line.className = "meta";
+      line.textContent = files;
+      root.appendChild(line);
+    }
   }
 }
 
@@ -16346,6 +16450,12 @@ function paintComposeChrome() {
   const body = $("compose-quote-body");
   if (!dialog || !toggle || !pane || !handle || !note) return;
   const has = !!(quote && (quote.email || quote.text));
+  const history = has && ((quote.messages && quote.messages.length > 1) || quote.historyNote);
+  const label = $("compose-quote-label");
+  if (label) label.textContent = history ? "Conversation history" : "Original message";
+  note.textContent = history
+    ? "The quoted original and available earlier message text are included when you save, send, or schedule."
+    : "The quoted original is still included when you save, send, or schedule.";
   dialog.classList.toggle("is-quoting", has);
   toggle.hidden = !has;
   if (!has) {
@@ -17064,6 +17174,10 @@ async function openCompose(seed) {
   state.composeBaseline = fields.body && !fields.draftId ? "" : composeSnapshot();
   openDialog("compose");
   scheduleComposeLayout();
+  // Start both before the user can type: identity resolution snapshots the
+  // recipient edit versions and must not mistake edits during history loading
+  // for its initial recipients.
+  const history = fillComposeReplyHistory(fields, replySession);
   try { await initializeComposeIdentity(fields); }
   catch (error) {
     if (replySession !== state.composeSession) return;
@@ -17071,6 +17185,7 @@ async function openCompose(seed) {
     $("compose-from-note").textContent = "Could not resolve the From address. Close and reopen compose to retry. " + error.message;
     setComposeStatus("From address could not be loaded. Your text is retained.", true);
   }
+  await history;
   if (replySession !== state.composeSession) return;
   const initial = composeSnapshot();
   if (!fields.partialReceipt) await fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot || state.composeInputVersions.body > 0);
