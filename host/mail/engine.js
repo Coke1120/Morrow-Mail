@@ -671,6 +671,14 @@ function listRow(row, generations, memberships) {
   const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
   const membership = row.gmail_id ? (memberships instanceof Map
     ? memberships.get(JSON.stringify([row.account_id, row.gmail_id])) : db.gmailMap(row.account_id, row.gmail_id)) : null;
+  // Ingest stores server mail already decoded. Repairing it again makes the
+  // list disagree with the reader, which keeps that text. Pending local
+  // drafts still use the legacy repair on both surfaces.
+  const preserveServerText = Number(row.uid) > 0 && !row.draft_pending;
+  const listText = (value) => {
+    const text = value || "";
+    return preserveServerText ? text : textEncoding.repairMojibake(text);
+  };
   return {
     id: row.id,
     accountId: row.account_id,
@@ -679,8 +687,8 @@ function listRow(row, generations, memberships) {
     folderId: row.folder_path,
     folders: [row.folder_path],
     ...(membership ? { labelIds: db.jsonList(membership.labels_json) } : {}),
-    subject: textEncoding.repairMojibake(row.subject || ""),
-    snippet: textEncoding.repairMojibake(row.snippet || ""),
+    subject: listText(row.subject),
+    snippet: listText(row.snippet),
     from: row.from_display_name && bareSender ? composePolicy.senderPreview(bareSender, row.from_display_name) : row.from_addr || "",
     to: db.jsonList(row.to_json),
     cc: db.jsonList(row.cc_json),

@@ -222,6 +222,39 @@ async function run() {
     const oldLatin = await read(latinCache.id);
     assert.equal(oldLatin.textBody, "CafÃ©"); assert.equal(oldLatin.encodingWarning, "", "historical double decoding need not produce replacement characters");
     assert.equal((await read(latinCache.id, true)).textBody, "Café", "explicit reload repairs the clean-but-corrupt cache without guessing cached text");
+    const storedRow = db.messageById(latinCache.id);
+    assert.ok(Number(storedRow.uid) > 0);
+    const preserved = "caf\u00c3\u00a9";
+    const repairedSubject = "caf\u00e9";
+    const healthy = "Caf\u00e9 \u4f60\u597d";
+    async function listedRow() {
+      const page = await engine.answer("mail:listFromCache", [{ accountId: "gmail", folderId: storedRow.folder_path, limit: 2000 }]);
+      assert.equal(page.success, true, JSON.stringify(page));
+      const row = page.data.emails.find((email) => email.id === storedRow.id);
+      assert.ok(row, "the stored message stays in the list");
+      return row;
+    }
+    db.updateMessage(storedRow.id, { subject: preserved, snippet: preserved + " notes" });
+    assert.equal((await read(storedRow.id)).subject, preserved, "the reader keeps stored server text");
+    let listed = await listedRow();
+    assert.equal(listed.subject, preserved, "the list does not repair stored server text");
+    assert.equal(listed.snippet, preserved + " notes");
+    db.updateMessage(storedRow.id, { subject: healthy, snippet: healthy });
+    assert.equal((await read(storedRow.id)).subject, healthy);
+    listed = await listedRow();
+    assert.equal(listed.subject, healthy);
+    assert.equal(listed.snippet, healthy);
+    db.updateMessage(storedRow.id, { subject: preserved, snippet: preserved, draft_pending: 1 });
+    assert.equal((await read(storedRow.id)).subject, repairedSubject, "a pending draft is repaired in the reader");
+    listed = await listedRow();
+    assert.equal(listed.subject, repairedSubject, "a pending draft is repaired in the list");
+    assert.equal(listed.snippet, repairedSubject);
+    db.updateMessage(storedRow.id, { draft_pending: 0, uid: 0, subject: preserved, snippet: preserved });
+    assert.equal((await read(storedRow.id)).subject, repairedSubject);
+    listed = await listedRow();
+    assert.equal(listed.subject, repairedSubject);
+    assert.equal(listed.snippet, repairedSubject);
+    db.updateMessage(storedRow.id, { subject: storedRow.subject, snippet: storedRow.snippet, draft_pending: storedRow.draft_pending, uid: storedRow.uid });
     for (const contentType of ['text/plain; x-note="charset=utf-8"; charset=big5', "text/plain; charset*=us-ascii''big5", 'text/plain; charset*0="bi"; charset*1="g5"', 'text/plain; CHARSET = "Big5"']) {
       assert.equal((await gmail(part(big5, "big5", "text/plain", contentType))).textBody, text);
       assert.equal((await imap(source(big5, "big5", "text/plain", "base64", contentType))).textBody, text);

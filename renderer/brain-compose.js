@@ -23,6 +23,11 @@
   function domainLines(map) {
     return Object.entries(map || {}).map(([key, rows]) => "@" + key + " = " + rows.join(", ")).join("\n");
   }
+  function addressPieces(text) {
+    // Same split as shared/compose-policy.js addresses(): commas and semicolons
+    // inside quotes or angle brackets stay with that recipient.
+    return String(text || "").split(/[,;](?=(?:[^"]*"[^"]*")*[^"]*$)(?![^<]*>)/).map((row) => row.trim()).filter(Boolean);
+  }
   function parseDomainLines(text, label) {
     const map = {};
     for (const line of String(text || "").split(/\r?\n/).map((row) => row.trim()).filter(Boolean)) {
@@ -31,7 +36,9 @@
       const key = policy.domain(parts[0]);
       if (delimiter < 0 || !key) throw new Error("Use @domain = address, address on each " + label + " line.");
       if (Object.hasOwn(map, key)) throw new Error("Each " + label + " domain can appear only once.");
-      map[key] = parts[1].split(/[,;]/).map((row) => row.trim()).filter(Boolean);
+      const pieces = addressPieces(parts[1]);
+      if (pieces.some((piece) => !policy.address(piece))) throw new Error("Enter valid " + label + " email addresses.");
+      map[key] = pieces;
     }
     return map;
   }
