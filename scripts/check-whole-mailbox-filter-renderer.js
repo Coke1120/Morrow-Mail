@@ -98,6 +98,31 @@ test('hidden selection survives host filtering and stays part of reviewed Delete
   assert.equal(f.run('shownEmails().some(row=>state.selectedIds.includes(row.id))'),false);
   f.input(''); await f.flush(); assert.deepEqual(f.json('shellDeleteSelection().map(row=>row.id)'),['m1','m2']);
 });
+test('actual sorting retains filter-hidden Delete targets but prunes ordinary off-page selection', async t => {
+  const f=fixture(t); await f.run('loadList(false,0)');
+  f.run("state.selectedIds=['m1','m2']; state.selectionAnchor='m1'; renderList()");
+  f.input('needle'); await f.flush();
+  // This newly selected matching row is not in the filter-retained snapshot.
+  f.run("state.selectedIds.push('m400'); renderList()");
+  assert.deepEqual(f.json('shellDeleteSelection().map(row=>row.id)'),['m1','m2','m400']);
+  await f.run("changeMailListSort('subject')");
+  assert.equal(f.run('state.listSort.sortDirection'),'desc');
+  assert.equal(f.run('state.listOffset'),0);
+  assert.equal(f.run('state.emails[0].id'),'m649');
+  assert.equal(f.run("state.emails.some(row=>['m1','m2','m400'].includes(row.id))"),false);
+  assert.deepEqual(f.json('state.selectedIds'),['m1','m2']);
+  assert.deepEqual(f.json('shellDeleteSelection().map(row=>({id:row.id,accountId:row.accountId}))'),[
+    {id:'m1',accountId:'alpha'}, {id:'m2',accountId:'alpha'},
+  ]);
+  assert.equal(f.run('shownEmails().some(row=>state.selectedIds.includes(row.id))'),false);
+  f.input(''); await f.flush();
+  await f.run("changeMailListSort('subject')");
+  await f.run("changeMailListSort('subject')");
+  assert.equal(f.run('state.listSort.sortDirection'),'desc');
+  assert.equal(f.run('shownEmails().some(row=>state.selectedIds.includes(row.id))'),false);
+  assert.deepEqual(f.json('state.selectedIds'),['m1','m2']);
+  assert.deepEqual(f.json('shellDeleteSelection().map(row=>row.id)'),['m1','m2']);
+});
 test('Search and Outbox filter their explicitly bounded loaded rows with honest labels', async t => {
   const f=fixture(t); await f.run("state.query='some search'; loadList(false,0)");
   const before=f.run('calls.length'); f.input('needle'); await f.flush();
@@ -127,6 +152,8 @@ test('rendered Features and filter help describe downloaded-view and bounded-mod
   const catalog=f.document.getElementById('features-catalog').textContent;
   assert.match(catalog,/Filter downloaded view matches all saved messages in the selected local folder before paging/);
   assert.match(catalog,/Filter downloaded view matches a case-insensitive literal phrase/);
+  assert.match(catalog,/Ordinary selections remain only for rows on that page; selections retained when filtering also stay selected across later sorts, even when outside that page/);
+  assert.doesNotMatch(catalog,/selection remains only for rows on that page/);
   assert.match(catalog,/Search filters only its returned results \(up to 100\); Outbox filters its loaded rows/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/across all downloaded messages in the selected folder or view/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/Settings → Mail & Sync controls sync history/);
