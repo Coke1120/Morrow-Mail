@@ -1,5 +1,10 @@
 # Include cached earlier messages in fresh replies
 
+The outgoing quote now lives in the editable Message field. The original pane
+is reference only; users can remove or change outgoing quoted text. See
+[editable reply quotes](2026-11-11-editable-reply-quotes.md) for the superseding
+editor ownership, asynchronous loading and AI boundaries.
+
 Fresh Reply and Reply All previously carried only the selected source message.
 If that message did not quote the previous exchanges, the separate compose
 window and its outgoing quote omitted them.

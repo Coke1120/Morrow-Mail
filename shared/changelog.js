@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.9": [
+      "The message list and reader use the same stored subject and snippet for server mail, without guessing another encoding. Pending local drafts keep their existing repair behavior.",
+      "Typed chat runs a skill only for its exact name or id, optionally prefixed with run. Mentioning a skill inside a longer message stays a chat answer; explicit skill chips still run the selected skill.",
+      "Incomplete Outlook calendar lists leave saved selections unchanged, matching Google. Saved calendar checks are restored in full, including selections beyond 100 calendars.",
+      "Domain CC/BCC settings preserve commas inside quoted display names and reject invalid addresses before saving.",
+    ],
     "0.4.8": [
       "Folders under each mailbox heading, including Inbox, Sent and Drafts, sit 14 pixels in from the account name. Nested folders keep their extra indent, and unread badges stay aligned on the right.",
       "When a Gmail message is valid non-ASCII UTF-8 but disagrees with its declared character set, Morrow reads the original message once instead of guessing. Received Gmail messages can use Reload message to replace an older cached body; a failed reload keeps that copy, and pending drafts are not replaced.",
