@@ -162,9 +162,13 @@ test('Features, Shortcuts and accessible list help describe the same range behav
   assert.match(f.document.getElementById('message-list').getAttribute('aria-describedby'),/mail-selection-help/);
 });
 
-test('the browser fixture supports bounded synthetic host-filter lists without real mail', async t => {
+for(const [name,newline] of [['LF','\n'],['CRLF','\r\n']])test(`the ${name} browser fixture supports bounded synthetic host-filter lists without real mail`, async t => {
   const f=fixture(t);
-  const source=fs.readFileSync(path.join(__dirname,'check-mail-selection-browser.js'),'utf8');
+  const raw=fs.readFileSync(path.join(__dirname,'check-mail-selection-browser.js'),'utf8')
+    .replace(/\r\n?/g,'\n').replace(/\n/g,newline);
+  // Git checkouts can use CRLF on Windows. Match script boundaries after
+  // normalization, while running the same responder assertions for both forms.
+  const source=raw.replace(/\r\n?/g,'\n');
   const start=source.indexOf('      window.resetFixture=');
   const end=source.indexOf('\n    });\n    const click',start);
   assert.ok(start>=0&&end>start);
