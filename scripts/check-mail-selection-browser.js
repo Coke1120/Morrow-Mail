@@ -63,6 +63,9 @@ const root = path.resolve(__dirname, '..');
       await page.waitForFunction(()=>typeof currentListFilter!=='function'
         ||(!listFilterTimer&&!state.listLoading&&state.loadedListFilter===currentListFilter()));
     };
+    // Control-click is a native secondary click on macOS. Exercise the platform's
+    // actual additive gesture here; check-mail-selection.js covers both key flags.
+    const additiveModifier = process.platform === 'darwin' ? 'Meta' : 'Control';
     let cases=0;
     for(const theme of ['light','dark'])for(const layout of ['right','bottom','window']){
       await page.setViewportSize({width:theme==='light'?1440:700,height:960});await reset(layout,theme);
@@ -82,7 +85,7 @@ const root = path.resolve(__dirname, '..');
       await click('c',['Shift'],true);assert.deepEqual(await selection(),{ids:['c','d'],anchor:'d'});
       assert.deepEqual(await page.evaluate(()=>window.commands),[]);cases++;
 
-      for(const modifier of ['Control','Meta']){
+      for(const modifier of [additiveModifier]){
         await reset(layout,theme);await click('e',[modifier]);await click('b',[modifier]);
         await click('d',[modifier,'Shift'],true);assert.deepEqual(await selection(),{ids:['e','b','c','d'],anchor:'b'});
         await click('c',['Shift']);assert.deepEqual(await selection(),{ids:['b','c'],anchor:'b'});
@@ -102,7 +105,7 @@ const root = path.resolve(__dirname, '..');
     await page.keyboard.press('Escape');assert.deepEqual(await selection(),{ids:[],anchor:''});cases++;
 
     await reset();await click('c',[],true);await click('d',[],true);
-    await filter('keep');await click('b',['Control','Shift']);
+    await filter('keep');await click('b',[additiveModifier,'Shift']);
     assert.deepEqual(await selection(),{ids:['c','d','b'],anchor:'d'});
     assert.deepEqual(await page.evaluate(()=>selectedMessages().map(row=>[row.id,row.accountId])),[['c','alpha'],['d','beta'],['b','beta']]);cases++;
 
@@ -114,6 +117,6 @@ const root = path.resolve(__dirname, '..');
     assert.match(await page.locator('#shortcuts-note').textContent(),/Shift-click a message or its checkbox/);
     assert.match(await page.locator('#mail-selection-help').textContent(),/including both ends/);
     assert.deepEqual(errors,[]);cases++;
-    console.log(JSON.stringify({result:'passed',cases,checks:'plain-click anchor, row/checkbox inclusive and repeated ranges, Ctrl/Meta additive ranges, displayed order/filter boundaries, Clear/Escape, mailbox identity, right/bottom/window, wide/narrow, light/dark, rendered Features/Shortcuts/help',output}));
+    console.log(JSON.stringify({result:'passed',cases,checks:'plain-click anchor, row/checkbox inclusive and repeated ranges, native additive modifier ranges, displayed order/filter boundaries, Clear/Escape, mailbox identity, right/bottom/window, wide/narrow, light/dark, rendered Features/Shortcuts/help',output}));
   } finally { await browser?.close();server.close(); }
 })().catch(error=>{console.error(error);process.exitCode=1});

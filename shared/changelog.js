@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.10": [
+      "Filter downloaded view matches sender, subject and preview across every downloaded message in the selected folder or view before paging. It keeps 200-message pages and accurate filtered totals; undownloaded server mail is not included.",
+      "Reply and Reply All place the original and available earlier conversation text inside Message so you can edit or remove it. Save, Preview Send, Send and Schedule use your edited message without adding the original again. The separate history pane is reference only.",
+      "Shift-click selects both endpoints and every visible message between the last clicked row and the new row, including checkbox clicks. Repeated Shift-clicks extend or shrink from the same anchor; ranges stay within the loaded page.",
+    ],
     "0.4.9": [
       "The message list and reader use the same stored subject and snippet for server mail, without guessing another encoding. Pending local drafts keep their existing repair behavior.",
       "Typed chat runs a skill only for its exact name or id, optionally prefixed with run. Mentioning a skill inside a longer message stays a chat answer; explicit skill chips still run the selected skill.",
