@@ -5312,12 +5312,24 @@ async function fillComposeReplyHistory(fields, session) {
       if (email.bodyComplete === false || email.bodyWarning || email.encodingWarning) incomplete++;
     }
     if (!current()) return;
+    // The editor owns outgoing reply text. Only extend its original quote when
+    // that exact node is still untouched; typing above it is safe, but editing
+    // or deleting it must never restore content the user removed.
+    if (quote.inEditor && text !== quote.text) {
+      const node = composeReplyQuoteNode();
+      if (node && node.innerHTML === quote.editorHtml) {
+        appendSafeMailHtml(node, toHtml(text.slice(quote.text.length)), false);
+      } else {
+        quote.historyEditNote = "Earlier messages were not added to Message because its quoted text changed while loading. The original preview below is for reference.";
+      }
+    }
     quote.text = text;
     quote.messages = messages;
     quote.historyNote = [
       unavailable ? `${unavailable} earlier message(s) have no downloaded body and are not included.` : "",
       incomplete ? `${incomplete} message(s) have incomplete or uncertain text. Only the available text is included.` : "",
       omitted ? `${omitted} earlier message(s) are not included. Reply history is limited to 100 earlier messages and 2 million characters.` : "",
+      quote.historyEditNote || "",
     ].filter(Boolean).join(" ");
   } catch {
     if (!current()) return;
@@ -14531,11 +14543,44 @@ function paintComposeEditor(plain, html) {
   editor.appendChild(block);
 }
 
+function composeReplyQuoteNode() {
+  const quote = state.composeQuote;
+  if (!quote || !quote.inEditor || !quote.editorNode || !composeEditorLive()) return null;
+  return $("compose-editor").contains(quote.editorNode) ? quote.editorNode : null;
+}
+
+function appendComposeReplyQuoteNode(node) {
+  const editor = $("compose-editor");
+  if (!editor.childNodes.length) {
+    const line = document.createElement("div");
+    line.appendChild(document.createElement("br"));
+    editor.appendChild(line);
+  }
+  editor.appendChild(node);
+}
+
+function seedComposeReplyQuote(fields) {
+  const quote = state.composeQuote;
+  if (!quote || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
+      || fields.botDraft || fields.partialReceipt || !composeEditorLive()) return;
+  const node = document.createElement("div");
+  node.setAttribute("data-compose-reply-quote", "1");
+  appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
+  quote.inEditor = true;
+  quote.editorNode = node;
+  quote.editorHtml = node.innerHTML;
+  appendComposeReplyQuoteNode(node);
+}
+
 function writeComposeBody(next, html) {
+  const quote = composeReplyQuoteNode();
   const body = $("compose-body");
   const value = next == null ? "" : String(next);
   if (body) body.value = value;
   paintComposeEditor(value, html || "");
+  // AI writing and suggested replies replace authored text, not the editable
+  // quote. Reuse its live node, including any edits, instead of the cached mail.
+  if (quote) appendComposeReplyQuoteNode(quote);
 }
 
 function updateComposeSignatureNode(text, html) {
@@ -14549,13 +14594,17 @@ function updateComposeSignatureNode(text, html) {
     return;
   }
   if (!node) {
+    let quote = composeReplyQuoteNode();
+    // Formatting may wrap the quote in a span/blockquote. Insert before its
+    // top-level container rather than assuming the quote is a direct child.
+    while (quote && quote.parentNode !== editor) quote = quote.parentNode;
     if (editor.childNodes.length) {
-      editor.appendChild(document.createElement("br"));
-      editor.appendChild(document.createElement("br"));
+      editor.insertBefore(document.createElement("br"), quote);
+      editor.insertBefore(document.createElement("br"), quote);
     }
     node = document.createElement("div");
     node.setAttribute("data-compose-signature", "1");
-    editor.appendChild(node);
+    editor.insertBefore(node, quote);
   }
   node.replaceChildren();
   appendSafeMailHtml(node, markup.trim() ? markup : toHtml(next), false);
@@ -14572,7 +14621,7 @@ function commitComposeSignature(previous, next, html) {
     updateComposeSignatureNode(next, state.signatureHtml);
     return;
   }
-  paintComposeEditor(committed.body, "");
+  writeComposeBody(committed.body, "");
 }
 
 function composeSignatureUntouched() {
@@ -14589,16 +14638,21 @@ function syncComposePlainFromEditor() {
   const body = $("compose-body");
   if (!composeEditorLive() || !body) return;
   if (state.draftWrite && !state.draftWrite.pending) state.draftWrite = null;
-  const sig = editor.querySelector("[data-compose-signature]");
+  // This hidden source is authored text for AI/signatures. The visible rich
+  // editor, including the user's edited quote, is the outgoing body source.
+  const quote = composeReplyQuoteNode();
+  const source = quote ? editor.cloneNode(true) : editor;
+  if (quote) source.querySelector("[data-compose-reply-quote]")?.remove();
+  const sig = source.querySelector("[data-compose-signature]");
   if (sig) {
-    const clone = editor.cloneNode(true);
+    const clone = source.cloneNode(true);
     const sigClone = clone.querySelector("[data-compose-signature]");
     if (sigClone) sigClone.remove();
     const message = plainFromComposeHtml(clone.innerHTML);
     const sigText = plainFromComposeHtml(sig.innerHTML);
     body.value = message && sigText ? message + "\n\n" + sigText : (message || sigText);
   } else {
-    body.value = plainFromComposeHtml(editor.innerHTML);
+    body.value = plainFromComposeHtml(source.innerHTML);
   }
   paintComposeNote();
 }
@@ -14865,7 +14919,7 @@ function wireComposeFormat() {
 function composePayload(account) {
   const meta = state.composeMeta || {};
   const plain = $("compose-body").value;
-  const quote = state.composeQuote && state.composeQuote.text;
+  const quote = state.composeQuote && !state.composeQuote.inEditor && state.composeQuote.text;
   const rich = readComposeEditorHtml();
   const payload = {
     accountId: account.id,
@@ -16458,7 +16512,9 @@ function paintComposeChrome() {
   const history = has && ((quote.messages && quote.messages.length > 1) || quote.historyNote);
   const label = $("compose-quote-label");
   if (label) label.textContent = history ? "Conversation history" : "Original message";
-  note.textContent = history
+  note.textContent = quote && quote.inEditor
+    ? "Edit or remove quoted text in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
+    : history
     ? "The quoted original and available earlier message text are included when you save, send, or schedule."
     : "The quoted original is still included when you save, send, or schedule.";
   dialog.classList.toggle("is-quoting", has);
@@ -17164,6 +17220,7 @@ async function openCompose(seed) {
   $("compose-subject").value = fields.subject || "";
   $("compose-body").value = fields.body || "";
   paintComposeEditor(fields.body || "", fields.htmlBody || "");
+  seedComposeReplyQuote(fields);
   $("ai-prompt").value = "";
   $("schedule-preset").value = fields.schedulePreset || "1h";
   $("schedule-at").value = typeof fields.scheduleAt === "string" ? fields.scheduleAt : "";
@@ -17756,7 +17813,10 @@ function paintPreview(draft) {
 
 function openComposePreview(when) {
   if (!composeReady()) return false;
-  const draft = previewDraft(composeFields(), state.composeQuote && state.composeQuote.text, when, state.composeAttachments);
+  const fields = composeFields();
+  const quote = state.composeQuote;
+  if (quote && quote.inEditor) fields.body = plainFromComposeHtml(readComposeEditorHtml());
+  const draft = previewDraft(fields, quote && !quote.inEditor && quote.text, when, state.composeAttachments);
   previewDraftState = { ...draft, payload: JSON.parse(JSON.stringify(composePayload(composeAccount()))),
     session: state.composeSession, snapshot: composeSnapshot() };
   paintPreview(previewDraftState);

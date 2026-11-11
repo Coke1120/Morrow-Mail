@@ -77,8 +77,9 @@ test("Reply and Reply All show earlier bodies and preserve them in draft/send/sc
     assert.match(sections[0].textContent, /Please confirm/);
     assert.match(sections[1].textContent, /appendix/);
     assert.match(sections[2].textContent, /delivery on Friday/);
-    f.get("compose-editor").innerHTML = "<p>Confirmed.</p>";
-    f.get("compose-body").value = "Confirmed.";
+    assert.match(f.get("compose-editor").textContent, /Please confirm.*appendix.*delivery on Friday/s);
+    f.get("compose-editor").firstElementChild.textContent = "Confirmed.";
+    f.run("syncComposePlainFromEditor()");
     const body = f.payload().body;
     for (const text of ["Confirmed.", source.textBody, first.textBody, second.textBody]) assert.ok(body.includes(text));
     assert.ok(!body.includes(later.textBody));
@@ -108,8 +109,8 @@ test("History reads retain the captured source, exclude drafts/foreign rows and 
   assert.equal(f.run("openComposePreview(null)"), false);
   assert.equal(await f.run("saveDraft()"), false);
   f.run(`state.email = {id:'later',accountId:'b'}; state.accountId = 'b'; state.composeInputVersions.body++`);
-  f.get("compose-editor").innerHTML = "Typed while loading";
-  f.get("compose-body").value = "Typed while loading";
+  f.get("compose-editor").firstElementChild.textContent = "Typed while loading";
+  f.run("syncComposePlainFromEditor()");
   resolve([first, first, message("draft", "Unsent draft", { isDraft: true }),
     message("foreign", "Wrong mailbox", { accountId: "b" }), message("other", "Wrong thread", { threadId: "other" }), source, later].map(header));
   await pending;
@@ -241,6 +242,129 @@ test("Resumed/recovered drafts and forwards do not rebuild saved reply history",
   assert.equal(f.calls.length, 0);
 });
 
+test("Edited/deleted reply quotes are the sole saved and reviewed output, with no hidden original appended", async t => {
+  for (const kind of ["reply", "all"]) for (const edit of ["excerpt", "remove", "replace-all"]) {
+    const f = fixture(t);
+    await f.open(kind);
+    const node = f.get("compose-editor").querySelector("[data-compose-reply-quote]");
+    assert.ok(node && !node.hasAttribute("contenteditable"), "quote inherits the editable message field");
+    if (edit === "excerpt") node.textContent = "Edited excerpt <literal> & Unicode 中文";
+    else if (edit === "remove") node.remove();
+    else f.get("compose-editor").innerHTML = "<p>Only my answer.</p>";
+    if (edit !== "replace-all") f.get("compose-editor").firstElementChild.textContent = "Only my answer.";
+    f.run("syncComposePlainFromEditor(); state.composeInputVersions.body++");
+    const body = f.payload().body;
+    assert.match(body, /Only my answer/);
+    assert.doesNotMatch(body, /Please confirm|Earlier proposal|Earlier answer/);
+    if (edit === "excerpt") assert.match(body, /Edited excerpt &lt;literal&gt; &amp; Unicode 中文/);
+    assert.match(f.get("compose-quote-body").textContent, /Please confirm/, "unchanged original preview is reference only");
+    assert.match(f.get("compose-quote-note").textContent, /Edit or remove quoted text in Message/);
+    assert.equal(await f.run("saveDraft()"), true);
+    assert.equal(f.calls.find(row => row.channel === "mail:upsertDraft").payload.body, body);
+    f.run(`globalThis.confirmed = [];
+      sendMail = async payload => { confirmed.push(payload); };
+      scheduleMail = async (_when, payload) => { confirmed.push(payload); return true; };`);
+    for (const when of ["null", "new Date('2099-01-01T09:00:00Z')"]) {
+      assert.equal(f.run(`openComposePreview(${when})`), true);
+      assert.equal(f.run("previewDraftState.payload.body"), body);
+      assert.doesNotMatch(f.get("compose-preview-body").textContent, /Please confirm|Earlier proposal/);
+      assert.equal(await f.run("confirmComposePreview()"), true);
+      assert.equal(f.run("confirmed.at(-1).body"), body);
+    }
+  }
+});
+
+test("History loading never restores an edited, deleted, or replaced quote", async t => {
+  for (const edit of ["excerpt", "remove", "clear-all"]) {
+    const f = fixture(t, [first, source]);
+    let resolve;
+    f.replies.body = () => new Promise(done => { resolve = done; });
+    const pending = f.open();
+    while (!resolve) await new Promise(done => setImmediate(done));
+    const node = f.get("compose-editor").querySelector("[data-compose-reply-quote]");
+    if (edit === "excerpt") node.textContent = "My edited quote";
+    else if (edit === "remove") node.remove();
+    else f.get("compose-editor").replaceChildren();
+    f.run("syncComposePlainFromEditor(); state.composeInputVersions.body++");
+    const edited = f.get("compose-editor").innerHTML;
+    resolve({ email: first });
+    await pending;
+    assert.equal(f.get("compose-editor").innerHTML, edited);
+    assert.doesNotMatch(f.payload().body, /Please confirm|Earlier proposal/);
+    assert.match(f.get("compose-quote-body").textContent, /not added to Message.*quoted text changed/s);
+    if (edit === "clear-all") assert.equal(f.payload().body, "");
+  }
+});
+
+test("Signatures and AI writing preserve edited quotes without treating cached history as authored AI input", async t => {
+  const f = fixture(t);
+  f.run(`fillSignatures = async () => commitComposeSignature('', 'Fixture signature', '<b>Fixture signature</b>')`);
+  await f.open();
+  assert.equal(f.run("composeSnapshot() === state.composeBaseline"), true, "untouched seeded reply stays clean");
+  const quote = f.get("compose-editor").querySelector("[data-compose-reply-quote]");
+  const signature = f.get("compose-editor").querySelector("[data-compose-signature]");
+  assert.ok(signature.compareDocumentPosition(quote) & f.document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
+  quote.innerHTML = "<b>Edited quoted text</b>";
+  f.get("compose-editor").firstElementChild.textContent = "Authored answer";
+  f.run("syncComposePlainFromEditor(); state.composeInputVersions.body++");
+  assert.equal(f.get("compose-body").value, "Authored answer\n\nFixture signature");
+  f.run("commitComposeSignature('Fixture signature', 'New signature', '<i>New signature</i>')");
+  assert.equal(quote.innerHTML, "<b>Edited quoted text</b>");
+  f.run(`globalThis.aiRequests = []; const originalCall = call;
+    call = async (channel, payload) => {
+      if (channel === 'aiDraftWrite:start' || channel === 'aiDraftWrite:cancel') { aiRequests.push({channel,payload}); return {}; }
+      return originalCall(channel,payload);
+    };`);
+  f.get("ai-mode").value = "reply";
+  await f.run("startDraftWrite()");
+  const request = f.run("JSON.stringify(aiRequests[0])");
+  assert.match(request, /Authored answer/);
+  assert.doesNotMatch(request, /Earlier proposal|Earlier answer|Edited quoted text/);
+  f.run(`onDraftEvent({reqId:state.draftWrite.reqId,type:'chunk',data:'Generated answer'});
+    onDraftEvent({reqId:state.draftWrite.reqId,type:'done'});`);
+  assert.equal(f.get("compose-editor").querySelector("[data-compose-reply-quote]"), quote);
+  assert.equal(quote.innerHTML, "<b>Edited quoted text</b>");
+  assert.match(f.payload().body, /Generated answer/);
+  assert.match(f.payload().body, /<b>Edited quoted text<\/b>/);
+  assert.doesNotMatch(f.payload().body, /Please confirm|Earlier proposal/);
+  quote.remove();
+  f.run("syncComposePlainFromEditor(); writeComposeBody('Another answer')");
+  assert.doesNotMatch(f.payload().body, /Edited quoted text|Please confirm|Earlier proposal/);
+});
+
+test("Saved and scheduled recovery keeps the exact edited quote without reconstructing source history", async t => {
+  const original = fixture(t);
+  await original.open();
+  original.get("compose-editor").querySelector("[data-compose-reply-quote]").textContent = "Saved edited quote";
+  const payload = original.payload();
+  for (const saved of [true, false]) {
+    const f = fixture(t);
+    f.context.payload = payload;
+    f.run(`globalThis.savedSeed = outboxComposeSeed({}, payload)`);
+    if (saved) f.run(`savedSeed.draftId = 'saved-draft'; delete savedSeed.recoveredSnapshot`);
+    await f.run("openCompose(savedSeed)");
+    assert.equal(f.payload().body, payload.body);
+    assert.match(f.get("compose-editor").textContent, /Saved edited quote/);
+    assert.doesNotMatch(f.payload().body, /Please confirm|Earlier proposal/);
+    assert.equal(f.calls.length, 0, "saved content never triggers history reads");
+  }
+});
+
+test("Formatting around the editable quote does not break later signature insertion", async t => {
+  const f = fixture(t);
+  await f.open();
+  const quote = f.get("compose-editor").querySelector("[data-compose-reply-quote]");
+  const wrapper = f.document.createElement("span");
+  quote.replaceWith(wrapper);
+  wrapper.appendChild(quote);
+  f.run("commitComposeSignature('', 'Signature above the quote', '')");
+  const signature = f.get("compose-editor").querySelector("[data-compose-signature]");
+  assert.equal(signature.parentNode, f.get("compose-editor"));
+  assert.ok(signature.compareDocumentPosition(wrapper) & f.document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.match(f.payload().body, /Signature above the quote/);
+  assert.equal(f.payload().body.match(/Please confirm the plan/g).length, 1);
+});
+
 test("Rendered Features catalog describes reply history, output, limits and privacy boundaries", t => {
   const f = fixture(t);
   f.run("paintFeatureCatalog(); showFeaturesTab('catalog')");
@@ -251,4 +375,6 @@ test("Rendered Features catalog describes reply history, output, limits and priv
   assert.match(card.textContent, /do not download bodies, mark messages read or send history to AI/);
   assert.match(card.textContent, /100 earlier messages/);
   assert.match(card.textContent, /Missing bodies are labelled/);
+  assert.match(card.textContent, /edit or remove/);
+  assert.match(card.textContent, /only the edited Message/);
 });

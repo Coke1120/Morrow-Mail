@@ -5412,6 +5412,13 @@ textarea { min-height: 140px; resize: vertical; }
 
 .compose-editor p { margin: 0 0 0.45em; }
 
+.compose-editor [data-compose-reply-quote] {
+  margin-top: 1em;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+}
+
 .compose-fields {
   margin-top: 8px;
   border: 1px solid var(--line);
