@@ -26,6 +26,7 @@ const state = {
   listTotal: 0,
   listSyncDone: true,
   listLoading: false,
+  listFilterError: false,
   listScope: "",
   email: null,
   thread: [],
@@ -112,6 +113,8 @@ const state = {
 
 let accountGen = 0;
 let listGen = 0;
+let listFilterTimer = null;
+const filterSelection = new Map();
 let mailboxNavigationGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
@@ -1803,18 +1806,20 @@ function mailListRequest(view) {
     if (source.toMeOnly) params.filterToMe = true;
     return { channel: "mail:searchLocal", params };
   }
+  const listFilter = String(source.listFilter || "").trim();
+  const filterParams = listFilter ? { listFilter } : {};
   const retainSource = Array.isArray(source.retainIds) ? source.retainIds[0] : "";
   const retainId = typeof retainSource === "string" && retainSource && retainSource.length <= 200 ? retainSource : "";
   if (source.allInbox && (source.aggregateView === "starred" || source.aggregateView === "unread")) {
-    const params = { aggregateView: source.aggregateView, limit, offset, ...(source.listSort || {}) };
+    const params = { aggregateView: source.aggregateView, limit, offset, ...filterParams, ...(source.listSort || {}) };
     if (source.toMeOnly) params.filterToMe = true;
     if (retainId && source.aggregateView === "unread") params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
   if (source.allInbox) {
-    const params = { folderKey: "primary", limit, offset, ...(source.listSort || {}) };
+    const params = { folderKey: "primary", limit, offset, ...filterParams, ...(source.listSort || {}) };
     if (source.toMeOnly) params.filterToMe = true;
-    if (source.pageCursor) params.pageCursor = source.pageCursor;
+    if (source.pageCursor && !listFilter) params.pageCursor = source.pageCursor;
     const helper = typeof morrowPrimaryMailboxes === "object" && morrowPrimaryMailboxes;
     if (helper && typeof helper.primaryMailboxes === "function") {
       const mailboxes = helper.primaryMailboxes(source.accounts, foldersOf);
@@ -1824,9 +1829,9 @@ function mailListRequest(view) {
     if (retainId) params.retainIds = [retainId];
     return { channel: "mail:listFromCache", params };
   }
-  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...(source.listSort || {}) };
+  const params = { accountId: source.accountId, folderId: source.folderId, limit, offset, ...filterParams, ...(source.listSort || {}) };
   if (source.toMeOnly) params.filterToMe = true;
-  if (source.pageCursor) params.pageCursor = source.pageCursor;
+  if (source.pageCursor && !listFilter) params.pageCursor = source.pageCursor;
   if (retainId) params.retainIds = [retainId];
   return {
     channel: source.fromNetwork ? "mail:listFromNetwork" : "mail:listFromCache",
@@ -7180,8 +7185,8 @@ async function toggleToMeFilter() {
   await loadList(false, 0);
 }
 
-// Filter stays on messages already loaded: subject, from, and snippet.
-// It does not call mail:search or mail:searchLocal. Toolbar search does.
+// The host applies this literal filter before paging normal mail lists.
+// Keep the same predicate here for immediate feedback and bounded Search/Outbox views.
 function filteredEmails(emails, query) {
   const q = String(query || "").trim().toLowerCase();
   const rows = Array.isArray(emails) ? emails : [];
@@ -7192,6 +7197,33 @@ function filteredEmails(emails, query) {
     const snippet = email && email.snippet ? String(email.snippet) : "";
     return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q);
   });
+}
+
+function currentListFilter() {
+  return String($("list-filter")?.value || "").trim();
+}
+
+function applyListFilter() {
+  clearTimeout(listFilterTimer);
+  listFilterTimer = null;
+  state.listFilterError = false;
+  if (state.query || state.outbox) {
+    renderList();
+    return;
+  }
+  // Invalidate an older response immediately, including during the debounce gap.
+  ++listGen;
+  for (const email of selectedMessages()) filterSelection.set(String(email.id), email);
+  state.listOffset = 0;
+  state.listCursors = [];
+  state.listLoading = true;
+  renderList();
+  listFilterTimer = setTimeout(() => {
+    listFilterTimer = null;
+    const pending = loadList(false, 0);
+    const gen = listGen;
+    pending.catch(error => { if (gen === listGen) showStatus(error.message, true); });
+  }, 180);
 }
 
 function selectionIds(selected) {
@@ -8338,9 +8370,12 @@ function shownEmails() {
 }
 
 function rememberLoadedSelection() {
+  for (const id of filterSelection.keys()) {
+    if (!state.selectedIds.includes(id) || optimisticRemovals.has(id)) filterSelection.delete(id);
+  }
   const next = pruneSelection(
     state.selectedIds,
-    (state.emails || []).map((email) => email && email.id),
+    [...(state.emails || []).map((email) => email && email.id), ...filterSelection.keys()],
     state.selectionAnchor,
   );
   state.selectedIds = next.ids;
@@ -8361,7 +8396,7 @@ function commitSelection(next) {
 }
 
 function selectedMessages() {
-  const byId = new Map();
+  const byId = new Map(filterSelection);
   for (const email of state.emails || []) {
     if (email && email.id) byId.set(String(email.id), email);
   }
@@ -8500,7 +8535,12 @@ function paintSearchCoverage(shown) {
   const account = mailAccounts().find((row) => row.id === state.searchAccountId);
   $("list-coverage").textContent = state.query
     ? `Search downloaded mail · ${account ? accountLabel(account) : "All connected accounts"} · ${state.emails.length} returned (up to 100) · ${shown.length} shown`
-    : `${shown.length} shown of ${state.emails.length} on this page`;
+    : state.outbox ? `${shown.length} shown of ${state.emails.length} loaded Outbox messages`
+    : state.listFilterError ? "Could not filter downloaded mail. Change the filter or refresh to retry."
+    : state.listLoading ? "Filtering downloaded mail…"
+    : `${state.listTotal} matches in this downloaded view · ${shown.length} on this page`;
+  $("list-filter").placeholder = state.query ? "Filter returned results" : state.outbox ? "Filter loaded Outbox" : "Filter downloaded view";
+  $("list-filter").setAttribute("aria-label", $("list-filter").placeholder);
   $("list-coverage").hidden = !state.query && !filter;
   const chip = $("filter-chip");
   chip.hidden = !filter;
@@ -8586,6 +8626,10 @@ function renderList() {
     const listQuery = $("list-filter") && String($("list-filter").value || "").trim();
     if (!state.accounts.length && !selectedAccount()?.isLocal && !state.query) {
       empty.textContent = "Connect a mailbox to download messages here.";
+    } else if (listQuery) {
+      empty.textContent = state.listFilterError ? "Could not filter downloaded mail. Change the filter or refresh to retry."
+        : state.listLoading ? "Filtering downloaded mail…" : state.query || state.outbox
+        ? "No loaded messages match that filter." : "No downloaded messages in this view match that filter.";
     } else if (state.query && !state.emails.length) {
       empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
     } else if (state.outbox && !listQuery && !state.emails.length) {
@@ -11667,17 +11711,18 @@ function paintListPaging() {
   if (!pager) return;
   pager.hidden = !!state.query || (state.outbox ? !(state.outboxCount > 200) : !state.allInbox && (!state.accountId || !state.folderId));
   const end = state.listOffset + state.emails.length;
-  $("list-prev").disabled = state.listLoading || state.outbox || state.listOffset === 0;
-  $("list-next").disabled = state.listLoading || end >= state.listTotal;
+  $("list-prev").disabled = state.listLoading || state.listFilterError || state.outbox || state.listOffset === 0;
+  $("list-next").disabled = state.listLoading || state.listFilterError || end >= state.listTotal;
   $("list-sync-more").hidden = !!state.outbox || state.allInbox || state.listSyncDone || selectedFolderNode()?.syncs === false;
   $("list-sync-more").disabled = state.listLoading || currentFolderSync()?.state === "syncing";
-  $("list-page-status").textContent = state.listLoading ? "Loading messages…"
+  $("list-page-status").textContent = state.listFilterError ? "Filter results unavailable"
+    : state.listLoading ? "Loading messages…"
     : (state.emails.length ? `${(state.listOffset + 1).toLocaleString()}–${end.toLocaleString()} / ${state.listTotal.toLocaleString()} downloaded`
       : "0 downloaded");
 }
 
 async function changeListPage(direction) {
-  if (state.listLoading || state.query) return;
+  if (state.listLoading || state.listFilterError || state.query) return;
   if (state.outbox) {
     if (direction > 0 && outboxMore) await loadScheduled({ more: true });
     return;
@@ -11766,10 +11811,21 @@ function noteMailListLoaded(gen) {
 }
 
 async function loadList(fromNetwork, requestedOffset) {
+  clearTimeout(listFilterTimer);
+  listFilterTimer = null;
+  state.listFilterError = false;
+  const listFilter = currentListFilter();
   const gen = ++listGen;
   noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId, state.toMeOnly]);
   const scopeChanged = state.listScope !== scope;
+  const filterChanged = state.loadedListFilter !== listFilter;
+  state.loadedListFilter = listFilter;
+  if (scopeChanged) filterSelection.clear();
+  if (filterChanged) {
+    state.listOffset = 0;
+    state.listCursors = [];
+  }
   if (scopeChanged) {
     state.listScope = scope;
     state.listOffset = 0;
@@ -11790,6 +11846,7 @@ async function loadList(fromNetwork, requestedOffset) {
       state.listOffset = 0;
       state.listTotal = state.outboxCount ?? state.emails.length;
       state.listSyncDone = true;
+      state.listLoading = false;
       renderList();
       noteMailListLoaded(gen);
       return null;
@@ -11798,6 +11855,7 @@ async function loadList(fromNetwork, requestedOffset) {
       const data = await call("mail:searchLocal", { query: state.query, limit: 100, ...state.listSort, ...(state.searchAccountId ? { accountId: state.searchAccountId } : {}), ...(state.toMeOnly ? { filterToMe: true } : {}) });
       if (gen !== listGen) return null;
       state.emails = takeEmails(Array.isArray(data) ? data : []);
+      state.listLoading = false;
       renderList();
       noteMailListLoaded(gen);
       return null;
@@ -11805,14 +11863,16 @@ async function loadList(fromNetwork, requestedOffset) {
     const account = selectedAccount();
     if (!state.allInbox && (!account || !state.folderId)) {
       state.emails = [];
+      state.listLoading = false;
       renderList();
       noteMailListLoaded(gen);
       return null;
     }
-    let offset = requestedOffset == null ? state.listOffset : requestedOffset;
+    let offset = scopeChanged || filterChanged ? 0 : requestedOffset == null ? state.listOffset : requestedOffset;
     const pageCursor = state.listCursors.find(entry => entry.offset === offset)?.cursor;
     const retainIds = unreadRetainIds();
     const request = mailListRequest({
+      listFilter,
       listSort: state.listSort,
       toMeOnly: state.toMeOnly,
       allInbox: state.allInbox,
@@ -11833,6 +11893,7 @@ async function loadList(fromNetwork, requestedOffset) {
     if (offset > 0 && Number.isFinite(data?.total) && offset >= data.total) {
       offset = Math.max(0, Math.ceil(data.total / LIST_PAGE_SIZE) - 1) * LIST_PAGE_SIZE;
       const again = mailListRequest({
+        listFilter,
         listSort: state.listSort,
         toMeOnly: state.toMeOnly,
         allInbox: state.allInbox,
@@ -11865,9 +11926,17 @@ async function loadList(fromNetwork, requestedOffset) {
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
+    state.listLoading = false;
     renderList();
     noteMailListLoaded(gen);
     return data;
+  } catch (error) {
+    if (gen === listGen && listFilter && !state.query && !state.outbox) {
+      state.listFilterError = true;
+      state.listLoading = false;
+      renderList();
+    }
+    throw error;
   } finally {
     if (gen === listGen) { state.listLoading = false; paintListPaging(); }
   }
@@ -13300,7 +13369,7 @@ function selectionButton(id, label, paths, run) {
 }
 
 function wireSelection() {
-  $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; renderList(); });
+  $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; applyListFilter(); });
   $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
   $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
@@ -28138,8 +28207,8 @@ function wire() {
   });
   const listFilter = $("list-filter");
   if (listFilter) {
-    listFilter.addEventListener("input", () => renderList());
-    listFilter.addEventListener("search", () => renderList());
+    listFilter.addEventListener("input", applyListFilter);
+    listFilter.addEventListener("search", applyListFilter);
   }
   const folderFilter = $("folder-filter");
   const folderFilterClear = $("folder-filter-clear");

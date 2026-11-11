@@ -10,6 +10,7 @@ const { simpleParser } = require("mailparser");
 const { recipientHeaders } = require("./recipient-headers");
 const composePolicy = require("../../shared/compose-policy");
 const decoding = require("./mime-decoding");
+const listFilter = require("./list-filter");
 
 const ACCOUNT_ID = "__morrow_local__";
 const ARCHIVE_ID = "local-folder:archive";
@@ -66,6 +67,7 @@ function createLocalStore(file, { database = Database } = {}) {
     // EXTRA includes the journal unlink directory sync. No disposable live DB.
     sql.pragma("synchronous = EXTRA");
     sql.pragma("fullfsync = ON");
+    sql.function("morrow_list_text", { deterministic: true }, listFilter.text);
     sql.function("morrow_local_search_text", { deterministic: true }, searchText);
     const version = sql.pragma("user_version", { simple: true });
     if (version > 1) throw problem("This local archive needs a newer version of Morrow Mail. Its files were retained.");
@@ -193,6 +195,11 @@ function createLocalStore(file, { database = Database } = {}) {
     if (params.filterFlagged) rules.push("starred=1");
     if (params.filterToMe) rules.push("json_extract(info,'$.toMe')=1");
     if (typeof params.filterAttachments === "boolean") { rules.push("json_extract(info,'$.hasAttachments')=@attachments"); args.attachments = params.filterAttachments ? 1 : 0; }
+    const literal = listFilter.normalize(params.listFilter);
+    if (literal) {
+      rules.push("instr(morrow_list_text(json_extract(info,'$.subject'),json_extract(info,'$.from'),json_extract(info,'$.snippet')),@listFilter)>0");
+      args.listFilter = literal;
+    }
     const where = rules.join(" AND ");
     const total = sql.prepare(`SELECT COUNT(*) n FROM messages WHERE ${where}`).get(args).n;
     const limit = Math.max(1, Math.min(2000, Math.floor(Number(params.limit) || 200)));
