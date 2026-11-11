@@ -1,5 +1,6 @@
 const { Persistence } = require("./persistence");
 const crypto = require("crypto");
+const listFilter = require("./list-filter");
 const primaryFolderLib = require("../../shared/primary-mailboxes");
 const senderHeader = require("./sender-header");
 const perf = require("../performance-diagnostics");
@@ -455,7 +456,7 @@ function migrate() {
   run("INSERT OR IGNORE INTO mail_list_revision VALUES (1, 0)");
   run("CREATE TABLE IF NOT EXISTS mail_changes (account_id TEXT NOT NULL, folder_path TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(account_id, folder_path))");
   run("CREATE INDEX IF NOT EXISTS mail_changes_revision ON mail_changes(revision)");
-  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "to_json", "cc_json", "snippet", "replied", "forwarded"];
+  const summaryFields = ["account_id", "folder_path", "thread_id", "uid", "list_sort_ts", "unread", "starred", "is_draft", "has_attachments", "body_complete", "body_retry_blocked", "body_retry_after", "subject", "from_addr", "from_display_name", "from_address", "draft_pending", "to_json", "cc_json", "snippet", "replied", "forwarded"];
   for (const table of ["messages", "folders", "snooze", "accounts"]) {
     for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
       const condition = table === "messages" && operation === "UPDATE"
@@ -572,6 +573,7 @@ async function openDatabase(target, operation) {
   try {
     ownedDb = await ownedStorage.open();
     assertOpening(operation);
+    ownedDb.raw.function("morrow_list_text", { deterministic: true }, listFilter.connectedText);
     ownedDb.raw.function("morrow_to_me", { deterministic: true }, require("./to-me").matches);
     db = ownedDb;
     storage = ownedStorage;
@@ -1869,6 +1871,11 @@ function whereFor(query, now = Date.now()) {
     )`);
     params.push(new Date(now).toISOString());
   }
+  const literal = listFilter.normalize(query.listFilter);
+  if (literal) {
+    clauses.push("instr(morrow_list_text(m.subject, m.from_addr, m.snippet, m.from_display_name, m.from_address, m.uid, m.draft_pending), ?) > 0");
+    params.push(literal);
+  }
   for (const token of query.tokens || []) {
     clauses.push(`(
       lower(m.subject) LIKE ? OR lower(m.from_addr) LIKE ? OR lower(m.snippet) LIKE ?
@@ -2034,6 +2041,10 @@ function summaryVersion(scope, includeOldest) {
     const accounts = summaryAccounts(scope);
     versions.push(...all(`SELECT account_id, snoozed FROM mail_summary_revision
       WHERE folder_path = '' ${accounts.clauses.length ? `AND ${accounts.clauses.join(" AND ")}` : ""} ORDER BY account_id`, accounts.params));
+  }
+  if (listFilter.normalize(scope.listFilter)) {
+    // Content edits can change literal matches without changing membership.
+    versions.push({ listFilterRevision: get("SELECT value FROM mail_list_revision WHERE id = 1").value });
   }
   if (scope.filterToMe === true) {
     // The existing list revision includes To edits, including local drafts.

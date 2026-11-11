@@ -219,15 +219,16 @@
           </div>
           <div class="list-filter">
             <label class="page-select" title="Select messages shown on this page"><input type="checkbox" id="select-visible" aria-label="Select messages shown on this page" /></label>
-            <label class="sr" for="list-filter">Filter loaded messages</label>
-            <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter this page" autocomplete="off" spellcheck="false" />
+            <label class="sr" for="list-filter">Filter downloaded view</label>
+            <input id="list-filter" data-testid="list-filter" type="search" aria-describedby="list-filter-help" placeholder="Filter downloaded view" autocomplete="off" spellcheck="false" />
             <button type="button" id="list-to-me" class="chip" data-filter="to-me" aria-pressed="false" aria-controls="message-list" aria-describedby="to-me-help" title="To includes this message's mailbox address. Cc, Bcc and aliases do not match." hidden>To Me</button>
             <button type="button" class="ghost" id="mail-columns-open" aria-haspopup="dialog">Columns</button>
-            <p class="sr" id="list-filter-help">Matches sender, subject, and preview text in the loaded rows. Does not search the server.</p>
+            <p class="sr" id="list-filter-help">Matches a case-insensitive literal phrase in sender, subject, and preview text across all downloaded messages in the selected folder or view, including Local Folders, before paging. Search and Outbox filter only their returned or loaded rows. Does not search the server or download older mail; Settings → Mail &amp; Sync controls sync history.</p>
           </div>
         </div>
         <p id="mail-sort-help" class="sr">Drag headers to reorder columns, or use Columns / Alt + Left or Right. Right-click a header or press Shift + F10 to choose visible columns; Columns has the same checkboxes. Subject stays visible. Click Date, Time, Recipient, Sender or Subject to sort all downloaded mail before paging; click again to reverse. Date and Time both sort by the full timestamp, including the date. They use your date/time formats and device timezone; tooltips include the full timestamp and timezone. Recipient sorts by the first To recipient. Hiding a column keeps sorting. Reply / forward icons appear before the subject for reported IMAP flags or confirmed Gmail evidence on this device. Unknown states show nothing. Search retains its 100-result limit. Narrow lists scroll horizontally. Outbox keeps scheduled send order and displays saved To recipients across accounts.</p>
-        <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help mail-view-help"></div>
+        <p id="mail-selection-help" class="sr">Shift-click a message or its checkbox to select every visible row between the last clicked message and the new one, including both ends, in the displayed page order. Repeated Shift-clicks keep the same starting message. Ctrl/Cmd-click toggles one message; Ctrl/Cmd + Shift-click adds a range. A hidden or missing starting message selects only the clicked row. Clear or Escape resets the starting message. Hidden, unloaded and other-page messages are not added by a range.</p>
+        <div id="message-list" tabindex="0" aria-label="Downloaded messages" aria-describedby="mail-sort-help mail-view-help mail-selection-help"></div>
           <div id="list-paging" class="list-paging" role="group" aria-label="Message pages" hidden>
             <p id="list-page-status" class="list-filter-note" role="status"></p>
             <div class="row">

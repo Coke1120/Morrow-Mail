@@ -60,7 +60,11 @@ async function run() {
     await page.waitForFunction(() => state.composeInitializing === false);
     assert.equal(await page.locator(".compose-quote-message").count(), 3);
     assert.match(await page.locator("#compose-quote-body").innerText(), /Earlier detail 45/);
-    await page.locator("#compose-editor").fill("Confirmed. I will include the appendix.");
+    assert.match(await page.locator("#compose-editor").innerText(), /Please confirm.*Previous answer.*Earlier detail 45/s);
+    assert.equal(await page.evaluate(() => composeSnapshot() === state.composeBaseline), true);
+    await page.locator("#compose-editor").focus();
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.insertText("Confirmed. I will include the appendix.");
     const payload = await page.evaluate(() => composePayload(composeAccount()).body);
     assert.match(payload, /Earlier detail 45/);
     assert.match(payload, /Previous answer/);
@@ -93,6 +97,21 @@ async function run() {
     await page.evaluate(() => openComposePreview(null));
     assert.match(await page.locator("#compose-preview-body").innerText(), /Earlier detail 45/);
     await page.evaluate(() => cancelComposePreview());
+    await page.locator("#compose-editor [data-compose-reply-quote]").fill("Edited quoted excerpt <literal> & 中文");
+    const edited = await page.evaluate(() => composePayload(composeAccount()).body);
+    assert.match(edited, /Edited quoted excerpt &lt;literal&gt; &amp; 中文/);
+    assert.doesNotMatch(edited, /Please confirm|Previous answer|Earlier detail/);
+    await page.evaluate(() => openComposePreview(null));
+    assert.match(await page.locator("#compose-preview-body").innerText(), /Edited quoted excerpt <literal> & 中文/);
+    assert.doesNotMatch(await page.locator("#compose-preview-body").innerText(), /Please confirm|Earlier detail/);
+    await page.screenshot({ path: path.join(output, "reply-edited-quote-preview.png") });
+    await page.evaluate(() => cancelComposePreview());
+    await page.locator("#compose-editor").fill("Replacement reply only.");
+    const replacement = await page.evaluate(() => composePayload(composeAccount()).body);
+    assert.doesNotMatch(replacement, /Please confirm|Previous answer|Earlier detail|Edited quoted/);
+    await page.locator("#compose-quote-toggle").click();
+    await page.locator("#compose-quote-toggle").click();
+    assert.equal(await page.evaluate(() => composePayload(composeAccount()).body), replacement, "reference hiding never restores deleted quoted text");
     await page.evaluate(() => { globalThis.closing = requestComposeClose(); });
     await page.locator("#draft-close-keep").click();
     assert.equal(await page.evaluate(() => closing), false);
@@ -102,10 +121,21 @@ async function run() {
     assert.equal(await page.evaluate(() => closing), true);
     await page.evaluate(async () => { await openCompose(composeSeed(messages[2], "all", "owner@fixture.invalid")); });
     assert.equal(await page.locator(".compose-quote-message").count(), 3, "repeated open does not duplicate history");
+    assert.equal(await page.locator("#compose-editor [data-compose-reply-quote]").count(), 1);
+    assert.equal((await page.evaluate(() => composePayload(composeAccount()).body)).match(/Please confirm the fictional plan/g).length, 1);
     assert.equal(await page.evaluate(() => ipcCalls.some(row => /mail:(send|scheduleSend|upsertDraft|markRead|openEmail)|^ai/.test(row.channel))), false);
+    await page.evaluate(() => {
+      $("compose").close(); document.documentElement.dataset.window = "shell";
+      showFeatures(); showFeaturesTab("catalog");
+    });
+    const feature = page.locator(".feature-card").filter({ has: page.locator("h4", { hasText: "Reply conversation history" }) });
+    assert.match(await feature.innerText(), /edit or remove/);
+    assert.match(await feature.innerText(), /only the edited Message/);
+    await feature.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(output, "reply-editable-features.png") });
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
-    const result = { checks: ["earlier history and outgoing payload", "wide/narrow light/dark layout", "internal history scrolling", "collapse/hide/show", "send preview/cancel", "close keep/discard/reopen"], errors, external };
+    const result = { checks: ["editable earlier history and outgoing payload", "wide/narrow light/dark layout", "internal history scrolling", "collapse/hide/show", "edited quote send preview/cancel", "deleted quote never restored", "close keep/discard/reopen", "rendered Features copy"], errors, external };
     fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2));
     console.log("reply-history-browser-ok", JSON.stringify(result));
   } finally {
