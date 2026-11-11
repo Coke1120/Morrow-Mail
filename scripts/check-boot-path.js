@@ -10412,7 +10412,7 @@ checkFetchedModelChooser().then(() => require("./check-project-license").run()).
     // Durable cache fixtures use real SQLite commits, checkpoints and reopen.
     // Windows filesystem latency needs bounded headroom for the complete suite;
     // keep every case, assertion and application/protocol deadline unchanged.
-    const durableCache = ["check-gmail-reply-backfill.js", "check-imap-dispositions.js", "check-mail-decoding.js"].includes(name);
+    const durableCache = ["check-whole-list-filter.js", "check-gmail-reply-backfill.js", "check-imap-dispositions.js", "check-mail-decoding.js"].includes(name);
     const timeout = durableCache && process.platform === "win32" ? 90000 : 30000;
     const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout });
     assert.ifError(fixture.error);
