@@ -547,6 +547,45 @@ test("Calendar P2: confirmed Delete invalidates the captured account even after 
   }
 });
 
+test("Calendar P2: Outlook calendar pagination preserves a later page and rejects a truncated list", async () => {
+  const next = "https://graph.microsoft.com/v1.0/me/calendars?$skiptoken=next";
+  const rows = await calendar.listCalendars("microsoft", "synthetic", async (url) => reply(String(url).includes("skiptoken=next")
+    ? { value: [{ id: "wanted", name: "Wanted" }] }
+    : { value: [{ id: "primary", name: "Primary", isDefaultCalendar: true }], "@odata.nextLink": next }));
+  assert.deepEqual(rows.map((row) => row.id), ["primary", "wanted"]);
+  assert.deepEqual(calendar.selectedCalendarIds(rows, { calendarIds: ["wanted"] }), ["wanted"]);
+  const repeat = "https://graph.microsoft.com/v1.0/me/calendars?$skiptoken=repeat";
+  await assert.rejects(calendar.listCalendars("microsoft", "synthetic", async () => reply({
+    value: [{ id: "partial", name: "Partial" }], "@odata.nextLink": repeat,
+  })), /incomplete calendar list/);
+  let pages = 0;
+  await assert.rejects(calendar.listCalendars("microsoft", "synthetic", async () => {
+    pages += 1;
+    return reply({ value: [{ id: "c" + pages, name: "C" + pages }], "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendars?$skiptoken=p" + pages });
+  }), /incomplete calendar list/);
+  assert.equal(pages, 5);
+  await assert.rejects(calendar.listCalendars("microsoft", "synthetic", async () => reply({
+    value: [{ id: "partial", name: "Partial" }], "@odata.nextLink": "http://graph.microsoft.com/v1.0/me/calendars?$skiptoken=bad",
+  })), /incomplete calendar list/);
+});
+
+test("Calendar P3: saved calendar checks round-trip the full set", () => {
+  const memory = new Map();
+  const localStorage = {
+    getItem: (key) => memory.has(key) ? memory.get(key) : null,
+    setItem: (key, value) => memory.set(key, String(value)),
+  };
+  const { readCalendarChecks, saveCalendarChecks } = productionFunctions("renderer/app.js", ["readCalendarCheckStore", "readCalendarChecks", "saveCalendarChecks"], { localStorage });
+  const ids = Array.from({ length: 101 }, (_unused, index) => "cal-" + index);
+  saveCalendarChecks("box", ids);
+  // The renderer functions run in a vm, so copy the ids before comparing.
+  assert.deepEqual([...readCalendarChecks("box")], ids);
+  assert.equal(JSON.parse(memory.get("morrow.calendarChecks")).box.length, 101);
+  saveCalendarChecks("box", ["", "cal-0", "cal-0", "cal-1"]);
+  assert.deepEqual([...readCalendarChecks("box")], ["cal-0", "cal-1"]);
+  assert.deepEqual([...readCalendarChecks("other")], []);
+});
+
 test("Calendar P3: Google calendar pagination preserves later-page selection and rejects incomplete enumeration", async () => {
   let requests = 0;
   const rows = await calendar.listCalendars("google", "synthetic", async (url) => {
@@ -576,7 +615,10 @@ test("Features: production catalog rendering and page/CLI help describe the fixe
     /voice quotes/, /Category-save readback preserves newer/, /Undo cancels the queued send/,
     /If Compose cannot open, resume it from local Drafts/, /Recovery failure leaves the queued send unchanged/,
     /Once delivery starts, Undo cannot cancel it/, /Reauthorize calendar/, /transaction ID/,
-    /literal angle brackets/, /preserving offsets and seconds/, /saves and deletes invalidate/]) assert.match(text, claim);
+    /literal angle brackets/, /preserving offsets and seconds/, /saves and deletes invalidate/,
+    /Outlook calendar enumeration each follow up to five pages/, /Saved calendar checks are stored and restored in full/,
+    /quoted display name may contain a comma/, /whole message is that skill/,
+    /same stored subject and snippet/]) assert.match(text, claim);
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
   assert.match(html, /id="cli-page-recovery"[^>]*>[^<]*bot capabilities and permissions are unchanged/);
   assert.match(html, /These fixes do not expose calendar writes through the Node bot client/);

@@ -1452,7 +1452,9 @@ function routeChat(text, skills) {
   for (const row of rows) {
     const name = String(row && row.name || "").trim().toLowerCase();
     const id = String(row && row.id || "").trim().toLowerCase();
-    const named = name && (folded === name || folded === `run ${name}` || (name.length > 3 && folded.includes(name)));
+    // The whole message must be the name or id, or "run" plus that name or id.
+    // A longer note that only contains the display name stays a chat answer.
+    const named = name && (folded === name || folded === `run ${name}`);
     const ident = id && (folded === id || folded === `run ${id}`);
     if (named || ident) {
       if (!best || name.length > String(best.name || "").length) best = row;
