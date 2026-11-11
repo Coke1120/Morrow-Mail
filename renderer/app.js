@@ -1193,6 +1193,7 @@ async function fileLocalMessages(messages, folderId) {
   await call("mail:moveLocalMessage", { accountId: LOCAL_ACCOUNT_ID, items: messages.map(email => ({ emailId: email.id })), folderId, mode: "move" });
   if (messages.some(email => email.id === state.email?.id)) { state.email = null; state.thread = []; renderReader(false); }
   state.selectedIds = [];
+  state.selectionAnchor = "";
   await loadLocalFolders(); renderAccounts(); await loadList(); showStatus("Messages moved locally.");
 }
 
@@ -7278,9 +7279,9 @@ function listClickSelection(selected, anchor, visibleIds, clickedId, mods) {
     else set.add(id);
     return { ids: selectionIds(Array.from(set)), anchor: id };
   }
-  // A plain click opens the message. It does not leave a one-row selection,
-  // so the checkbox column and selection bar stay hidden.
-  return clearListSelection();
+  // Opening a preview does not activate the selection UI, but the clicked row
+  // still anchors the next Shift-click. Clear/Escape explicitly retires it.
+  return { ids: [], anchor: id };
 }
 
 function toggleSelectionId(selected, id) {
@@ -7289,7 +7290,7 @@ function toggleSelectionId(selected, id) {
   if (!key) return { ids: current, anchor: current[0] || "" };
   const has = current.indexOf(key) >= 0;
   const ids = has ? current.filter((item) => item !== key) : current.concat(key);
-  return { ids: ids, anchor: has ? (ids[ids.length - 1] || "") : key };
+  return { ids: ids, anchor: key };
 }
 
 function selectAllVisible(visibleIds) {
@@ -7304,9 +7305,10 @@ function clearListSelection() {
 function pruneSelection(selected, loadedIds, anchor) {
   const allowed = new Set(selectionIds(loadedIds));
   const ids = selectionIds(selected).filter((id) => allowed.has(id));
-  const kept = anchor && allowed.has(String(anchor)) && ids.indexOf(String(anchor)) >= 0
+  // A plain preview click can anchor a range without being checked itself.
+  const kept = anchor && allowed.has(String(anchor))
     ? String(anchor)
-    : (ids[0] || "");
+    : "";
   return { ids: ids, anchor: kept };
 }
 
@@ -8184,7 +8186,10 @@ function rowCheck(email, selected) {
   box.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    commitSelection(toggleSelectionId(state.selectedIds, email.id));
+    commitSelection(event.shiftKey
+      ? listClickSelection(state.selectedIds, state.selectionAnchor, shownEmails().map(item => item && item.id), email.id,
+        { shift: true, meta: event.metaKey, ctrl: event.ctrlKey })
+      : toggleSelectionId(state.selectedIds, email.id));
   });
   return box;
 }
@@ -13433,7 +13438,7 @@ function onSelectionKey(event) {
     if (event.target && typeof event.target.closest === "function" && event.target.closest("[role='dialog']")) return;
     const typing = event.target && event.target.closest && event.target.closest("input, textarea, select");
     if (selectionShortcut({ key: "Escape" }, !!typing) !== "clear") return;
-    if (!state.selectedIds.length) return;
+    if (!state.selectedIds.length && !state.selectionAnchor) return;
     event.preventDefault();
     commitSelection(clearListSelection());
     return;
@@ -14277,6 +14282,7 @@ async function applySearch() {
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
+  state.selectionAnchor = "";
   renderReader(false);
   if (query) showStatus("Searching downloaded mail…");
   try {
@@ -18245,7 +18251,7 @@ function shortcutChord(platform, key) {
 
 function shortcutNote(platform) {
   const reload = shortcutPlatform(platform) === "mac" ? "⌘R stays View → Reload." : "Ctrl+R stays View → Reload.";
-  return "Single letters work while a message is open and you are not typing in a field. Delete and Backspace in the main Mail window review the selected messages for Trash, including selected rows hidden by a filter. The reader Delete button shows the selected count. With no selection, Delete acts on the open preview; Separate window requires a selection. R, A and F in Separate window require exactly one visible message. Independent readers keep their own message target. Preview reply shortcuts and Delete without a selection wait until loading succeeds. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
+  return "Single letters work while a message is open and you are not typing in a field. Shift-click a message or its checkbox to select every visible row between the last clicked message and the new one, including both ends. Repeated Shift-clicks keep the same starting message. Ctrl/Cmd + Shift-click adds the range to the selection. Delete and Backspace in the main Mail window review the selected messages for Trash, including selected rows hidden by a filter. The reader Delete button shows the selected count. With no selection, Delete acts on the open preview; Separate window requires a selection. R, A and F in Separate window require exactly one visible message. Independent readers keep their own message target. Preview reply shortcuts and Delete without a selection wait until loading succeeds. Message list arrows and Enter work only on the Mail page. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. " + reload + " Zoom stays on the View menu.";
 }
 
 function shortcutCatalog(platform) {
@@ -18264,6 +18270,7 @@ function shortcutCatalog(platform) {
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
     { group: "List", keys: "Enter", action: "Open the highlighted message" },
     { group: "List", keys: chord("A"), action: "Select the visible messages" },
+    { group: "List", keys: "Shift-click", action: "Select the visible range from the last clicked message, including both ends" },
     { group: "View menu", keys: chord("0"), action: "Actual size" },
     { group: "View menu", keys: chord("+") + " or " + chord("−"), action: "Zoom in or out" },
   ];
