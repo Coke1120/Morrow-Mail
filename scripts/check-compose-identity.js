@@ -487,6 +487,18 @@ function brainLines() {
   assert.throws(() => parse("@northstar.example = a@northstar.example\nnorthstar.example = b@northstar.example", "BCC"), /Each BCC domain can appear only once/);
   assert.throws(() => parse("@northstar.example = a@northstar.example\n@northstar.example = b@northstar.example", "CC"), /Each CC domain can appear only once/);
   assert.throws(() => parse("not a domain = a@northstar.example", "BCC"), /each BCC line/);
+  const quoted = '@example.com = "Smith, John" <john@example.com>, jane@example.com';
+  assert.deepEqual(parse(quoted, "CC"), { "example.com": ['"Smith, John" <john@example.com>', "jane@example.com"] });
+  assert.throws(() => parse("@example.com = Smith, John <john@example.com>", "CC"), /valid CC email addresses/);
+  const saved = [];
+  function saveLike(text) {
+    const ccByDomain = context.window.morrowBrainCompose.parseDomainLines(text, "CC");
+    saved.push(policy.normalizeSettings({ ccByDomain, bccByDomain: {}, accounts: {} }));
+  }
+  saveLike(quoted);
+  assert.deepEqual(saved[0].ccByDomain, { "example.com": ["john@example.com", "jane@example.com"] });
+  assert.throws(() => saveLike("@example.com = not-an-email, jane@example.com"), /valid CC email addresses/);
+  assert.equal(saved.length, 1);
   const advanced = context.window.morrowBrainCompose.advancedHasRules;
   assert.equal(advanced({}), false);
   assert.equal(advanced({ accounts: { a: { preferredFromAddress: "a@b.co", senderNames: { "a@b.co": "A" } } } }), false);

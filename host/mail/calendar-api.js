@@ -158,6 +158,12 @@ function graphEventBody(draft) {
   return body;
 }
 
+function incompleteCalendarList(source) {
+  const error = new Error(source + " returned an incomplete calendar list. Saved calendar selections have not been changed; try again or use the provider.");
+  error.code = "provider";
+  return error;
+}
+
 function pageToken(value) {
   const token = String(value || "");
   if (!/^[A-Za-z0-9_\-]{1,512}$/.test(token)) return "";
@@ -183,9 +189,7 @@ async function listGoogleCalendars(accessToken, fetchImpl) {
     seen.add(token);
     url.searchParams.set("pageToken", token);
   }
-  const error = new Error("Google Calendar returned an incomplete calendar list. Saved calendar selections have not been changed; try again or use the provider.");
-  error.code = "provider";
-  throw error;
+  throw incompleteCalendarList("Google Calendar");
 }
 
 async function listGraphCalendars(accessToken, fetchImpl) {
@@ -198,7 +202,7 @@ async function listGraphCalendars(accessToken, fetchImpl) {
   let pages = 0;
   while (next) {
     pages += 1;
-    if (pages > MAX_PAGES || seen.has(next)) break;
+    if (pages > MAX_PAGES || seen.has(next)) throw incompleteCalendarList("Outlook");
     seen.add(next);
     const json = await apiJson(next, accessToken, { fetchImpl });
     const items = Array.isArray(json.value) ? json.value : null;
@@ -208,7 +212,10 @@ async function listGraphCalendars(accessToken, fetchImpl) {
       throw error;
     }
     rows.push(...items.map(normalizeGraphCalendar).filter(Boolean));
-    next = safeNext(json["@odata.nextLink"], "graph.microsoft.com");
+    const rawNext = json["@odata.nextLink"];
+    if (rawNext == null || rawNext === "") return rows;
+    next = safeNext(rawNext, "graph.microsoft.com");
+    if (!next) throw incompleteCalendarList("Outlook");
   }
   return rows;
 }

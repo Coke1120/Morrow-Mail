@@ -25819,7 +25819,7 @@ function readCalendarChecks(accountId) {
     if (!id || ids.includes(id)) continue;
     ids.push(id);
   }
-  return ids.slice(0, 100); // shortcut: 100 ids, when calendarList pages past 100
+  return ids;
 }
 
 function saveCalendarChecks(accountId, ids) {
