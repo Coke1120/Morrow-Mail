@@ -5,7 +5,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const { renderer } = require("./check-ux-workflows");
 const root = path.resolve(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "renderer/pdf-preview.js"), "utf8").replace(/^import .*;\n/gm, "");
+const rawSource = fs.readFileSync(path.join(root, "renderer/pdf-preview.js"), "utf8");
+const previewSource = text => text.replace(/\r\n/g, "\n").replace(/^import .*;\n/gm, "");
+const source = previewSource(rawSource);
 const bundle = fs.readFileSync(path.join(root, "renderer/pdf-preview.bundle.js"), "utf8");
 const tick = () => new Promise(resolve => setTimeout(resolve, 1));
 function gate() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
@@ -326,6 +328,9 @@ function contractAndHelp() {
 }
 
 async function run() {
+  const crlfSource = previewSource(rawSource.replace(/\r?\n/g, "\r\n"));
+  assert.equal(crlfSource, source, "Windows CRLF checkouts strip module imports identically");
+  new vm.Script(crlfSource, { filename: "pdf-preview-crlf.js" });
   const hostWithResolvers = Promise.withResolvers;
   await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await shippedBundle(); contractAndHelp();
   assert.equal(Promise.withResolvers, hostWithResolvers, "renderer compatibility never patches the host Promise");
