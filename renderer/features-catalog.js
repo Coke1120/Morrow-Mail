@@ -151,6 +151,12 @@ id: "mail-workflow-feedback",
         blurb: "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below. Main and separate readers apply definitive flag and removal receipts; terminal refusals restore the authoritative flags instead of announcing success. Remote images are on for new profiles. When disabled, normal image, CSS URL and table backgrounds stay blocked until Load remote content is chosen for that message. Unsupported CSS image functions, including image-set, are discarded.",
       },
       {
+        id: "mailing-list-unsubscribe",
+        title: "Mailing-list unsubscribe",
+        category: "Mail",
+        blurb: "Received messages with usable List-Unsubscribe metadata show an Unsubscribe banner above the body in the preview pane and separate reader. Gmail API, Outlook, Yahoo and other IMAP mail depend on the headers supplied by the sender and provider. New downloads capture these headers. Older cached mail keeps its available body and needs an explicit Reload message or Retry download to check missing headers; there is no automatic metadata download on ordinary open. Messages without usable metadata, drafts, Outbox and Local Folders have no banner. Choose Unsubscribe to review the mailbox and destination in a native confirmation. Web links open your browser, where cookies, redirects and further website steps can apply; opening a page does not confirm removal. Mailto opens an editable email for review, without automatic Cc/Bcc or a signature. Nothing sends until you choose Send. Cancel sends no request and opens no website. Pending and completed handoffs are not repeated in the same reader window; uncertain outcomes require checking the browser or compose window. RFC 8058 one-click POST is unavailable because independently verified DKIM coverage of the unsubscribe headers is not available; advertised one-click headers use a supported manual web or email alternative instead. No bulk unsubscribe, automatic unsubscribe, bot/CLI command or new provider permission is added.",
+      },
+      {
         id: "message-summary",
         title: "Message summary",
         category: "Mail",

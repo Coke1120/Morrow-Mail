@@ -1,3 +1,12 @@
+Readers show a reviewed Unsubscribe banner for supported downloaded mailing-list
+headers from Gmail API and IMAP (including Outlook and Yahoo). The host confirms
+the exact mailbox and sender-supplied destination before opening a manual website
+or preparing a mailto compose review. Older complete cached mail needs an explicit
+Reload message / Retry download to obtain missing headers. Nothing is sent automatically. RFC 8058
+POST remains unavailable without independent DKIM verification; website opening
+is not proof of unsubscribe completion. Local Folders and drafts are excluded.
+See [unsubscribe safety and provider limits](adr/2026-11-12-reviewed-list-unsubscribe.md).
+
 Mail sidebar folders start 14 pixels inside each account heading, including Gmail,
 Outlook, Yahoo, custom IMAP and Local Folders. Real subfolders retain their extra
 nesting and flexible spacing on narrow sidebars. Root folders remain siblings,

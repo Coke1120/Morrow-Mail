@@ -174,6 +174,7 @@ function restoreRow(row) {
     bodyComplete: row.body_complete === 1,
     draftPending: row.draft_pending === 1,
     recipientHeaders: parse(row.recipient_headers_json, {}),
+    listUnsubscribe: parse(row.list_unsubscribe_json, null),
   });
 }
 

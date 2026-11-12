@@ -421,6 +421,7 @@ async function readFetched(msg, validity, cap) {
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
     recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
+    listUnsubscribe: require("./list-unsubscribe").parseHeaders(source),
     date: when.toISOString(),
     receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
     listSortTs: when.getTime(),
