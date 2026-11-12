@@ -5041,6 +5041,7 @@ dialog h2 {
 }
 
 .attachment-preview-page-slot {
+  position: relative;
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -5053,6 +5054,8 @@ dialog h2 {
   width: 100%;
   max-width: 100%;
   height: auto;
+  max-height: 4096px;
+  object-fit: contain;
 }
 
 .attachment-preview-page-error {
