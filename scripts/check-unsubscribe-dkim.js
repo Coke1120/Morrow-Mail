@@ -137,3 +137,118 @@ test('an independent valid covered signature can qualify when another signature 
   const invalid = Buffer.from('DKIM-Signature: v=1; a=rsa-sha256; d=example.net; s=test; h=from; bh=bad; b=bad\r\n');
   assert.equal((await verify(Buffer.concat([invalid, valid]))).verified, true);
 });
+
+const { Readable } = require('node:stream');
+const { MAX_LINE_BYTES } = require('../host/mail/unsubscribe-dkim');
+const chunked = (bytes, size = 4096) => Readable.from((async function* () {
+  for (let offset = 0; offset < bytes.length; offset += size) yield bytes.subarray(offset, offset + size);
+})(), { objectMode: false, highWaterMark: 65536 });
+
+test('streaming verifies genuinely signed >10 MiB full bodies without constructing a full-message buffer', async () => {
+  const originalHeader = raw().subarray(0, raw().indexOf('\r\n\r\n') + 4);
+  const bodyChunk = Buffer.from(('A'.repeat(76) + '\r\n').repeat(800));
+  const chunkCount = 190; // ~11.3 MiB, each source chunk is <64 KiB.
+  let yielded = 0, complete = false, heartbeats = 0;
+  const message = track => Readable.from((async function* () {
+    yield originalHeader;
+    for (let n = 0; n < chunkCount; n++) { if (track) yielded++; yield bodyChunk; }
+    if (track) complete = true;
+  })(), { objectMode: false, highWaterMark: 65536 });
+  const signature = await dkimSign(message(false), { signTime: signing, expires, headerList: fields, strict: true,
+    signatureData: [{ signingDomain: 'example.net', selector: 'test', privateKey }] });
+  assert.equal(signature.errors.length, 0);
+  const original = Readable.from((async function* () { yield Buffer.from(signature.signatures); yield* message(true); })(), { objectMode: false });
+  const heartbeat = setInterval(() => { heartbeats++; }, 1);
+  try {
+    const result = await verify(original, { resolver: async (...args) => { assert.equal(complete, true, 'no proof before source EOF'); return resolver(...args); } });
+    assert.deepEqual(result, { verified: true, url, domain: 'example.net' });
+    assert.equal(yielded, chunkCount); assert.ok(bodyChunk.length * yielded > 10 * 1024 * 1024);
+    assert.ok(heartbeats > 0, 'large verification yields to host events instead of monopolizing the loop');
+  } finally { clearInterval(heartbeat); }
+});
+
+test('streaming header admission handles split delimiters and preserves every signed byte', async () => {
+  const good = await signed();
+  for (const size of [1, 3, 17, 65536]) assert.equal((await verify(chunked(good, size))).verified, true);
+});
+
+test('success waits for EOF; truncation and provider stream errors never authorize POST', async () => {
+  const good = await signed();
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const original = Readable.from((async function* () { yield good; await hold; })(), { objectMode: false });
+  let settled = false;
+  const pending = verify(original).then(result => { settled = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(settled, false);
+  release(); assert.equal((await pending).verified, true);
+  assert.equal((await verify(chunked(good.subarray(0, good.length - 8)))).verified, false);
+  const broken = Readable.from((async function* () { yield good; throw new Error('Provider size mismatch'); })(), { objectMode: false });
+  assert.equal((await verify(broken)).verified, false);
+});
+
+test('source size, malformed chunk and unbroken-line budgets retire streaming work before DNS', async () => {
+  const good = await signed();
+  const header = good.subarray(0, good.indexOf('\r\n\r\n') + 4);
+  let queries = 0, produced = 0;
+  const noDns = async () => { queries++; return [[record]]; };
+  const lineChunk = Buffer.alloc(16384, 65);
+  const longLine = Readable.from((async function* () {
+    yield header;
+    for (let n = 0; n < 1000; n++) { produced++; yield lineChunk; }
+  })(), { objectMode: false, highWaterMark: 65536 });
+  assert.equal((await verify(longLine, { resolver: noDns })).verified, false);
+  assert.ok(produced <= MAX_LINE_BYTES / lineChunk.length + 5, 'bounded prefetch after long-line rejection');
+  const bigChunk = Buffer.from(('A'.repeat(76) + '\r\n').repeat(13000));
+  produced = 0;
+  const tooBig = Readable.from((async function* () {
+    yield header;
+    for (let n = 0; n < 1000; n++) { produced++; yield bigChunk; }
+  })(), { objectMode: false, highWaterMark: 65536 });
+  assert.equal((await verify(tooBig, { resolver: noDns })).verified, false);
+  assert.ok(produced <= Math.ceil(MAX_SOURCE_BYTES / bigChunk.length) + 3);
+  assert.equal((await verify((async function* () { yield good; yield 'decoded text is not raw bytes'; })(), { resolver: noDns })).verified, false);
+  assert.equal(queries, 0);
+});
+
+test('abort and overall deadline bound stalled streams and suppress late proof', async () => {
+  const good = await signed();
+  const abort = new AbortController(); let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const stream = Readable.from((async function* () { yield good; await held; })(), { objectMode: false });
+  const pending = verify(stream, { signal: abort.signal });
+  setTimeout(() => abort.abort(), 10);
+  const result = await pending; assert.equal(result.verified, false); assert.equal(stream.destroyed, true);
+  release(); await new Promise(resolve => setImmediate(resolve)); assert.equal(result.verified, false);
+  let late;
+  const stalled = (async function* () { await new Promise(resolve => { late = resolve; }); yield good; })();
+  assert.equal((await verify(stalled, { timeoutMs: 10 })).verified, false);
+  late(); await new Promise(resolve => setImmediate(resolve));
+  const already = new AbortController(); already.abort();
+  assert.equal((await verify(chunked(good), { signal: already.signal })).verified, false);
+});
+
+test('DNS has an independent short budget after streaming while total budget can be longer', async () => {
+  const good = await signed(); let release;
+  const result = await verify(chunked(good), { timeoutMs: 1000, dnsTimeoutMs: 10,
+    resolver: () => new Promise(resolve => { release = resolve; }) });
+  assert.equal(result.verified, false); release([[record]]);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(result.verified, false);
+});
+
+test('all DKIM key queries share one DNS deadline rather than resetting it per signature', async () => {
+  const source = raw();
+  const signatures = await dkimSign(source, { signTime: signing, expires, headerList: fields, strict: true,
+    signatureData: ['first', 'second'].map(selector => ({ signingDomain: 'example.net', selector, privateKey })) });
+  assert.equal(signatures.errors.length, 0);
+  let calls = 0;
+  const result = await verify(Buffer.concat([Buffer.from(signatures.signatures), source]), {
+    timeoutMs: 1000, dnsTimeoutMs: 40,
+    resolver: async () => {
+      const index = ++calls;
+      await new Promise(resolve => setTimeout(resolve, 25));
+      return index === 1 ? [['v=DKIM1; p=']] : [[record]];
+    }
+  });
+  assert.equal(result.verified, false);
+  assert.equal(calls, 2);
+});

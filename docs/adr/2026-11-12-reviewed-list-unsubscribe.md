@@ -51,10 +51,22 @@ be public. These conservative limits can hide some sender unsubscribe options.
   l= limit), with valid timestamps and no testing key. Authentication-Results is
   never proof. Standard system DNS establishes DKIM keys; this is not DNSSEC,
   DMARC alignment, sender reputation, or proof of eventual removal.
-- Verification accepts originals at most 10 MiB. IMAP checks exact UID,
-  UIDVALIDITY and complete size before/after download. Gmail uses existing raw API
-  response/decode limits (35 MiB MIME), then applies the 10 MiB verification cap.
-  Original read/proof has a 30-second deadline; expired tasks cannot cause a POST.
+- IMAP streams originals up to 64 MiB through the DKIM verifier with bounded
+  chunks and a 64 KiB header prefix. Exact UID, UIDVALIDITY and declared byte count
+  are rechecked, and verified proof requires complete EOF. Early verification
+  rejection, oversized/incomplete streams, cancellation and identity changes
+  destroy the provider download and release its mailbox lock.
+- Gmail deliberately retains a bounded-buffer fallback: its raw endpoint returns
+  MIME inside base64url JSON. A counted response reader stops/cancels oversized
+  or aborted responses before JSON parsing; decoded MIME retains the existing
+  35 MiB cap and then enters the streaming verifier in bounded chunks. Gmail raw
+  fetching is not claimed to be fully streaming. This avoids introducing an
+  unreviewed incremental JSON/base64 parser into the authenticated provider path.
+- Total read/verification deadline is 60 seconds with upstream cancellation;
+  queued expired work cannot download or POST. DNS verification remains bounded
+  to five seconds. Complete body verification is never replaced by header-only,
+  preview, partial body, or a signature using l=. Pathological oversized MIME
+  lines over 1 MiB are conservatively refused so streaming canonicalization stays bounded.
 - The proof must match exactly the previously reviewed HTTPS URL. POST pins one
   address from an all-public DNS result, verifies TLS for the original hostname,
   sends only List-Unsubscribe=One-Click as application/x-www-form-urlencoded and

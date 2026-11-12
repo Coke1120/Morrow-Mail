@@ -11,9 +11,25 @@ async function run() {
   const net = require('node:net'), oldConnect = net.Socket.prototype.connect;
   let dialogResponse = 0, duringReview = null, destroyed = false;
   let proof = { verified: false }, duringVerification = null, duringDownload = null;
-  let archiveEnabled = false, archiveUid = null, archiveBytes = null;
-  const verifiedSources = [], posts = [], downloads = [], reviewResponses = [];
-  const verifier = { async verifyOneClick(source) { verifiedSources.push(Buffer.from(source)); if (duringVerification) await duringVerification(); return proof; } };
+  let archiveEnabled = false, archiveUid = null, archiveBytes = null, archiveSize = null;
+  const verifiedSources = [], verificationSignals = [], sourceOptions = [], connectionOptions = [], posts = [], downloads = [], reviewResponses = [];
+  const verifier = { async verifyOneClick(source, options) {
+    assert.equal(Buffer.isBuffer(source), false, 'engine must not buffer the original before verification');
+    assert.equal(typeof source?.[Symbol.asyncIterator], 'function');
+    assert.ok(options?.signal instanceof AbortSignal, 'verification receives the bounded operation AbortSignal');
+    assert.equal(options.signal.aborted, false);
+    assert.equal(options.signal, sourceOptions.at(-1).signal, 'source and verifier share cancellation ownership');
+    verificationSignals.push(options.signal);
+    // Accumulation is deliberately test-only, to compare exact synthetic bytes.
+    const chunks = [];
+    for await (const chunk of source) {
+      assert.ok(chunk.length <= 64 * 1024, 'provider source is handed to verification in bounded chunks');
+      chunks.push(Buffer.from(chunk));
+    }
+    verifiedSources.push(Buffer.concat(chunks));
+    if (duringVerification) await duringVerification();
+    return proof;
+  } };
   const transport = { async postUnsubscribe(url, options) {
     assert.equal(await options.checkCurrent(), true, 'transport gets the live source guard');
     posts.push(url); return { status: 'accepted', issued: true };
@@ -36,11 +52,22 @@ async function run() {
   const engine = require('../host/mail/engine'), db = require('../host/mail/db');
   const remote = require('../host/mail/remote'), secrets = require('../host/mail/secrets');
   const policy = require('../host/mail/list-unsubscribe'), oldClient = remote.withClient;
+  const oldSource = remote.withUnsubscribeSource, oldSetTimeout = global.setTimeout;
+  let expireConnection = false, timeoutCallback = null, connectionAborted = false;
+  remote.withUnsubscribeSource = async (client, row, options, verify) => {
+    assert.equal(options.maxBytes, 64 * 1024 * 1024);
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.signal.aborted, false);
+    assert.equal(options.signal, connectionOptions.at(-1).signal, 'connection and source use the same AbortSignal');
+    assert.equal(options.check, connectionOptions.at(-1).check, 'connection retains the source identity check');
+    sourceOptions.push(options);
+    return oldSource(client, row, options, verify);
+  };
   let reads = 0;
   const raw = Buffer.from('From: Newsletter <list@news.example.com>\r\nTo: owner@fixture.invalid\r\nSubject: Synthetic newsletter\r\nMessage-ID: <list@news.example.com>\r\nList-Unsubscribe: <https://news.example.com/unsubscribe?token=opaque>,\r\n <mailto:leave@news.example.com?subject=Leave&body=Remove%20this%20address>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\nSynthetic body\r\n');
   const client = { mailbox: { uidValidity: 7 },
     async getMailboxLock() { return { release() {} }; },
-    async *fetch(range) { reads++; yield { ...(archiveEnabled ? { size: raw.length } : {}), uid: archiveUid ?? Number(range), envelope: { subject: 'Synthetic newsletter', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, source: raw, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') }; },
+    async *fetch(range) { reads++; yield { ...(archiveEnabled ? { size: archiveSize ?? raw.length } : {}), uid: archiveUid ?? Number(range), envelope: { subject: 'Synthetic newsletter', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, source: raw, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') }; },
     async download(uid, part, options) {
       downloads.push({ uid, part, options });
       const bytes = archiveBytes || raw;
@@ -50,7 +77,20 @@ async function run() {
         yield bytes.subarray(31);
       })()) };
     } };
-  remote.withClient = async (_account, _secret, work) => work(client);
+  remote.withClient = async (_account, _secret, work, options = {}) => {
+    connectionOptions.push(options);
+    if (expireConnection) {
+      assert.ok(options.signal instanceof AbortSignal, 'pending connection is abortable');
+      assert.equal(typeof options.check, 'function');
+      options.check();
+      assert.equal(typeof timeoutCallback, 'function', 'production deadline was installed');
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => { connectionAborted = true; reject(options.signal.reason); }, { once: true });
+        queueMicrotask(timeoutCallback);
+      });
+    }
+    return work(client);
+  };
   const ask = async (channel, params, event = { sender }) => {
     const result = await engine.answer(channel, [params], event);
     assert.equal(result.success, true, JSON.stringify(result)); return result.data;
@@ -126,11 +166,53 @@ async function run() {
     assert.deepEqual(verifiedSources.at(-1), raw, 'verifier receives complete raw MIME, not cached parsed body');
     assert.equal(downloads.at(-1).uid, String(stored.uid));
     assert.equal(downloads.at(-1).part, undefined);
-    assert.deepEqual(downloads.at(-1).options, { uid: true, maxBytes: 10 * 1024 * 1024 + 1 });
+    assert.deepEqual(downloads.at(-1).options, { uid: true, maxBytes: 64 * 1024 * 1024 + 1 });
     assert.deepEqual(posts, [proof.url]);
     assert.equal(launches.length, 0);
 
+    // More than the old 10 MiB ceiling reaches the verifier as a stream.
+    archiveBytes = Buffer.concat([raw, Buffer.alloc(11 * 1024 * 1024, 0x61)]);
+    archiveSize = archiveBytes.length;
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'requested');
+    assert.deepEqual(verifiedSources.at(-1), archiveBytes);
+    assert.ok(verificationSignals.length >= 2);
+    assert.equal(downloads.at(-1).options.maxBytes, 64 * 1024 * 1024 + 1);
+    archiveBytes = null; archiveSize = null;
+
+    // Trigger the production deadline while connection setup is stalled. No
+    // source/verifier callback runs, and the aborted lane permits the next read.
+    const beforeTimeoutPosts = posts.length, beforeTimeoutSources = sourceOptions.length;
+    expireConnection = true;
+    global.setTimeout = (callback, delay, ...args) => {
+      if (delay === 60000) { timeoutCallback = callback; return oldSetTimeout(callback, 2000, ...args); }
+      return oldSetTimeout(callback, delay, ...args);
+    };
+    try {
+      reviewResponses.push(1, 0);
+      assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled');
+    } finally { global.setTimeout = oldSetTimeout; expireConnection = false; }
+    assert.equal(connectionAborted, true, 'timeout aborts the pending provider connection');
+    assert.equal(connectionOptions.at(-1).signal.aborted, true);
+    assert.equal(sourceOptions.length, beforeTimeoutSources, 'a timed-out connection never reaches source verification');
+    assert.equal(posts.length, beforeTimeoutPosts, 'timeout never posts or retries');
+    let laneDeadline;
+    try {
+      result = await Promise.race([
+        ask('mail:unsubscribe', target),
+        new Promise((_resolve, reject) => { laneDeadline = oldSetTimeout(() => reject(new Error('Aborted connection retained mailbox lane')), 2000); }),
+      ]);
+      assert.equal(result.status, 'requested', 'next reviewed request completes after connection cancellation');
+    } finally { clearTimeout(laneDeadline); }
+
     const posted = posts.length;
+    const beforeOversizeDownloads = downloads.length, beforeOversizeProofs = verifiedSources.length;
+    archiveSize = 64 * 1024 * 1024 + 1;
+    reviewResponses.push(1, 0);
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled');
+    assert.equal(downloads.length, beforeOversizeDownloads, 'over-limit original is rejected before download');
+    assert.equal(verifiedSources.length, beforeOversizeProofs);
+    assert.equal(posts.length, posted);
+    archiveSize = null;
     for (const failure of ['uid', 'validity', 'truncated']) {
       const count = verifiedSources.length;
       archiveUid = failure === 'uid' ? stored.uid + 100 : null;
@@ -231,9 +313,9 @@ async function run() {
     });
     await bridge.invoke('mail:unsubscribe', target); assert.equal(invoked.channel, 'mail:unsubscribe');
     await assert.rejects(bridge.invoke('mail:unsubscribeAll', target), /Unsupported channel/);
-    console.log('unsubscribe-integration-ok: provider headers, cache/restart/explicit reload, host ownership/native review, verified raw-source one-click wiring, stale/failed-proof suppression, separately confirmed manual fallback and preload');
+    console.log('unsubscribe-integration-ok: provider headers, cache/restart/explicit reload, host ownership/native review, streamed raw-source one-click wiring above 10 MiB with 64 MiB/AbortSignal bounds, stale/failed-proof suppression, separately confirmed manual fallback and preload');
   } finally {
-    remote.withClient = oldClient; Module._load = oldLoad; global.fetch = oldFetch; dns.lookup = oldLookup; net.Socket.prototype.connect = oldConnect;
+    global.setTimeout = oldSetTimeout; remote.withClient = oldClient; remote.withUnsubscribeSource = oldSource; Module._load = oldLoad; global.fetch = oldFetch; dns.lookup = oldLookup; net.Socket.prototype.connect = oldConnect;
     await engine.stopIdle(); await db.close();
     for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
     Object.assign(process.env, env); fs.rmSync(directory, { recursive: true, force: true });

@@ -4,7 +4,10 @@ the exact mailbox and sender-supplied destination before opening a manual websit
 or preparing a mailto compose review. Older complete cached mail needs an explicit
 Reload message / Retry download to obtain missing headers. Nothing is sent automatically. RFC 8058
 POST requires native approval and fresh DKIM verification of the complete original
-and both list headers. Pinned public DNS and verified TLS, no credentials, redirects
+and both list headers. IMAP streams complete originals up to 64 MiB; Gmail uses
+a bounded JSON/base64 download up to its 35 MiB MIME limit. Verification requires
+complete EOF; oversized, incomplete or timed-out messages keep manual fallback.
+Pinned public DNS and verified TLS, no credentials, redirects
 or retries. Verification failure offers a separately reviewed manual alternative;
 POST outcomes never trigger fallback. Accepted request is not confirmed removal. Local Folders and drafts are excluded.
 See [unsubscribe safety and provider limits](adr/2026-11-12-reviewed-list-unsubscribe.md).

@@ -781,7 +781,7 @@ async function confirmUnsubscribe(review, sender) {
     ...(!mailto && review.secure === false ? ["Warning: this destination uses unencrypted HTTP."] : []),
     "",
     ...(review.fallbackReason ? [review.fallbackReason, ""] : []),
-    oneclick ? "Read the complete original message and verify originals up to 10 MiB using their DKIM signature and both unsubscribe headers. Only if verified, send a credential-free HTTPS unsubscribe POST to this destination. No redirects or automatic retries. A successful response means accepted request, not confirmed removal."
+    oneclick ? "Read and verify the complete original message (IMAP streaming up to 64 MiB; Gmail bounded download up to 35 MiB) using its DKIM signature and both unsubscribe headers. Only if verified, send a credential-free HTTPS unsubscribe POST to this destination. No redirects or automatic retries. A successful response means accepted request, not confirmed removal."
       : mailto ? "Prepare an unsubscribe email in Morrow Mail. Review its recipient, subject and message before choosing Send. Nothing is sent now."
       : "Open the sender's unsubscribe link in your default browser. It may require more steps. Your browser may use its signed-in session and follow redirects; Morrow Mail cannot verify the final website or confirm that you are unsubscribed.",
     "",
@@ -799,7 +799,9 @@ async function verifyUnsubscribeOriginal(params, initial) {
   const account = bindAccount(db.accountById(params.accountId));
   const stamp = JSON.stringify([initial.identity, initial.metadata, initial.accountEmail, initial.sender]);
   let expired = false, timer;
+  const controller = new AbortController();
   const check = () => {
+    controller.signal.throwIfAborted();
     const latest = unsubscribeSource(params);
     if (expired || JSON.stringify([latest?.identity, latest?.metadata, latest?.accountEmail, latest?.sender]) !== stamp) throw new Error("Unsubscribe source changed.");
     assertAccountCurrent(account);
@@ -808,17 +810,18 @@ async function verifyUnsubscribeOriginal(params, initial) {
   const work = exclusive(account.id, async () => {
     check();
     const secret = await secretFor(account); check();
-    const source = await withMailClient(account, secret,
-      client => remote.fetchArchiveSource(client, row, { maxBytes: 10 * 1024 * 1024, check }));
-    check();
-    const proof = await require("./unsubscribe-dkim").verifyOneClick(source);
+    const proof = await withMailClient(account, secret,
+      client => remote.withUnsubscribeSource(client, row,
+        { maxBytes: 64 * 1024 * 1024, check, signal: controller.signal },
+        source => require("./unsubscribe-dkim").verifyOneClick(source, { signal: controller.signal })),
+      { signal: controller.signal, check });
     check(); return proof;
   });
   try {
     return await Promise.race([work, new Promise(resolve => {
-      timer = setTimeout(() => { expired = true; resolve({ verified: false }); }, 30000);
+      timer = setTimeout(() => { expired = true; controller.abort(); resolve({ verified: false }); }, 60000);
     })]);
-  } finally { clearTimeout(timer); expired = true; }
+  } finally { clearTimeout(timer); expired = true; controller.abort(); }
 }
 
 const unsubscribeMessage = listUnsubscribe.createUnsubscriber({ resolve: unsubscribeSource,
