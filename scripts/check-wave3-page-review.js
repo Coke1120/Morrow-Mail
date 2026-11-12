@@ -345,7 +345,8 @@ function projectionFixture() {
   let singles = 0;
   const db = { jsonList: value => JSON.parse(value || "[]"), maxActionGenerations: ids => new Map(ids.map(id => [id, 0])), gmailLabelMemberships,
     gmailMap: (_accountId, providerId) => { singles++; return { labels_json: JSON.stringify(memberships.get(providerId)) }; } };
-  const projected = functions("host/mail/engine.js", ["listRow", "listRows", "detailOf"], { db, publicAttachment: value => value,
+  const projected = functions("host/mail/engine.js", ["parseUnsubscribeMetadata", "listRow", "listRows", "detailOf"], { db, publicAttachment: value => value,
+    listUnsubscribe: require("../host/mail/list-unsubscribe"),
     composePolicy: require("../shared/compose-policy"), composeIdentity: { savedAddress: () => "sender@fixture.invalid" },
     actions: { generationOf: () => 0 }, textEncoding: { repairMojibake: value => value, presentMessage: value => value },
     decoding: require("../host/mail/mime-decoding"),

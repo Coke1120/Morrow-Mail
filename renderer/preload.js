@@ -151,6 +151,7 @@ const INVOKE = [
   "mail:listFromNetwork",
   "host:getDebugLog",
   "mail:openEmail",
+  "mail:unsubscribe",
   "mail:readCachedBody",
   "mail:prepareDraft",
   "mail:prepareForward",

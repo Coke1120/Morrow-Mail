@@ -9407,6 +9407,146 @@ function readerFromLine(email) {
   return row;
 }
 
+// These receipts belong to this window and the exact mailbox/message, never to
+// the current selection. URLs and unsubscribe tokens remain in the host.
+const unsubscribeRequests = new Map();
+
+function unsubscribeKey(email) {
+  const offer = email?.unsubscribe;
+  if (!email?.id || !email.accountId || email.isDraft || email.outbox || isLocalMail(email)
+      || !offer || !["web", "mailto", "oneclick"].includes(offer.kind)
+      || typeof offer.destination !== "string" || !offer.destination.trim()) return "";
+  return JSON.stringify([email.accountId, email.id, email.bodyEpoch || 0, offer.kind, offer.destination]);
+}
+
+function unsubscribeCurrent(key) {
+  return !pendingOpenBody && unsubscribeKey(state.email) === key;
+}
+
+function paintUnsubscribeStatus(key) {
+  if (!unsubscribeCurrent(key)) return;
+  const banner = $("reader")?.querySelector(".unsubscribe-banner");
+  if (!banner || banner.dataset.unsubscribeKey !== key) return;
+  const receipt = unsubscribeRequests.get(key);
+  const button = banner.querySelector("button");
+  const status = banner.querySelector('[role="status"]');
+  const pending = !!receipt?.pending;
+  button.disabled = pending || !!receipt?.retired;
+  button.textContent = pending ? "Reviewing…" : receipt?.draft ? "Review unsubscribe email" : receipt?.status === "opened" ? "Page opened" : "Unsubscribe";
+  button.setAttribute("aria-busy", String(pending));
+  status.classList.toggle("error", !!receipt?.error);
+  status.textContent = pending ? "Waiting for the unsubscribe review…" : receipt?.message || "";
+}
+
+async function reviewUnsubscribeDraft(receipt) {
+  const draft = receipt.draft;
+  await presentCompose({ title: "Review unsubscribe email", kind: "new", unsubscribeDraft: true,
+    accountId: draft.accountId, sourceMessageId: draft.sourceMessageId,
+    to: draft.to, cc: "", bcc: "", subject: draft.subject || "", body: draft.text || "",
+    status: "Review this unsubscribe email. Nothing is sent until you choose Send." });
+  receipt.draft = null;
+  receipt.retired = true;
+  receipt.message = "Unsubscribe email opened for review. Choose Send in that window to request removal; removal is not confirmed.";
+}
+
+async function requestUnsubscribe(email) {
+  const key = unsubscribeKey(email);
+  if (!key || !unsubscribeCurrent(key)) return;
+  const previous = unsubscribeRequests.get(key);
+  if (previous?.pending || previous?.retired) return;
+  const receipt = previous?.draft ? previous : { status: "pending", message: "" };
+  receipt.pending = true;
+  receipt.error = false;
+  unsubscribeRequests.set(key, receipt);
+  paintUnsubscribeStatus(key);
+  try {
+    if (receipt.draft) {
+      await reviewUnsubscribeDraft(receipt);
+      return;
+    }
+    const result = await call("mail:unsubscribe", { accountId: email.accountId, emailId: email.id });
+    const messages = {
+      cancelled: "Cancelled. Nothing was requested.",
+      requested: "The sender accepted the unsubscribe request. Removal may take time and is not independently confirmed.",
+      rejected: "The sender did not accept the request. No retry or fallback was made.",
+      opened: "Unsubscribe page opened in your browser. Follow the website's steps to finish; removal is not confirmed.",
+      busy: "An unsubscribe review is already in progress for this message.",
+      stale: "This message changed. Reopen it before reviewing unsubscribe again.",
+      unavailable: "Unsubscribe is no longer available for this message.",
+      error: "The unsubscribe action could not be completed. Nothing is confirmed.",
+      uncertain: "The unsubscribe action could not be confirmed. Check your browser before taking any further action.",
+    };
+    if (result?.status === "draft") {
+      const draft = result.draft;
+      if (!draft || draft.accountId !== email.accountId || draft.sourceMessageId !== email.id
+          || typeof draft.to !== "string" || !draft.to.trim()
+          || (draft.subject != null && typeof draft.subject !== "string") || (draft.text != null && typeof draft.text !== "string")) {
+        throw new Error("The unsubscribe email could not be prepared for review.");
+      }
+      receipt.status = "draft";
+      receipt.draft = { accountId: draft.accountId, sourceMessageId: draft.sourceMessageId,
+        to: draft.to, subject: draft.subject, text: draft.text };
+      receipt.message = "Unsubscribe email is ready to review. Nothing has been sent.";
+      // A late response must not open an unrelated compose over newer reading.
+      // Returning to the source message offers this same reviewed draft once.
+      if (unsubscribeCurrent(key)) await reviewUnsubscribeDraft(receipt);
+    } else {
+      if (!Object.hasOwn(messages, result?.status)) throw new Error("No unsubscribe result was received.");
+      receipt.status = result.status;
+      receipt.message = result.message || messages[result.status];
+      receipt.error = ["error", "uncertain", "stale", "unavailable", "rejected"].includes(result.status);
+      receipt.retired = ["opened", "uncertain", "requested", "rejected"].includes(result.status);
+    }
+  } catch (error) {
+    // A broken IPC response or compose-open acknowledgement may follow a side
+    // effect. Do not automatically replay it or offer a potentially duplicate.
+    receipt.status = "uncertain";
+    receipt.error = true;
+    receipt.retired = true;
+    receipt.message = (error?.message || "The unsubscribe action could not be confirmed.")
+      + " Check your browser, compose windows or sender subscription status before trying again. Removal is not confirmed.";
+  } finally {
+    receipt.pending = false;
+    paintUnsubscribeStatus(key);
+  }
+}
+
+function renderUnsubscribe(pane, email) {
+  const key = unsubscribeKey(email);
+  if (!key) return;
+  const offer = email.unsubscribe;
+  const banner = document.createElement("section");
+  banner.className = "unsubscribe-banner";
+  banner.dataset.unsubscribeKey = key;
+  banner.setAttribute("aria-label", "Mailing list unsubscribe");
+  const icon = strokeIcon(["M4 4h16a2 2 0 0 1 2 2v8", "M22 6l-10 7L2 6", "M2 6v12a2 2 0 0 0 2 2h10", "M16 19h6"], 20);
+  const copy = document.createElement("div");
+  copy.className = "unsubscribe-copy";
+  const title = document.createElement("strong");
+  title.textContent = "This message offers an unsubscribe option.";
+  const detail = document.createElement("p");
+  detail.textContent = offer.kind === "oneclick"
+    ? `Review verifying the original message and requesting one-click unsubscribe at ${offer.destination}.`
+    : offer.kind === "mailto"
+    ? `Review an unsubscribe email to ${offer.destination}. You choose whether to send it.`
+    : `Review opening ${offer.destination} to finish unsubscribing in your browser.`;
+  const status = document.createElement("p");
+  status.className = "unsubscribe-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-atomic", "true");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.dataset.action = "unsubscribe";
+  button.setAttribute("aria-haspopup", "dialog");
+  button.addEventListener("click", () => { requestUnsubscribe(email); });
+  copy.append(title, detail, status);
+  banner.append(icon, copy, button);
+  pane.appendChild(banner);
+  paintUnsubscribeStatus(key);
+}
+
 function renderReader(focus, onlyChanged = false) {
   if (messageSummary && !summaryMatches(state.email)) {
     clearMessageSummary();
@@ -9420,6 +9560,7 @@ function renderReader(focus, onlyChanged = false) {
   const emailView = state.email;
   const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.encodingWarning, emailView?.bodyError,
     emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
+    emailView?.unsubscribe?.kind, emailView?.unsubscribe?.destination, emailView?.unsubscribeChecked,
     state.thread, state.translate, state.prefs.images, state.prefs.snooze,
     state.remoteAllowed?.[emailView?.id], snoozedUntilOf(emailView), state.accounts.length, state.providerFolders];
   if (onlyChanged && pane.morrowReaderSignature?.every((value, index) => value === signature[index])) return;
@@ -9510,6 +9651,7 @@ function renderReader(focus, onlyChanged = false) {
     pane.appendChild(line);
   }
   if (!isReaderWindow()) renderThread(pane, email);
+  renderUnsubscribe(pane, email);
   renderAttachments(pane, email);
   renderRemoteGate(pane, email);
   renderBody(pane, email);
@@ -9582,9 +9724,11 @@ function renderBody(pane, email, refresh) {
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
-  } else if (!isLocalMail(email) && !email?.isDraft && state.accounts.some(account => account.id === email?.accountId && account.mailTransport === "gmail_api")) {
+  } else if (!isLocalMail(email) && !email?.isDraft && (email?.unsubscribeChecked === false
+      || state.accounts.some(account => account.id === email?.accountId && account.mailTransport === "gmail_api"))) {
     // Older corrupted bodies can contain no replacement characters and carry no
-    // warning. Keep recovery explicit and available without scanning the cache.
+    // warning. Legacy caches can also lack unsubscribe headers. Keep reloading
+    // explicit and available without scanning or downloading on ordinary open.
     pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
@@ -14075,7 +14219,7 @@ function applyCachedBody(email) {
       || target.email.bodyWarning !== body.bodyWarning || target.email.encodingWarning !== body.encodingWarning || target.email.bodyComplete !== body.bodyComplete;
     const metadata = {};
     for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
-      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft"]) {
+      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft", "unsubscribe", "unsubscribeChecked"]) {
       if (Object.hasOwn(email, field)) metadata[field] = email[field];
     }
     changed ||= Object.entries(metadata).some(([field, value]) => JSON.stringify(target.email[field]) !== JSON.stringify(value));
@@ -16752,7 +16896,7 @@ async function initializeComposeIdentity(fields) {
     if (!edits || edits.to === versions.to) $("compose-to").value = parties.to;
     if (!edits || edits.cc === versions.cc) $("compose-cc").value = parties.cc;
   }
-  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot;
+  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot || fields.unsubscribeDraft === true;
   state.composeIdentity = { ...context, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   for (const field of ["cc", "bcc"]) if (edits && edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;
@@ -17325,7 +17469,7 @@ async function openCompose(seed) {
   await history;
   if (replySession !== state.composeSession) return;
   const initial = composeSnapshot();
-  if (!fields.partialReceipt) await fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot || state.composeInputVersions.body > 0);
+  if (!fields.partialReceipt) await fillSignatures(!!fields.draftId || !!fields.recoveredSnapshot || fields.unsubscribeDraft === true || state.composeInputVersions.body > 0);
   if (replySession !== state.composeSession) return;
   if (replySession === state.composeSession && !state.agentReplyTodo && freshReplyTodoSeed(fields)) {
     try {
@@ -17348,7 +17492,7 @@ async function openCompose(seed) {
   }
   // A supplied proposal is unsaved work; an untouched new message is not.
   const baseline = JSON.parse(initial);
-  baseline.body = fields.draftId || fields.recoveredSnapshot ? baseline.body : applySignature(baseline.body, "", state.signatureText);
+  baseline.body = fields.draftId || fields.recoveredSnapshot || fields.unsubscribeDraft === true ? baseline.body : applySignature(baseline.body, "", state.signatureText);
   baseline.html = composeEditorSnapshot();
   if (!Object.values(state.composeInputVersions).some(Boolean)) state.composeBaseline = fields.body && !fields.draftId ? "" : JSON.stringify(baseline);
   syncCompose();

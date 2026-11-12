@@ -2,11 +2,69 @@
 const { gmailError } = require("./gmail-error");
 const gmailPace = require("./gmail-pace");
 const provider = require("./provider-api");
+const { setImmediate: yieldToEventLoop } = require("node:timers/promises");
 const ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
 const MAIL_SCOPES = "openid email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic";
 const CALENDAR_SCOPES = "openid email https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events";
 const MAX_BYTES = 35 * 1024 * 1024;
+const MAX_RAW_RESPONSE_BYTES = Math.ceil(MAX_BYTES * 4 / 3) + 1024 * 1024;
 const invalid = message => Object.assign(new Error(message), { code: "invalid", operationIssued: false });
+function cancelResponseBody(response) {
+  try { Promise.resolve(response?.body?.cancel()).catch(() => {}); } catch {}
+}
+// Gmail wraps raw MIME in JSON/base64url. Keep this bounded-buffer fallback
+// honest: enforce the wire-body cap while reading, not after response.text().
+async function boundedResponseText(response, limit, signal, check) {
+  if (!response?.body || typeof response.body.getReader !== "function") {
+    throw Object.assign(new Error("Gmail returned an unreadable raw response."), { code: "provider", operationIssued: false });
+  }
+  const reader = response.body.getReader(), chunks = [];
+  let bytes = 0, complete = false, rejectAbort, block = null, used = 0, reads = 0;
+  const cancel = () => { try { Promise.resolve(reader.cancel()).catch(() => {}); } catch {} };
+  const aborted = new Promise((_, reject) => { rejectAbort = reject; });
+  aborted.catch(() => {}); // Cancellation may happen inside a synchronous check.
+  const onAbort = () => {
+    cancel();
+    rejectAbort(signal.reason || new Error("Gmail raw read was cancelled."));
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    signal?.throwIfAborted(); check();
+    const declared = response.headers?.get?.("content-length");
+    if (declared && /^\d+$/.test(declared) && Number(declared) > limit) {
+      throw Object.assign(new Error("Gmail returned an oversized response."), { code: "provider", operationIssued: false });
+    }
+    while (true) {
+      // Immediately resolved reads can otherwise keep timer-based cancellation
+      // queued forever. Yield even when the peer supplies only tiny chunks.
+      if (++reads % 32 === 0) await Promise.race([yieldToEventLoop(), aborted]);
+      signal?.throwIfAborted(); check();
+      const part = await Promise.race([reader.read(), aborted]);
+      signal?.throwIfAborted(); check();
+      if (part.done) { complete = true; break; }
+      if (!(part.value instanceof Uint8Array) || !part.value.byteLength || part.value.byteLength > limit - bytes) {
+        throw Object.assign(new Error("Gmail returned an oversized or invalid response."), { code: "provider", operationIssued: false });
+      }
+      bytes += part.value.byteLength;
+      // Coalesce even one-byte chunks into fixed blocks: the number of retained
+      // objects is bounded too, not just their combined payload. Own each byte
+      // so a custom fetch implementation cannot mutate it later.
+      for (let offset = 0; offset < part.value.byteLength;) {
+        if (!block) { block = Buffer.allocUnsafe(64 * 1024); used = 0; }
+        const count = Math.min(block.length - used, part.value.byteLength - offset);
+        block.set(part.value.subarray(offset, offset + count), used);
+        used += count; offset += count;
+        if (used === block.length) { chunks.push(block); block = null; }
+      }
+    }
+    if (block && used) chunks.push(block.subarray(0, used));
+    return Buffer.concat(chunks, bytes).toString("utf8");
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (!complete) cancel();
+    try { reader.releaseLock(); } catch {}
+  }
+}
 function id(value) {
   if (typeof value !== "string" || !value || value.length > 512 || /[\s\x00-\x1f\x7f]/.test(value)) throw invalid("A valid Gmail provider id is required.");
   return encodeURIComponent(value);
@@ -78,7 +136,7 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
         });
       }
       try { alive(); readSignal?.throwIfAborted(); }
-      catch (error) { error.operationIssued = (options.method || "GET") !== "GET"; throw error; }
+      catch (error) { cancelResponseBody(response); error.operationIssued = (options.method || "GET") !== "GET"; throw error; }
       if (response.ok) return response;
       const error = await gmailError(response, operation, { method: options.method || "GET", signal: options.signal });
       try { alive(); readSignal?.throwIfAborted(); }
@@ -102,7 +160,7 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
       }
     }
   }
-  async function request(path, { operation, method = "GET", body, query, signal: readSignal, beforeSubmit } = {}) {
+  async function request(path, { operation, method = "GET", body, query, signal: readSignal, beforeSubmit, maxResponseBytes } = {}) {
     alive();
     readSignal?.throwIfAborted();
     if (method === "GET") {
@@ -123,8 +181,14 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
       ...(body ? { body: JSON.stringify(body) } : {}) }, operation, readSignal, beforeSubmit);
     if (response.status === 204) return {};
     let text;
-    try { text = await response.text(); alive(); readSignal?.throwIfAborted(); }
-    catch (cause) { throw Object.assign(new Error("Gmail response could not be confirmed."), { code: "provider_network", operationIssued: method !== "GET", cause }); }
+    try {
+      text = maxResponseBytes === undefined ? await response.text()
+        : await boundedResponseText(response, Math.min(MAX_RAW_RESPONSE_BYTES, maxResponseBytes), requestSignal, alive);
+      alive(); readSignal?.throwIfAborted();
+    } catch (cause) {
+      if (cause?.code === "provider") throw cause;
+      throw Object.assign(new Error("Gmail response could not be confirmed."), { code: "provider_network", operationIssued: method !== "GET", cause });
+    }
     if (Buffer.byteLength(text) > Math.ceil(MAX_BYTES * 4 / 3) + 1024 * 1024) throw Object.assign(new Error("Gmail returned an oversized response."), { code: "provider", operationIssued: method !== "GET" });
     try { return JSON.parse(text); }
     catch { throw Object.assign(new Error("Gmail returned an invalid response. Refresh before retrying a write."), { code: "provider", operationIssued: method !== "GET" }); }
@@ -141,10 +205,11 @@ function createGmailMailApi({ accessToken, refreshAccessToken, fetchImpl = (...a
   }
   async function getMessage(messageId, { format = "full", signal: readSignal } = {}) {
     if (!["full", "metadata", "raw"].includes(format)) throw invalid("Choose a supported Gmail message format.");
-    return message(await request(`/messages/${id(messageId)}`, { operation: "messages.get", query: { format }, signal: readSignal }));
+    return message(await request(`/messages/${id(messageId)}`, { operation: "messages.get", query: { format }, signal: readSignal,
+      ...(format === "raw" ? { maxResponseBytes: MAX_RAW_RESPONSE_BYTES } : {}) }));
   }
-  async function raw(messageId) {
-    const result = await getMessage(messageId, { format: "raw" });
+  async function raw(messageId, { signal: readSignal } = {}) {
+    const result = await getMessage(messageId, { format: "raw", signal: readSignal });
     const source = decode(result.raw);
     if (!source.length) throw invalid("Gmail returned an empty MIME message.");
     return { ...result, source };

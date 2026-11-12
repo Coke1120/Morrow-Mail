@@ -1,0 +1,325 @@
+// Production provider/cache/preload/native-review integration, entirely synthetic.
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
+const Module = require('node:module');
+const fixture = require('./mail-performance-fixture');
+
+async function run() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-unsubscribe-'));
+  const env = { ...process.env }, oldLoad = Module._load, oldFetch = global.fetch;
+  const dns = require('node:dns').promises, oldLookup = dns.lookup;
+  const net = require('node:net'), oldConnect = net.Socket.prototype.connect;
+  let dialogResponse = 0, duringReview = null, destroyed = false;
+  let proof = { verified: false }, duringVerification = null, duringDownload = null;
+  let archiveEnabled = false, archiveUid = null, archiveBytes = null, archiveSize = null;
+  const verifiedSources = [], verificationSignals = [], sourceOptions = [], connectionOptions = [], posts = [], downloads = [], reviewResponses = [];
+  const verifier = { async verifyOneClick(source, options) {
+    assert.equal(Buffer.isBuffer(source), false, 'engine must not buffer the original before verification');
+    assert.equal(typeof source?.[Symbol.asyncIterator], 'function');
+    assert.ok(options?.signal instanceof AbortSignal, 'verification receives the bounded operation AbortSignal');
+    assert.equal(options.signal.aborted, false);
+    assert.equal(options.signal, sourceOptions.at(-1).signal, 'source and verifier share cancellation ownership');
+    verificationSignals.push(options.signal);
+    // Accumulation is deliberately test-only, to compare exact synthetic bytes.
+    const chunks = [];
+    for await (const chunk of source) {
+      assert.ok(chunk.length <= 64 * 1024, 'provider source is handed to verification in bounded chunks');
+      chunks.push(Buffer.from(chunk));
+    }
+    verifiedSources.push(Buffer.concat(chunks));
+    if (duringVerification) await duringVerification();
+    return proof;
+  } };
+  const transport = { async postUnsubscribe(url, options) {
+    assert.equal(await options.checkCurrent(), true, 'transport gets the live source guard');
+    posts.push(url); return { status: 'accepted', issued: true };
+  } };
+  const dialogs = [], launches = [], sender = { isDestroyed: () => destroyed };
+  const win = { isDestroyed: () => destroyed };
+  const electron = { BrowserWindow: { fromWebContents: candidate => candidate === sender ? win : null },
+    dialog: { async showMessageBox(parent, options) { assert.equal(parent, win); dialogs.push(options); if (duringReview) await duringReview(); return { response: reviewResponses.length ? reviewResponses.shift() : dialogResponse }; } },
+    shell: { async openExternal(url) { launches.push(url); } } };
+  Module._load = function(request, ...args) {
+    if (request === 'electron') return electron;
+    if (request === './unsubscribe-dkim') return verifier;
+    if (request === './unsubscribe-post') return transport;
+    return oldLoad.call(this, request, ...args);
+  };
+  Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: 'memory', MORROW_GMAIL_PACE: '0' });
+  global.fetch = async () => { throw new Error('Live fetch forbidden'); };
+  net.Socket.prototype.connect = function() { throw new Error('Live socket forbidden'); };
+  dns.lookup = async () => [{ address: '8.8.8.8', family: 4 }];
+  const engine = require('../host/mail/engine'), db = require('../host/mail/db');
+  const remote = require('../host/mail/remote'), secrets = require('../host/mail/secrets');
+  const policy = require('../host/mail/list-unsubscribe'), oldClient = remote.withClient;
+  const oldSource = remote.withUnsubscribeSource, oldSetTimeout = global.setTimeout;
+  let expireConnection = false, timeoutCallback = null, connectionAborted = false;
+  remote.withUnsubscribeSource = async (client, row, options, verify) => {
+    assert.equal(options.maxBytes, 64 * 1024 * 1024);
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.signal.aborted, false);
+    assert.equal(options.signal, connectionOptions.at(-1).signal, 'connection and source use the same AbortSignal');
+    assert.equal(options.check, connectionOptions.at(-1).check, 'connection retains the source identity check');
+    sourceOptions.push(options);
+    return oldSource(client, row, options, verify);
+  };
+  let reads = 0;
+  const raw = Buffer.from('From: Newsletter <list@news.example.com>\r\nTo: owner@fixture.invalid\r\nSubject: Synthetic newsletter\r\nMessage-ID: <list@news.example.com>\r\nList-Unsubscribe: <https://news.example.com/unsubscribe?token=opaque>,\r\n <mailto:leave@news.example.com?subject=Leave&body=Remove%20this%20address>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\nSynthetic body\r\n');
+  const client = { mailbox: { uidValidity: 7 },
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch(range) { reads++; yield { ...(archiveEnabled ? { size: archiveSize ?? raw.length } : {}), uid: archiveUid ?? Number(range), envelope: { subject: 'Synthetic newsletter', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, source: raw, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') }; },
+    async download(uid, part, options) {
+      downloads.push({ uid, part, options });
+      const bytes = archiveBytes || raw;
+      return { content: require('node:stream').Readable.from((async function* () {
+        yield bytes.subarray(0, 31);
+        if (duringDownload) await duringDownload();
+        yield bytes.subarray(31);
+      })()) };
+    } };
+  remote.withClient = async (_account, _secret, work, options = {}) => {
+    connectionOptions.push(options);
+    if (expireConnection) {
+      assert.ok(options.signal instanceof AbortSignal, 'pending connection is abortable');
+      assert.equal(typeof options.check, 'function');
+      options.check();
+      assert.equal(typeof timeoutCallback, 'function', 'production deadline was installed');
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => { connectionAborted = true; reject(options.signal.reason); }, { once: true });
+        queueMicrotask(timeoutCallback);
+      });
+    }
+    return work(client);
+  };
+  const ask = async (channel, params, event = { sender }) => {
+    const result = await engine.answer(channel, [params], event);
+    assert.equal(result.success, true, JSON.stringify(result)); return result.data;
+  };
+  try {
+    await engine.init();
+    for (const id of ['imap', 'other']) {
+      db.insertAccount({ ...fixture.account, id }); db.replaceFolders(id, fixture.folders); secrets.setPassword(id, 'synthetic-only');
+    }
+    // Real IMAP parser and actual SQL sync path retain only parsed list fields.
+    const parsed = await remote.fetchSource(client, 'INBOX', 1, 7);
+    assert.equal(parsed.listUnsubscribe.oneClick, true);
+    assert.equal(parsed.listUnsubscribe.urls.length, 2);
+    assert.deepEqual(policy.descriptor(parsed.listUnsubscribe), { kind: 'oneclick', destination: 'news.example.com' });
+    db.applyFolderSync('imap', 'INBOX', fixture.report([{ ...parsed, id: 'newsletter' }]));
+    const stored = db.messageById('newsletter');
+    assert.deepEqual(JSON.parse(stored.list_unsubscribe_json), parsed.listUnsubscribe);
+    const listed = (await ask('mail:listFromCache', { accountId: 'imap', folderId: 'INBOX' })).emails.find(row => row.id === stored.id);
+    assert.deepEqual(listed.unsubscribe, { kind: 'oneclick', destination: 'news.example.com' });
+    assert.equal(JSON.stringify(listed).includes('token=opaque'), false, 'opaque URLs stay out of renderer data');
+    assert.equal(Object.hasOwn(listed, 'listUnsubscribe'), false);
+    const email = (await ask('mail:openEmail', { accountId: 'imap', emailId: stored.id, includeThread: false })).email;
+    assert.deepEqual(email.unsubscribe, listed.unsubscribe);
+    assert.equal(email.unsubscribeChecked, true);
+    const before = reads;
+    await ask('mail:openEmail', { accountId: 'imap', emailId: stored.id, includeThread: false });
+    assert.equal(reads, before, 'checked metadata does not add a provider read');
+
+    // Older complete caches stay immediate/offline; only explicit reload fills missing headers.
+    db.insertMessage({ ...fixture.message(2), id: 'legacy', accountId: 'imap', folderPath: 'INBOX', uidValidity: 7 });
+    assert.equal(db.messageById('legacy').list_unsubscribe_json, null);
+    assert.equal((await ask('mail:listFromCache', { accountId: 'imap', folderId: 'INBOX' })).emails.find(row => row.id === 'legacy').unsubscribe, null);
+    assert.equal(reads, before, 'list/render does not fetch unsubscribe headers');
+    const oldRead = remote.withClient;
+    let providerAttempts = 0;
+    remote.withClient = async () => { providerAttempts++; throw new Error('A cached open must not wait for a slow or offline provider'); };
+    const cached = (await ask('mail:openEmail', { accountId: 'imap', emailId: 'legacy', includeThread: false })).email;
+    assert.equal(cached.textBody, 'Synthetic searchable body'); assert.equal(cached.unsubscribe, null);
+    assert.equal(cached.unsubscribeChecked, false);
+    assert.equal(reads, before, 'ordinary complete cached opens never request missing unsubscribe metadata');
+    assert.equal(providerAttempts, 0, 'cached opening cannot enter the provider, even when a failed read would preserve the body');
+    remote.withClient = oldRead;
+    const legacy = (await ask('mail:openEmail', { accountId: 'imap', emailId: 'legacy', includeThread: false, retry: true })).email;
+    assert.equal(legacy.unsubscribe.kind, 'oneclick'); assert.equal(legacy.unsubscribeChecked, true); assert.equal(reads, before + 1);
+
+    // Actual native review, captured destination, no automatic SMTP or browser.
+    const target = { accountId: 'imap', emailId: stored.id };
+    let result = await ask('mail:unsubscribe', target);
+    assert.equal(result.status, 'cancelled'); assert.equal(launches.length, 0);
+    assert.equal(dialogs.at(-1).defaultId, 0); assert.equal(dialogs.at(-1).cancelId, 0);
+    assert.match(dialogs.at(-1).detail, /owner@fixture.invalid/);
+    assert.match(dialogs.at(-1).detail, /news.example.com/);
+    assert.match(dialogs.at(-1).detail, /Only if verified/);
+    dialogResponse = 1;
+    result = await ask('mail:unsubscribe', target);
+    assert.equal(result.status, 'draft');
+    assert.deepEqual(result.draft, { accountId: 'imap', sourceMessageId: stored.id, to: 'leave@news.example.com', subject: 'Leave', text: 'Remove this address' });
+    assert.equal(launches.length, 0);
+    assert.match(dialogs.at(-2).message, /Verify and request one-click/);
+    assert.match(dialogs.at(-1).detail, /No POST was sent.*separate manual option/);
+    assert.equal(verifiedSources.length, 0, 'missing provider size fails before verifier');
+    assert.equal(posts.length, 0);
+
+    // Real engine/mailbox lane/credential/IMAP raw path; only crypto and HTTP
+    // leaf modules are mocked. Separate suites verify signatures and pinned POST.
+    archiveEnabled = true;
+    proof = { verified: true, url: 'https://news.example.com/unsubscribe?token=opaque' };
+    const reviewedBefore = dialogs.length;
+    result = await ask('mail:unsubscribe', target);
+    assert.equal(result.status, 'requested');
+    assert.match(result.message, /not independently confirmed/);
+    assert.equal(dialogs.length, reviewedBefore + 1);
+    assert.deepEqual(verifiedSources.at(-1), raw, 'verifier receives complete raw MIME, not cached parsed body');
+    assert.equal(downloads.at(-1).uid, String(stored.uid));
+    assert.equal(downloads.at(-1).part, undefined);
+    assert.deepEqual(downloads.at(-1).options, { uid: true, maxBytes: 64 * 1024 * 1024 + 1 });
+    assert.deepEqual(posts, [proof.url]);
+    assert.equal(launches.length, 0);
+
+    // More than the old 10 MiB ceiling reaches the verifier as a stream.
+    archiveBytes = Buffer.concat([raw, Buffer.alloc(11 * 1024 * 1024, 0x61)]);
+    archiveSize = archiveBytes.length;
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'requested');
+    assert.deepEqual(verifiedSources.at(-1), archiveBytes);
+    assert.ok(verificationSignals.length >= 2);
+    assert.equal(downloads.at(-1).options.maxBytes, 64 * 1024 * 1024 + 1);
+    archiveBytes = null; archiveSize = null;
+
+    // Trigger the production deadline while connection setup is stalled. No
+    // source/verifier callback runs, and the aborted lane permits the next read.
+    const beforeTimeoutPosts = posts.length, beforeTimeoutSources = sourceOptions.length;
+    expireConnection = true;
+    global.setTimeout = (callback, delay, ...args) => {
+      if (delay === 60000) { timeoutCallback = callback; return oldSetTimeout(callback, 2000, ...args); }
+      return oldSetTimeout(callback, delay, ...args);
+    };
+    try {
+      reviewResponses.push(1, 0);
+      assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled');
+    } finally { global.setTimeout = oldSetTimeout; expireConnection = false; }
+    assert.equal(connectionAborted, true, 'timeout aborts the pending provider connection');
+    assert.equal(connectionOptions.at(-1).signal.aborted, true);
+    assert.equal(sourceOptions.length, beforeTimeoutSources, 'a timed-out connection never reaches source verification');
+    assert.equal(posts.length, beforeTimeoutPosts, 'timeout never posts or retries');
+    let laneDeadline;
+    try {
+      result = await Promise.race([
+        ask('mail:unsubscribe', target),
+        new Promise((_resolve, reject) => { laneDeadline = oldSetTimeout(() => reject(new Error('Aborted connection retained mailbox lane')), 2000); }),
+      ]);
+      assert.equal(result.status, 'requested', 'next reviewed request completes after connection cancellation');
+    } finally { clearTimeout(laneDeadline); }
+
+    const posted = posts.length;
+    const beforeOversizeDownloads = downloads.length, beforeOversizeProofs = verifiedSources.length;
+    archiveSize = 64 * 1024 * 1024 + 1;
+    reviewResponses.push(1, 0);
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled');
+    assert.equal(downloads.length, beforeOversizeDownloads, 'over-limit original is rejected before download');
+    assert.equal(verifiedSources.length, beforeOversizeProofs);
+    assert.equal(posts.length, posted);
+    archiveSize = null;
+    for (const failure of ['uid', 'validity', 'truncated']) {
+      const count = verifiedSources.length;
+      archiveUid = failure === 'uid' ? stored.uid + 100 : null;
+      client.mailbox.uidValidity = failure === 'validity' ? 8 : 7;
+      archiveBytes = failure === 'truncated' ? raw.subarray(0, raw.length - 2) : null;
+      const dialogsBefore = dialogs.length;
+      reviewResponses.push(1, 0);
+      result = await ask('mail:unsubscribe', target);
+      assert.equal(result.status, 'cancelled', failure + ' requires a separate declined manual review');
+      assert.equal(dialogs.length, dialogsBefore + 2);
+      assert.match(dialogs.at(-1).detail, /No POST was sent/);
+      assert.equal(verifiedSources.length, count, failure + ' does not verify a different/incomplete delivery');
+      assert.equal(posts.length, posted);
+    }
+    archiveUid = null; archiveBytes = null; client.mailbox.uidValidity = 7;
+
+    // Delivery/account/header changes during awaited raw reads or verification
+    // invalidate the first review; no POST or second fallback is permissible.
+    for (const failure of ['source', 'account', 'metadata']) {
+      const count = verifiedSources.length;
+      duringDownload = failure === 'source' ? async () => db.updateMessage(stored.id, { uid: stored.uid + 1 }) : null;
+      duringVerification = failure === 'account'
+        ? async () => db.updateAccountLogin('imap', { ...fixture.account, username: 'replacement-login' })
+        : failure === 'metadata' ? async () => db.updateMessage(stored.id, { list_unsubscribe_json: JSON.stringify({ ...parsed.listUnsubscribe, urls: ['https://news.example.com/changed'] }) }) : null;
+      const dialogsBefore = dialogs.length;
+      result = await ask('mail:unsubscribe', target);
+      assert.equal(result.status, 'stale', failure);
+      assert.equal(dialogs.length, dialogsBefore + 1);
+      if (failure === 'source') assert.equal(verifiedSources.length, count);
+      assert.equal(posts.length, posted, failure + ' suppresses POST');
+      duringDownload = null; duringVerification = null;
+      db.updateMessage(stored.id, { uid: stored.uid, list_unsubscribe_json: JSON.stringify(parsed.listUnsubscribe) });
+      db.updateAccountLogin('imap', fixture.account);
+    }
+
+    // One-click consent is not consent to a manual fallback.
+    for (const rejectedProof of [{ verified: false }, { verified: true, url: 'https://news.example.com/different' }]) {
+      proof = rejectedProof;
+      const dialogsBefore = dialogs.length;
+      reviewResponses.push(1, 0);
+      assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled');
+      assert.equal(dialogs.length, dialogsBefore + 2);
+      assert.match(dialogs.at(-1).message, /Prepare an unsubscribe email/);
+      assert.match(dialogs.at(-1).detail, /authenticity could not be verified/);
+      assert.equal(posts.length, posted); assert.equal(launches.length, 0);
+    }
+    reviewResponses.push(1, 1);
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'draft', 'separate fallback approval prepares, never sends');
+    assert.equal(posts.length, posted);
+    assert.equal((await ask('mail:unsubscribe', { ...target, accountId: 'other' })).status, 'unavailable');
+    assert.equal((await ask('mail:unsubscribe', { ...target, url: 'https://attacker.example.com' })).status, 'unavailable');
+    assert.equal((await ask('mail:unsubscribe', { accountId: '__morrow_local__', emailId: 'local-message:missing' })).status, 'unavailable');
+    destroyed = true;
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled'); destroyed = false;
+
+    duringReview = async () => db.updateMessage(stored.id, { folder_path: 'Sent' });
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'stale');
+    duringReview = null; db.updateMessage(stored.id, { folder_path: 'INBOX' });
+    const webMetadata = policy.parseHeaders('List-Unsubscribe: <https://news.example.com/manual?token=private>\r\n\r\n');
+    db.updateMessage(stored.id, { list_unsubscribe_json: JSON.stringify(webMetadata) });
+    result = await ask('mail:unsubscribe', target);
+    assert.equal(result.status, 'opened'); assert.match(result.message, /Completion is not confirmed/);
+    assert.deepEqual(launches, ['https://news.example.com/manual?token=private']);
+    assert.match(dialogs.at(-1).detail, /signed-in session and follow redirects/);
+    assert.equal(dialogs.at(-1).detail.includes('token=private'), false);
+
+    // The Gmail full-payload parser follows the same metadata/persistence route.
+    db.insertAccount({ ...fixture.account, id: 'gmail', profile: 'gmail', authKind: 'oauth2' }); db.enableGmail('gmail');
+    const account = db.accountById('gmail');
+    db.replaceFolders('gmail', [{ path: 'INBOX', name: 'Inbox', wellKnown: 'inbox', providerId: 'INBOX' }]);
+    const data = { id: 'gmail-provider', threadId: 'gmail-thread', labelIds: ['INBOX'], internalDate: '1794441600000', snippet: 'Body',
+      payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'list@news.example.com' }, { name: 'Subject', value: 'Gmail list' },
+        { name: 'Message-ID', value: '<gmail-list@news.example.com>' },
+        { name: 'List-Unsubscribe', value: '<mailto:leave@news.example.com?subject=Unsubscribe>' },
+        { name: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' }], body: { size: 4, data: Buffer.from('Body').toString('base64url') } } };
+    const session = require('../host/mail/gmail-session').createSession(account, 'synthetic-only', { api: {} });
+    const normalized = await session.adopt(data, { full: true });
+    assert.equal(normalized.listUnsubscribe.urls.length, 1);
+    const gmail = db.gmailCopies('gmail', data.id)[0];
+    assert.deepEqual(JSON.parse(gmail.list_unsubscribe_json), normalized.listUnsubscribe);
+    data.payload.headers = data.payload.headers.filter(header => !header.name.startsWith('List-Unsubscribe'));
+    await session.adopt(data, { full: true });
+    assert.deepEqual(JSON.parse(db.messageById(gmail.id).list_unsubscribe_json).urls, [], 'removed metadata does not leave a stale banner');
+
+    // SQL reinsert/recovery, draft exclusion and durable restart.
+    db.insertMessage({ ...fixture.message(3), id: 'reinsert', accountId: 'imap', folderPath: 'INBOX', uidValidity: 7, listUnsubscribe: webMetadata });
+    db.insertMessage({ ...fixture.message(4), id: 'draft', accountId: 'imap', folderPath: 'INBOX', uidValidity: 7, isDraft: true, listUnsubscribe: webMetadata });
+    assert.equal((await ask('mail:openEmail', { emailId: 'draft', accountId: 'imap' })).email.unsubscribe, null);
+    const metadata = db.messageById('reinsert').list_unsubscribe_json;
+    await db.close(); await db.open(path.join(directory, 'mail.sqlite'));
+    assert.equal(db.messageById('reinsert').list_unsubscribe_json, metadata);
+
+    // Execute the real preload so a missing bridge allowlist fails this suite.
+    let bridge, invoked;
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../renderer/preload.js'), 'utf8'), {
+      require: name => { assert.equal(name, 'electron'); return { contextBridge: { exposeInMainWorld(name, value) { assert.equal(name, 'morrow'); bridge = value; } },
+        ipcRenderer: { invoke(channel, params) { invoked = { channel, params }; return Promise.resolve(); } } }; }
+    });
+    await bridge.invoke('mail:unsubscribe', target); assert.equal(invoked.channel, 'mail:unsubscribe');
+    await assert.rejects(bridge.invoke('mail:unsubscribeAll', target), /Unsupported channel/);
+    console.log('unsubscribe-integration-ok: provider headers, cache/restart/explicit reload, host ownership/native review, streamed raw-source one-click wiring above 10 MiB with 64 MiB/AbortSignal bounds, stale/failed-proof suppression, separately confirmed manual fallback and preload');
+  } finally {
+    global.setTimeout = oldSetTimeout; remote.withClient = oldClient; remote.withUnsubscribeSource = oldSource; Module._load = oldLoad; global.fetch = oldFetch; dns.lookup = oldLookup; net.Socket.prototype.connect = oldConnect;
+    await engine.stopIdle(); await db.close();
+    for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];
+    Object.assign(process.env, env); fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+module.exports = { run };
+if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

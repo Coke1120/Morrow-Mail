@@ -421,6 +421,7 @@ async function readFetched(msg, validity, cap) {
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
     recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
+    listUnsubscribe: require("./list-unsubscribe").parseHeaders(source),
     date: when.toISOString(),
     receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
     listSortTs: when.getTime(),
@@ -679,6 +680,132 @@ async function fetchArchiveSource(client, row, { maxBytes = 64 * 1024 * 1024, ch
     if (size !== matched.size) throw new Error("The original message download was incomplete. The server message was retained.");
     return Buffer.concat(chunks);
   } finally { content?.destroy?.(); lock.release(); }
+}
+
+
+// Stream the exact original into a verifier while the provider/client and mailbox
+// lock are alive. Never reconstruct MIME, concatenate chunks or use cached bodies.
+async function withUnsubscribeSource(client, row, { maxBytes = 64 * 1024 * 1024, check = () => {}, signal } = {}, verify) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 64 * 1024 * 1024 || typeof verify !== "function") {
+    throw new Error("Invalid original-message verification bounds.");
+  }
+  if (!row || !Number.isSafeInteger(Number(row.uid)) || Number(row.uid) <= 0 ||
+      !Number.isSafeInteger(Number(row.uid_validity)) || Number(row.uid_validity) <= 0) {
+    throw new Error("The original message identity is unavailable.");
+  }
+  const guard = () => { signal?.throwIfAborted(); check(); };
+  const awaitOwned = (promise, discard) => {
+    if (!signal) return Promise.resolve(promise);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const abort = () => { if (!settled) { settled = true; reject(signal.reason || new Error("Original read cancelled.")); } };
+      signal.addEventListener("abort", abort, { once: true });
+      Promise.resolve(promise).then(value => {
+        signal.removeEventListener("abort", abort);
+        if (settled) { try { discard?.(value); } catch {} return; }
+        settled = true; resolve(value);
+      }, error => {
+        signal.removeEventListener("abort", abort);
+        if (!settled) { settled = true; reject(error); }
+      });
+      if (signal.aborted) abort();
+    });
+  };
+  const chunksOf = async function* (source, expectedSize, eofGuard = () => {}) {
+    let size = 0;
+    const iterator = source[Symbol.asyncIterator]();
+    let exhausted = false;
+    try {
+      while (true) {
+        guard();
+        const next = await awaitOwned(iterator.next());
+        guard();
+        if (next.done) { exhausted = true; break; }
+        const chunk = next.value;
+        if (!(Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) || !chunk.byteLength) throw new Error("Invalid original message chunk.");
+        size += chunk.byteLength;
+        if (size > maxBytes || size > expectedSize) throw new Error("Original message exceeds its verified size bound.");
+        // Bound downstream writes without copying or accumulating the body.
+        for (let offset = 0; offset < chunk.byteLength; offset += 64 * 1024) {
+          guard(); yield chunk.subarray(offset, Math.min(chunk.byteLength, offset + 64 * 1024));
+        }
+      }
+      guard(); eofGuard();
+      if (size !== expectedSize) throw new Error("The original message download was incomplete.");
+    } finally {
+      if (!exhausted) {
+        // A pending provider read is retired by abort/withClient cleanup; do not
+        // keep the callback or lane waiting for an asynchronous return().
+        try { Promise.resolve(iterator.return?.()).catch(() => {}); } catch {}
+      }
+    }
+  };
+  guard();
+  let lock, content, completed = false;
+  const abortContent = () => { try { content?.destroy?.(); } catch {} };
+  signal?.addEventListener("abort", abortContent, { once: true });
+  try {
+    let source, expectedSize, eofGuard;
+    if (client.gmail) {
+      const mapped = await awaitOwned(client.gmail.resolve(row.folder_path, row.uid, row.uid_validity, row.id));
+      guard(); client.gmail.alive();
+      // Gmail's existing raw API buffers/decodes within its own 35 MiB cap.
+      // This wrapper streams that returned Buffer, not the HTTP/base64 download.
+      const result = await awaitOwned(client.gmail.api.raw(mapped.provider_id, { signal }));
+      guard(); client.gmail.alive();
+      if (result.id !== mapped.provider_id || !Buffer.isBuffer(result.source) ||
+          !result.source.length || result.source.length > Math.min(maxBytes, 35 * 1024 * 1024)) throw new Error("Gmail original identity or size did not match.");
+      expectedSize = result.source.length;
+      source = (async function* () {
+        for (let offset = 0; offset < result.source.length; offset += 64 * 1024) {
+          guard(); yield result.source.subarray(offset, offset + 64 * 1024);
+        }
+      })();
+      eofGuard = () => client.gmail.alive();
+    } else {
+      lock = await awaitOwned(client.getMailboxLock(row.folder_path), value => value?.release?.());
+      guard(); assertUidValidity(client, row.uid_validity);
+      const fetches = client.fetch(String(row.uid), { uid: true, size: true }, { uid: true })[Symbol.asyncIterator]();
+      let matched, exhausted = false, responses = 0;
+      try {
+        while (true) {
+          if (responses >= 64) throw new Error("Too many original-message metadata responses.");
+          const next = await awaitOwned(fetches.next()); guard(); assertUidValidity(client, row.uid_validity);
+          if (next.done) { exhausted = true; break; }
+          responses++;
+          if (Number(next.value?.uid) === Number(row.uid)) matched = { ...matched, ...next.value };
+        }
+      } finally {
+        if (!exhausted) { try { Promise.resolve(fetches.return?.()).catch(() => {}); } catch {} }
+      }
+      if (!Number.isSafeInteger(matched?.size) || matched.size <= 0 || matched.size > maxBytes) {
+        throw new Error("The full original size is unavailable or exceeds the verification bound.");
+      }
+      expectedSize = matched.size;
+      const downloaded = await awaitOwned(client.download(String(row.uid), undefined,
+        { uid: true, maxBytes: maxBytes + 1 }), value => value?.content?.destroy?.());
+      content = downloaded?.content;
+      guard(); assertUidValidity(client, row.uid_validity);
+      if (!content || typeof content[Symbol.asyncIterator] !== "function") throw new Error("The original message stream is unavailable.");
+      source = content; eofGuard = () => assertUidValidity(client, row.uid_validity);
+    }
+    const original = (async function* () {
+      yield* chunksOf(source, expectedSize, eofGuard);
+      completed = true;
+    })();
+    try {
+      const result = await awaitOwned(verify(original));
+      guard();
+      if (result?.verified === true && !completed) throw new Error("Complete original verification is required.");
+      return result;
+    } finally {
+      try { Promise.resolve(original.return?.()).catch(() => {}); } catch {}
+    }
+  } finally {
+    signal?.removeEventListener("abort", abortContent);
+    abortContent();
+    lock?.release();
+  }
 }
 
 function assertUidValidity(client, expected) {
@@ -1003,6 +1130,7 @@ module.exports = {
   fetchMessages,
   fetchSource,
   fetchArchiveSource,
+  withUnsubscribeSource,
   readPart,
   moveUid,
   changeFlags,
