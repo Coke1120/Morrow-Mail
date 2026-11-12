@@ -213,7 +213,7 @@ test("late mailto response waits for the source message and preserves its own ma
 test("malformed or wrong-mailbox drafts and unknown outcomes never open compose or replay", async t => {
   for (const result of [{ status: 'draft', draft: { accountId: 'beta', sourceMessageId: 'one', to: 'leave@fixture.invalid' } },
     { status: 'draft', draft: { accountId: 'alpha', sourceMessageId: 'two', to: 'leave@fixture.invalid' } },
-    { status: 'draft', draft: { accountId: 'alpha', to: 'leave@fixture.invalid' } }, { status: 'draft' }, { status: 'requested' }, null]) {
+    { status: 'draft', draft: { accountId: 'alpha', to: 'leave@fixture.invalid' } }, { status: 'draft' }, { status: 'unknown-outcome' }, null]) {
     const f = fixture(t); f.answer(async () => result); f.show(); f.click(); await settle();
     assert.equal(f.opened.length, 0); assert.equal(f.get('[data-action="unsubscribe"]').disabled, true);
     assert.match(f.status(), /not confirmed/);
@@ -318,7 +318,19 @@ test("rendered Features tab describes actual providers, confirmation, and one-cl
   assert.equal(f.get('#features-catalog').closest('[role="tabpanel"]').hidden, false);
   for (const text of [/Gmail API, Outlook, Yahoo and other IMAP/, /List-Unsubscribe/, /separate reader/, /native confirmation/,
     /Older cached mail keeps its available body/, /Reload message or Retry download/, /no automatic metadata download/,
-    /does not confirm removal/, /Nothing sends until you choose Send/, /without automatic Cc\/Bcc or a signature/,
-    /RFC 8058 one-click POST is unavailable/, /independently verified DKIM/, /No bulk unsubscribe, automatic unsubscribe/]) assert.match(feature.textContent, text);
+    /does not confirm removal/, /nothing sends until you choose Send/, /without automatic Cc\/Bcc or a signature/,
+    /RFC 8058 one-click requests require/, /independently verified DKIM/, /No bulk unsubscribe, automatic unsubscribe/]) assert.match(feature.textContent, text);
   assert.deepEqual(f.calls, []);
+});
+
+test("one-click banner requires review and retires POST outcomes without claiming removal", async t => {
+  for (const status of ['requested', 'rejected', 'uncertain']) {
+    const f = fixture(t); f.answer(async () => ({ status }));
+    f.show({ unsubscribe: { kind: 'oneclick', destination: 'list.fixture.invalid' } });
+    assert.match(f.get('.unsubscribe-banner').textContent, /verifying the original message/);
+    assert.deepEqual(f.calls, []); f.click(); await settle();
+    assert.equal(f.calls.length, 1); assert.equal(f.get('[data-action="unsubscribe"]').disabled, true);
+    if (status === 'requested') assert.match(f.status(), /not independently confirmed/);
+    f.click(); await settle(); assert.equal(f.calls.length, 1); assert.deepEqual(f.opened, []);
+  }
 });

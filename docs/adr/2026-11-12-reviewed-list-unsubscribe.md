@@ -45,14 +45,28 @@ be public. These conservative limits can hide some sender unsubscribe options.
   arbitrary mail headers and automatic signatures/default recipients are excluded.
   Nothing sends until the user reviews it and chooses Send. The normal compose
   send preview and provider restrictions still apply.
-- `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is recognized, but does **not**
-  authorize a POST. RFC 8058 section 3.1 requires an independently verified valid
-  DKIM signature covering both unsubscribe headers. Current provider adapters do
-  not supply that proof. `Authentication-Results` and `DKIM-Signature` text are
-  not sufficient. When possible use the mailto review fallback, otherwise offer
-  a manual website review. Direct RFC 8058 POST is unavailable in this change.
+- RFC 8058 candidates require native approval, then fresh complete original MIME
+  verification with pinned mailauth 8.0.6. A cryptographically valid SHA256 DKIM
+  signature must cover From and both unique list headers, the complete body (no
+  l= limit), with valid timestamps and no testing key. Authentication-Results is
+  never proof. Standard system DNS establishes DKIM keys; this is not DNSSEC,
+  DMARC alignment, sender reputation, or proof of eventual removal.
+- Verification accepts originals at most 10 MiB. IMAP checks exact UID,
+  UIDVALIDITY and complete size before/after download. Gmail uses existing raw API
+  response/decode limits (35 MiB MIME), then applies the 10 MiB verification cap.
+  Original read/proof has a 30-second deadline; expired tasks cannot cause a POST.
+- The proof must match exactly the previously reviewed HTTPS URL. POST pins one
+  address from an all-public DNS result, verifies TLS for the original hostname,
+  sends only List-Unsubscribe=One-Click as application/x-www-form-urlencoded and
+  uses no shared agent, proxy, cookies, credentials, redirect or retry. DNS/connect
+  limits are five seconds, total POST fifteen seconds, response headers 16 KiB
+  and body 64 KiB. Identity is rechecked immediately before dispatch.
+- Failed/oversize/incomplete verification offers a separate manual confirmation.
+  HTTP 2xx is accepted request, not confirmed removal. Non-2xx is rejected;
+  connection uncertainty is unconfirmed. Neither triggers retry or fallback.
+  No proof is persisted or accepted from renderer IPC.
 
-No network request runs on render, sync or message selection. No bulk unsubscribe,
+No unsubscribe network request runs on render, sync or message selection. No bulk unsubscribe,
 SMTP auto-send, background subscription job, sender block, spam flag or deletion
 is added. No CLI, MCP or bot unsubscribe action is exposed. External launch
 failures can have an uncertain result; the UI does not automatically retry or

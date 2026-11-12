@@ -9414,7 +9414,7 @@ const unsubscribeRequests = new Map();
 function unsubscribeKey(email) {
   const offer = email?.unsubscribe;
   if (!email?.id || !email.accountId || email.isDraft || email.outbox || isLocalMail(email)
-      || !offer || !["web", "mailto"].includes(offer.kind)
+      || !offer || !["web", "mailto", "oneclick"].includes(offer.kind)
       || typeof offer.destination !== "string" || !offer.destination.trim()) return "";
   return JSON.stringify([email.accountId, email.id, email.bodyEpoch || 0, offer.kind, offer.destination]);
 }
@@ -9467,6 +9467,8 @@ async function requestUnsubscribe(email) {
     const result = await call("mail:unsubscribe", { accountId: email.accountId, emailId: email.id });
     const messages = {
       cancelled: "Cancelled. Nothing was requested.",
+      requested: "The sender accepted the unsubscribe request. Removal may take time and is not independently confirmed.",
+      rejected: "The sender did not accept the request. No retry or fallback was made.",
       opened: "Unsubscribe page opened in your browser. Follow the website's steps to finish; removal is not confirmed.",
       busy: "An unsubscribe review is already in progress for this message.",
       stale: "This message changed. Reopen it before reviewing unsubscribe again.",
@@ -9492,8 +9494,8 @@ async function requestUnsubscribe(email) {
       if (!Object.hasOwn(messages, result?.status)) throw new Error("No unsubscribe result was received.");
       receipt.status = result.status;
       receipt.message = result.message || messages[result.status];
-      receipt.error = ["error", "uncertain", "stale", "unavailable"].includes(result.status);
-      receipt.retired = ["opened", "uncertain"].includes(result.status);
+      receipt.error = ["error", "uncertain", "stale", "unavailable", "rejected"].includes(result.status);
+      receipt.retired = ["opened", "uncertain", "requested", "rejected"].includes(result.status);
     }
   } catch (error) {
     // A broken IPC response or compose-open acknowledgement may follow a side
@@ -9502,7 +9504,7 @@ async function requestUnsubscribe(email) {
     receipt.error = true;
     receipt.retired = true;
     receipt.message = (error?.message || "The unsubscribe action could not be confirmed.")
-      + " Check your browser or compose windows before trying again. Removal is not confirmed.";
+      + " Check your browser, compose windows or sender subscription status before trying again. Removal is not confirmed.";
   } finally {
     receipt.pending = false;
     paintUnsubscribeStatus(key);
@@ -9523,7 +9525,9 @@ function renderUnsubscribe(pane, email) {
   const title = document.createElement("strong");
   title.textContent = "This message offers an unsubscribe option.";
   const detail = document.createElement("p");
-  detail.textContent = offer.kind === "mailto"
+  detail.textContent = offer.kind === "oneclick"
+    ? `Review verifying the original message and requesting one-click unsubscribe at ${offer.destination}.`
+    : offer.kind === "mailto"
     ? `Review an unsubscribe email to ${offer.destination}. You choose whether to send it.`
     : `Review opening ${offer.destination} to finish unsubscribing in your browser.`;
   const status = document.createElement("p");

@@ -1,7 +1,7 @@
 // List-Unsubscribe is sender-controlled input, not proof of sender identity.
 // RFC 8058 sections 3.1/4 require verified DKIM covering both list headers.
-// Our transports do not provide that proof: even advertised one-click messages
-// use a reviewed mailto draft or the manual website flow. Never POST here.
+// One-click requires fresh original-message DKIM verification in the host.
+// Cached metadata and Authentication-Results never authorize a POST.
 const dns = require('node:dns').promises;
 const net = require('node:net');
 
@@ -183,6 +183,9 @@ function selected(metadata) {
 }
 
 function descriptor(metadata) {
+  const data = normalizedMetadata(metadata);
+  const automatic = data.oneClick && data.urls.find(url => url.startsWith('https:'));
+  if (automatic) return { kind: 'oneclick', destination: new URL(automatic).hostname };
   const choice = selected(metadata);
   return choice ? { kind: choice.kind, destination: choice.destination } : null;
 }
@@ -221,7 +224,7 @@ async function checkPublicDns(uri, lookup, timeoutMs) {
   } finally { clearTimeout(timer); }
 }
 
-function createUnsubscriber({ resolve, confirm, openExternal, lookup = dns.lookup.bind(dns), dnsTimeoutMs = DNS_TIMEOUT } = {}) {
+function createUnsubscriber({ resolve, confirm, openExternal, lookup = dns.lookup.bind(dns), dnsTimeoutMs = DNS_TIMEOUT, verifyOneClick, postUnsubscribe } = {}) {
   if (typeof resolve !== 'function' || typeof confirm !== 'function' || typeof openExternal !== 'function') {
     throw new TypeError('Unsubscribe requires host resolution, confirmation and browser callbacks.');
   }
@@ -243,10 +246,30 @@ function createUnsubscriber({ resolve, confirm, openExternal, lookup = dns.looku
       if (!choice) return { status: 'unavailable', message: 'This message has no supported unsubscribe option.' };
       const stamp = JSON.stringify(initial);
       const current = async () => JSON.stringify(snapshot(await resolve(request), request)) === stamp;
-      const accepted = await confirm({ accountId: initial.accountId, emailId: initial.emailId,
-        accountEmail: initial.accountEmail, sender: initial.sender, kind: choice.kind, destination: choice.destination,
-        ...(choice.kind === 'web' ? { secure: choice.url.startsWith('https:') } : {}) }, context);
-      if (accepted !== true) return { status: 'cancelled' };
+      const review = (option, extra = {}) => confirm({ accountId: initial.accountId, emailId: initial.emailId,
+        accountEmail: initial.accountEmail, sender: initial.sender, kind: option.kind, destination: option.destination,
+        ...(option.kind === 'web' ? { secure: option.url.startsWith('https:') } : {}), ...extra }, context);
+      const automatic = initial.metadata.oneClick && initial.metadata.urls.find(url => url.startsWith('https:'));
+      let fallbackReason;
+      if (automatic && typeof verifyOneClick === 'function' && typeof postUnsubscribe === 'function') {
+        if (await review({ kind: 'oneclick', destination: new URL(automatic).hostname }) !== true) return { status: 'cancelled' };
+        if (!await current()) return { status: 'stale' };
+        let proof;
+        try { proof = await verifyOneClick(request, initial, current); } catch { proof = null; }
+        if (!await current()) return { status: 'stale' };
+        // Fresh host proof must bind exactly the URL reviewed before the read.
+        if (proof?.verified === true && proof.url === automatic) {
+          let outcome;
+          try { outcome = await postUnsubscribe(automatic, { checkCurrent: current }); }
+          catch { return { status: 'uncertain', message: 'The request could not be confirmed. No retry was made. Check the sender or subscription status before trying again.' }; }
+          if (outcome?.status === 'accepted') return { status: 'requested', message: 'The sender accepted the unsubscribe request. Removal may take time and is not independently confirmed.' };
+          if (outcome?.issued === false) return { status: 'error', message: 'The request was stopped before it was sent. Reopen the message to review again.' };
+          if (outcome?.status === 'failed') return { status: 'rejected', message: 'The sender did not accept the request. No redirect, retry or fallback was attempted.' };
+          return { status: 'uncertain', message: 'The request may have reached the sender. No retry or fallback was made; removal is not confirmed.' };
+        }
+        fallbackReason = 'One-click authenticity could not be verified from the complete original message. No POST was sent. Review this separate manual option instead.';
+      }
+      if (await review(choice, fallbackReason ? { fallbackReason } : {}) !== true) return { status: 'cancelled' };
       if (!await current()) return { status: 'stale', message: 'The mailbox or message changed. Reopen it before trying again.' };
       if (choice.kind === 'mailto') {
         return { status: 'draft', draft: { accountId: initial.accountId, sourceMessageId: initial.emailId, to: choice.to, subject: choice.subject, text: choice.text },

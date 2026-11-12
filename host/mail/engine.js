@@ -773,26 +773,58 @@ async function confirmUnsubscribe(review, sender) {
   const win = BrowserWindow.fromWebContents(sender);
   if (!win || win.isDestroyed()) return false;
   const display = text => String(text || "").replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, " ").slice(0, 500);
-  const mailto = review.kind === "mailto";
+  const mailto = review.kind === "mailto", oneclick = review.kind === "oneclick";
   const detail = [
     `Mailbox: ${display(review.accountEmail)}`,
     `Sender: ${display(review.sender)}`,
     `Destination: ${display(review.destination)}`,
     ...(!mailto && review.secure === false ? ["Warning: this destination uses unencrypted HTTP."] : []),
     "",
-    mailto ? "Prepare an unsubscribe email in Morrow Mail. Review its recipient, subject and message before choosing Send. Nothing is sent now."
+    ...(review.fallbackReason ? [review.fallbackReason, ""] : []),
+    oneclick ? "Read the complete original message and verify originals up to 10 MiB using their DKIM signature and both unsubscribe headers. Only if verified, send a credential-free HTTPS unsubscribe POST to this destination. No redirects or automatic retries. A successful response means accepted request, not confirmed removal."
+      : mailto ? "Prepare an unsubscribe email in Morrow Mail. Review its recipient, subject and message before choosing Send. Nothing is sent now."
       : "Open the sender's unsubscribe link in your default browser. It may require more steps. Your browser may use its signed-in session and follow redirects; Morrow Mail cannot verify the final website or confirm that you are unsubscribed.",
     "",
     "The sender supplied this destination. Continue only if you trust it. No messages are deleted or marked as spam.",
   ].join("\n");
   const chosen = await dialog.showMessageBox(win, { type: "question", title: "Review unsubscribe",
-    message: mailto ? "Prepare an unsubscribe email?" : "Open the unsubscribe website?", detail,
-    buttons: ["Cancel", mailto ? "Review email" : "Open website"], defaultId: 0, cancelId: 0, noLink: true });
+    message: oneclick ? "Verify and request one-click unsubscribe?" : mailto ? "Prepare an unsubscribe email?" : "Open the unsubscribe website?", detail,
+    buttons: ["Cancel", oneclick ? "Verify and unsubscribe" : mailto ? "Review email" : "Open website"], defaultId: 0, cancelId: 0, noLink: true });
   return chosen?.response === 1 && !sender.isDestroyed?.() && !win.isDestroyed();
+}
+
+async function verifyUnsubscribeOriginal(params, initial) {
+  const row = db.messageById(params.emailId);
+  if (!row || row.account_id !== params.accountId || !(row.uid > 0 && row.uid_validity > 0)) return { verified: false };
+  const account = bindAccount(db.accountById(params.accountId));
+  const stamp = JSON.stringify([initial.identity, initial.metadata, initial.accountEmail, initial.sender]);
+  let expired = false, timer;
+  const check = () => {
+    const latest = unsubscribeSource(params);
+    if (expired || JSON.stringify([latest?.identity, latest?.metadata, latest?.accountEmail, latest?.sender]) !== stamp) throw new Error("Unsubscribe source changed.");
+    assertAccountCurrent(account);
+  };
+  // A timed-out mailbox-lane task can no longer produce proof or cause a POST.
+  const work = exclusive(account.id, async () => {
+    check();
+    const secret = await secretFor(account); check();
+    const source = await withMailClient(account, secret,
+      client => remote.fetchArchiveSource(client, row, { maxBytes: 10 * 1024 * 1024, check }));
+    check();
+    const proof = await require("./unsubscribe-dkim").verifyOneClick(source);
+    check(); return proof;
+  });
+  try {
+    return await Promise.race([work, new Promise(resolve => {
+      timer = setTimeout(() => { expired = true; resolve({ verified: false }); }, 30000);
+    })]);
+  } finally { clearTimeout(timer); expired = true; }
 }
 
 const unsubscribeMessage = listUnsubscribe.createUnsubscriber({ resolve: unsubscribeSource,
   confirm: confirmUnsubscribe,
+  verifyOneClick: verifyUnsubscribeOriginal,
+  postUnsubscribe: (url, options) => require("./unsubscribe-post").postUnsubscribe(url, options),
   openExternal: url => require("electron").shell.openExternal(url),
 });
 

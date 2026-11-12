@@ -61,8 +61,8 @@ test('duplicate fields and malformed delimiters fail closed', () => {
 
 test('descriptors reveal no URL/token and never mistake unverified authentication headers for proof', () => {
   const spoofed = raw(web, 'List-Unsubscribe=One-Click').replace('From:', 'Authentication-Results: forged; dkim=pass\r\nDKIM-Signature: h=list-unsubscribe:list-unsubscribe-post; b=synthetic\r\nFrom:');
-  assert.deepEqual(descriptor(parseHeaders(spoofed)), { kind: 'web', destination: 'lists.example.net' });
-  assert.deepEqual(descriptor(data(`${web}\n${mail}`, 'List-Unsubscribe=One-Click')), { kind: 'mailto', destination: 'leave@example.net' });
+  assert.deepEqual(descriptor(parseHeaders(spoofed)), { kind: 'oneclick', destination: 'lists.example.net' });
+  assert.deepEqual(descriptor(data(`${web}\n${mail}`, 'List-Unsubscribe=One-Click')), { kind: 'oneclick', destination: 'lists.example.net' });
   assert.deepEqual(descriptor(data(`${web}\n${mail}`)), { kind: 'web', destination: 'lists.example.net' });
   assert.deepEqual(descriptor(data(`${mail}\n${web}`)), { kind: 'mailto', destination: 'leave@example.net' });
   assert.deepEqual(descriptor(data(`ftp://lists.example.net/u\n${web}`)), { kind: 'web', destination: 'lists.example.net' });
@@ -225,4 +225,44 @@ test('open uncertainty is reported without retry/fallback; generic pre-effect fa
   const broken = fixture({ resolve: async () => { throw new Error('missing account'); } });
   assert.equal((await broken.unsubscribe(request)).status, 'error');
   assert.equal((await fixture().unsubscribe(request)).status, 'opened');
+});
+
+test('one-click requires native review and fresh proof for exactly the reviewed URL', async () => {
+  const events = [];
+  const f = fixture({ confirm: async review => { events.push(review.kind); return true; },
+    verifyOneClick: async () => { events.push('verify'); return { verified: true, url: web }; },
+    postUnsubscribe: async (url, options) => { assert.equal(url, web); assert.equal(await options.checkCurrent(), true); events.push('post'); return { status: 'accepted', issued: true }; } });
+  f.source.metadata = data(web, 'List-Unsubscribe=One-Click');
+  assert.equal((await f.unsubscribe(request)).status, 'requested');
+  assert.deepEqual(events, ['oneclick', 'verify', 'post']); assert.deepEqual(f.calls.open, []);
+});
+test('cancel prevents original verification and POST', async () => {
+  const f = fixture({ confirm: async () => false, verifyOneClick: async () => { throw Error('no verify'); }, postUnsubscribe: async () => { throw Error('no POST'); } });
+  f.source.metadata = data(web, 'List-Unsubscribe=One-Click');
+  assert.equal((await f.unsubscribe(request)).status, 'cancelled'); assert.deepEqual(f.calls.open, []);
+});
+test('failed or mismatched proof requires separate manual confirmation', async () => {
+  for (const proof of [null, { verified: false }, { verified: true, url: 'https://other.example.net/u' }]) {
+    const reviews = [];
+    const f = fixture({ confirm: async review => { reviews.push(review); return reviews.length === 1; },
+      verifyOneClick: async () => proof, postUnsubscribe: async () => { throw Error('no POST'); } });
+    f.source.metadata = data(web + '\n' + mail, 'List-Unsubscribe=One-Click');
+    assert.equal((await f.unsubscribe(request)).status, 'cancelled');
+    assert.deepEqual(reviews.map(row => row.kind), ['oneclick', 'mailto']);
+    assert.match(reviews[1].fallbackReason, /No POST was sent/); assert.deepEqual(f.calls.open, []);
+  }
+});
+test('stale source during verification cannot POST or fall back', async () => {
+  const f = fixture({ verifyOneClick: async () => { f.source.identity += ':changed'; return { verified: true, url: web }; },
+    postUnsubscribe: async () => { throw Error('no POST'); } });
+  f.source.metadata = data(web, 'List-Unsubscribe=One-Click');
+  assert.equal((await f.unsubscribe(request)).status, 'stale'); assert.equal(f.calls.confirm.length, 1);
+});
+test('POST outcomes never trigger automatic retry or fallback', async () => {
+  for (const [response, expected] of [[{status:'accepted',issued:true},'requested'],[{status:'failed',issued:true},'rejected'],[{status:'uncertain',issued:true},'uncertain'],[{status:'failed',issued:false},'error']]) {
+    let posts = 0;
+    const f = fixture({ verifyOneClick: async () => ({verified:true,url:web}), postUnsubscribe: async () => { posts++; return response; } });
+    f.source.metadata = data(web,'List-Unsubscribe=One-Click');
+    assert.equal((await f.unsubscribe(request)).status, expected); assert.equal(posts,1); assert.equal(f.calls.confirm.length,1); assert.deepEqual(f.calls.open,[]);
+  }
 });

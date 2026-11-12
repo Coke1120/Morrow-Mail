@@ -3,8 +3,10 @@ headers from Gmail API and IMAP (including Outlook and Yahoo). The host confirms
 the exact mailbox and sender-supplied destination before opening a manual website
 or preparing a mailto compose review. Older complete cached mail needs an explicit
 Reload message / Retry download to obtain missing headers. Nothing is sent automatically. RFC 8058
-POST remains unavailable without independent DKIM verification; website opening
-is not proof of unsubscribe completion. Local Folders and drafts are excluded.
+POST requires native approval and fresh DKIM verification of the complete original
+and both list headers. Pinned public DNS and verified TLS, no credentials, redirects
+or retries. Verification failure offers a separately reviewed manual alternative;
+POST outcomes never trigger fallback. Accepted request is not confirmed removal. Local Folders and drafts are excluded.
 See [unsubscribe safety and provider limits](adr/2026-11-12-reviewed-list-unsubscribe.md).
 
 Mail sidebar folders start 14 pixels inside each account heading, including Gmail,

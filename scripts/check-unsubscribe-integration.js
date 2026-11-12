@@ -10,12 +10,25 @@ async function run() {
   const dns = require('node:dns').promises, oldLookup = dns.lookup;
   const net = require('node:net'), oldConnect = net.Socket.prototype.connect;
   let dialogResponse = 0, duringReview = null, destroyed = false;
+  let proof = { verified: false }, duringVerification = null, duringDownload = null;
+  let archiveEnabled = false, archiveUid = null, archiveBytes = null;
+  const verifiedSources = [], posts = [], downloads = [], reviewResponses = [];
+  const verifier = { async verifyOneClick(source) { verifiedSources.push(Buffer.from(source)); if (duringVerification) await duringVerification(); return proof; } };
+  const transport = { async postUnsubscribe(url, options) {
+    assert.equal(await options.checkCurrent(), true, 'transport gets the live source guard');
+    posts.push(url); return { status: 'accepted', issued: true };
+  } };
   const dialogs = [], launches = [], sender = { isDestroyed: () => destroyed };
   const win = { isDestroyed: () => destroyed };
   const electron = { BrowserWindow: { fromWebContents: candidate => candidate === sender ? win : null },
-    dialog: { async showMessageBox(parent, options) { assert.equal(parent, win); dialogs.push(options); if (duringReview) await duringReview(); return { response: dialogResponse }; } },
+    dialog: { async showMessageBox(parent, options) { assert.equal(parent, win); dialogs.push(options); if (duringReview) await duringReview(); return { response: reviewResponses.length ? reviewResponses.shift() : dialogResponse }; } },
     shell: { async openExternal(url) { launches.push(url); } } };
-  Module._load = function(request, ...args) { return request === 'electron' ? electron : oldLoad.call(this, request, ...args); };
+  Module._load = function(request, ...args) {
+    if (request === 'electron') return electron;
+    if (request === './unsubscribe-dkim') return verifier;
+    if (request === './unsubscribe-post') return transport;
+    return oldLoad.call(this, request, ...args);
+  };
   Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_AI_CONFIG_DIR: directory, MORROW_MAIL_SECRETS: 'memory', MORROW_GMAIL_PACE: '0' });
   global.fetch = async () => { throw new Error('Live fetch forbidden'); };
   net.Socket.prototype.connect = function() { throw new Error('Live socket forbidden'); };
@@ -27,7 +40,16 @@ async function run() {
   const raw = Buffer.from('From: Newsletter <list@news.example.com>\r\nTo: owner@fixture.invalid\r\nSubject: Synthetic newsletter\r\nMessage-ID: <list@news.example.com>\r\nList-Unsubscribe: <https://news.example.com/unsubscribe?token=opaque>,\r\n <mailto:leave@news.example.com?subject=Leave&body=Remove%20this%20address>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\nSynthetic body\r\n');
   const client = { mailbox: { uidValidity: 7 },
     async getMailboxLock() { return { release() {} }; },
-    async *fetch(range) { reads++; yield { uid: Number(range), envelope: { subject: 'Synthetic newsletter', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, source: raw, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') }; } };
+    async *fetch(range) { reads++; yield { ...(archiveEnabled ? { size: raw.length } : {}), uid: archiveUid ?? Number(range), envelope: { subject: 'Synthetic newsletter', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, source: raw, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') }; },
+    async download(uid, part, options) {
+      downloads.push({ uid, part, options });
+      const bytes = archiveBytes || raw;
+      return { content: require('node:stream').Readable.from((async function* () {
+        yield bytes.subarray(0, 31);
+        if (duringDownload) await duringDownload();
+        yield bytes.subarray(31);
+      })()) };
+    } };
   remote.withClient = async (_account, _secret, work) => work(client);
   const ask = async (channel, params, event = { sender }) => {
     const result = await engine.answer(channel, [params], event);
@@ -42,12 +64,12 @@ async function run() {
     const parsed = await remote.fetchSource(client, 'INBOX', 1, 7);
     assert.equal(parsed.listUnsubscribe.oneClick, true);
     assert.equal(parsed.listUnsubscribe.urls.length, 2);
-    assert.deepEqual(policy.descriptor(parsed.listUnsubscribe), { kind: 'mailto', destination: 'leave@news.example.com' });
+    assert.deepEqual(policy.descriptor(parsed.listUnsubscribe), { kind: 'oneclick', destination: 'news.example.com' });
     db.applyFolderSync('imap', 'INBOX', fixture.report([{ ...parsed, id: 'newsletter' }]));
     const stored = db.messageById('newsletter');
     assert.deepEqual(JSON.parse(stored.list_unsubscribe_json), parsed.listUnsubscribe);
     const listed = (await ask('mail:listFromCache', { accountId: 'imap', folderId: 'INBOX' })).emails.find(row => row.id === stored.id);
-    assert.deepEqual(listed.unsubscribe, { kind: 'mailto', destination: 'leave@news.example.com' });
+    assert.deepEqual(listed.unsubscribe, { kind: 'oneclick', destination: 'news.example.com' });
     assert.equal(JSON.stringify(listed).includes('token=opaque'), false, 'opaque URLs stay out of renderer data');
     assert.equal(Object.hasOwn(listed, 'listUnsubscribe'), false);
     const email = (await ask('mail:openEmail', { accountId: 'imap', emailId: stored.id, includeThread: false })).email;
@@ -72,7 +94,7 @@ async function run() {
     assert.equal(providerAttempts, 0, 'cached opening cannot enter the provider, even when a failed read would preserve the body');
     remote.withClient = oldRead;
     const legacy = (await ask('mail:openEmail', { accountId: 'imap', emailId: 'legacy', includeThread: false, retry: true })).email;
-    assert.equal(legacy.unsubscribe.kind, 'mailto'); assert.equal(legacy.unsubscribeChecked, true); assert.equal(reads, before + 1);
+    assert.equal(legacy.unsubscribe.kind, 'oneclick'); assert.equal(legacy.unsubscribeChecked, true); assert.equal(reads, before + 1);
 
     // Actual native review, captured destination, no automatic SMTP or browser.
     const target = { accountId: 'imap', emailId: stored.id };
@@ -80,13 +102,84 @@ async function run() {
     assert.equal(result.status, 'cancelled'); assert.equal(launches.length, 0);
     assert.equal(dialogs.at(-1).defaultId, 0); assert.equal(dialogs.at(-1).cancelId, 0);
     assert.match(dialogs.at(-1).detail, /owner@fixture.invalid/);
-    assert.match(dialogs.at(-1).detail, /leave@news.example.com/);
-    assert.match(dialogs.at(-1).detail, /Nothing is sent now/);
+    assert.match(dialogs.at(-1).detail, /news.example.com/);
+    assert.match(dialogs.at(-1).detail, /Only if verified/);
     dialogResponse = 1;
     result = await ask('mail:unsubscribe', target);
     assert.equal(result.status, 'draft');
     assert.deepEqual(result.draft, { accountId: 'imap', sourceMessageId: stored.id, to: 'leave@news.example.com', subject: 'Leave', text: 'Remove this address' });
     assert.equal(launches.length, 0);
+    assert.match(dialogs.at(-2).message, /Verify and request one-click/);
+    assert.match(dialogs.at(-1).detail, /No POST was sent.*separate manual option/);
+    assert.equal(verifiedSources.length, 0, 'missing provider size fails before verifier');
+    assert.equal(posts.length, 0);
+
+    // Real engine/mailbox lane/credential/IMAP raw path; only crypto and HTTP
+    // leaf modules are mocked. Separate suites verify signatures and pinned POST.
+    archiveEnabled = true;
+    proof = { verified: true, url: 'https://news.example.com/unsubscribe?token=opaque' };
+    const reviewedBefore = dialogs.length;
+    result = await ask('mail:unsubscribe', target);
+    assert.equal(result.status, 'requested');
+    assert.match(result.message, /not independently confirmed/);
+    assert.equal(dialogs.length, reviewedBefore + 1);
+    assert.deepEqual(verifiedSources.at(-1), raw, 'verifier receives complete raw MIME, not cached parsed body');
+    assert.equal(downloads.at(-1).uid, String(stored.uid));
+    assert.equal(downloads.at(-1).part, undefined);
+    assert.deepEqual(downloads.at(-1).options, { uid: true, maxBytes: 10 * 1024 * 1024 + 1 });
+    assert.deepEqual(posts, [proof.url]);
+    assert.equal(launches.length, 0);
+
+    const posted = posts.length;
+    for (const failure of ['uid', 'validity', 'truncated']) {
+      const count = verifiedSources.length;
+      archiveUid = failure === 'uid' ? stored.uid + 100 : null;
+      client.mailbox.uidValidity = failure === 'validity' ? 8 : 7;
+      archiveBytes = failure === 'truncated' ? raw.subarray(0, raw.length - 2) : null;
+      const dialogsBefore = dialogs.length;
+      reviewResponses.push(1, 0);
+      result = await ask('mail:unsubscribe', target);
+      assert.equal(result.status, 'cancelled', failure + ' requires a separate declined manual review');
+      assert.equal(dialogs.length, dialogsBefore + 2);
+      assert.match(dialogs.at(-1).detail, /No POST was sent/);
+      assert.equal(verifiedSources.length, count, failure + ' does not verify a different/incomplete delivery');
+      assert.equal(posts.length, posted);
+    }
+    archiveUid = null; archiveBytes = null; client.mailbox.uidValidity = 7;
+
+    // Delivery/account/header changes during awaited raw reads or verification
+    // invalidate the first review; no POST or second fallback is permissible.
+    for (const failure of ['source', 'account', 'metadata']) {
+      const count = verifiedSources.length;
+      duringDownload = failure === 'source' ? async () => db.updateMessage(stored.id, { uid: stored.uid + 1 }) : null;
+      duringVerification = failure === 'account'
+        ? async () => db.updateAccountLogin('imap', { ...fixture.account, username: 'replacement-login' })
+        : failure === 'metadata' ? async () => db.updateMessage(stored.id, { list_unsubscribe_json: JSON.stringify({ ...parsed.listUnsubscribe, urls: ['https://news.example.com/changed'] }) }) : null;
+      const dialogsBefore = dialogs.length;
+      result = await ask('mail:unsubscribe', target);
+      assert.equal(result.status, 'stale', failure);
+      assert.equal(dialogs.length, dialogsBefore + 1);
+      if (failure === 'source') assert.equal(verifiedSources.length, count);
+      assert.equal(posts.length, posted, failure + ' suppresses POST');
+      duringDownload = null; duringVerification = null;
+      db.updateMessage(stored.id, { uid: stored.uid, list_unsubscribe_json: JSON.stringify(parsed.listUnsubscribe) });
+      db.updateAccountLogin('imap', fixture.account);
+    }
+
+    // One-click consent is not consent to a manual fallback.
+    for (const rejectedProof of [{ verified: false }, { verified: true, url: 'https://news.example.com/different' }]) {
+      proof = rejectedProof;
+      const dialogsBefore = dialogs.length;
+      reviewResponses.push(1, 0);
+      assert.equal((await ask('mail:unsubscribe', target)).status, 'cancelled');
+      assert.equal(dialogs.length, dialogsBefore + 2);
+      assert.match(dialogs.at(-1).message, /Prepare an unsubscribe email/);
+      assert.match(dialogs.at(-1).detail, /authenticity could not be verified/);
+      assert.equal(posts.length, posted); assert.equal(launches.length, 0);
+    }
+    reviewResponses.push(1, 1);
+    assert.equal((await ask('mail:unsubscribe', target)).status, 'draft', 'separate fallback approval prepares, never sends');
+    assert.equal(posts.length, posted);
     assert.equal((await ask('mail:unsubscribe', { ...target, accountId: 'other' })).status, 'unavailable');
     assert.equal((await ask('mail:unsubscribe', { ...target, url: 'https://attacker.example.com' })).status, 'unavailable');
     assert.equal((await ask('mail:unsubscribe', { accountId: '__morrow_local__', emailId: 'local-message:missing' })).status, 'unavailable');
@@ -138,7 +231,7 @@ async function run() {
     });
     await bridge.invoke('mail:unsubscribe', target); assert.equal(invoked.channel, 'mail:unsubscribe');
     await assert.rejects(bridge.invoke('mail:unsubscribeAll', target), /Unsupported channel/);
-    console.log('unsubscribe-integration-ok: provider headers, cache/restart/explicit reload, host ownership/native review, manual-only outcomes and preload');
+    console.log('unsubscribe-integration-ok: provider headers, cache/restart/explicit reload, host ownership/native review, verified raw-source one-click wiring, stale/failed-proof suppression, separately confirmed manual fallback and preload');
   } finally {
     remote.withClient = oldClient; Module._load = oldLoad; global.fetch = oldFetch; dns.lookup = oldLookup; net.Socket.prototype.connect = oldConnect;
     await engine.stopIdle(); await db.close();
