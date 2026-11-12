@@ -95,7 +95,19 @@ function fixture(actualBundle = false) {
     fetch: async () => { throw Error("network forbidden in synthetic fixture"); },
     Path2D: class { addPath() {} },
   };
-  vm.runInNewContext(actualBundle ? bundle : source, globals, { filename: actualBundle ? "pdf-preview.bundle.js" : "pdf-preview.js" });
+  const context = vm.createContext(globals);
+  // Electron's Chromium provides this API; Node 20 CI does not. Supply it only
+  // in the synthetic renderer realm, without changing the host or PDF bundle.
+  vm.runInContext(`
+    if (typeof Promise.withResolvers !== "function") {
+      Object.defineProperty(Promise, "withResolvers", { configurable: true, writable: true, value: function () {
+        let resolve, reject;
+        const promise = new this((res, rej) => { resolve = res; reject = rej; });
+        return { promise, resolve, reject };
+      } });
+    }
+  `, context);
+  vm.runInContext(actualBundle ? bundle : source, context, { filename: actualBundle ? "pdf-preview.bundle.js" : "pdf-preview.js" });
   const pages = node("attachment-preview-pages"), stage = node("attachment-preview-stage");
   const controller = new AbortController();
   const render = (options = {}) => window.morrowPdf.render({ data: Uint8Array.of(1), pages, stage, signal: controller.signal, ...options });
@@ -314,7 +326,9 @@ function contractAndHelp() {
 }
 
 async function run() {
+  const hostWithResolvers = Promise.withResolvers;
   await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await shippedBundle(); contractAndHelp();
+  assert.equal(Promise.withResolvers, hostWithResolvers, "renderer compatibility never patches the host Promise");
   console.log("pdf-preview-ok: source and shipped PDF.js bundle, accessible/inert text, progressive admission/abort, resize failure/Retry, canvas caps, lifecycle/app integration, CSP/assets/rendered Features");
 }
 module.exports = { run };
