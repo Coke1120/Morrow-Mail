@@ -240,15 +240,28 @@ test('all DKIM key queries share one DNS deadline rather than resetting it per s
   const signatures = await dkimSign(source, { signTime: signing, expires, headerList: fields, strict: true,
     signatureData: ['first', 'second'].map(selector => ({ signingDomain: 'example.net', selector, privateKey })) });
   assert.equal(signatures.errors.length, 0);
-  let calls = 0;
-  const result = await verify(Buffer.concat([Buffer.from(signatures.signatures), source]), {
-    timeoutMs: 1000, dnsTimeoutMs: 40,
-    resolver: async () => {
-      const index = ++calls;
-      await new Promise(resolve => setTimeout(resolve, 25));
-      return index === 1 ? [['v=DKIM1; p=']] : [[record]];
-    }
-  });
-  assert.equal(result.verified, false);
-  assert.equal(calls, 2);
+  // Isolate the elapsed clock from real Windows timer scheduling. Other cases
+  // exercise real deadline timers; this one proves budget sharing between keys.
+  const filename = require.resolve('../host/mail/unsubscribe-dkim');
+  const code = require('node:fs').readFileSync(filename, 'utf8');
+  const isolated = { exports: {} };
+  let elapsed = 0;
+  require('node:vm').runInNewContext(code, {
+    module: isolated, exports: isolated.exports, require: require('node:module').createRequire(filename),
+    Buffer, Uint8Array, AbortController,
+    Date: class extends Date { static now() { return elapsed; } },
+    setTimeout: () => ({}), clearTimeout() {},
+  }, { filename });
+  for (const [dnsTimeoutMs, expected] of [[40, false], [100, true]]) {
+    let calls = 0; elapsed = 0;
+    const result = await isolated.exports.verifyOneClick(Buffer.concat([Buffer.from(signatures.signatures), source]), {
+      now, timeoutMs: 1000, dnsTimeoutMs,
+      resolver: async () => {
+        elapsed += 25;
+        return ++calls === 1 ? [['v=DKIM1; p=']] : [[record]];
+      }
+    });
+    assert.equal(result.verified, expected);
+    assert.equal(calls, 2);
+  }
 });
