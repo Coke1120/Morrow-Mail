@@ -50,8 +50,8 @@ function isCancelled(error) {
 }
 
 function placeholderSize(base) {
-  const height = Math.max(1, Math.round(8 * base.height / Math.max(1, base.width)));
-  return { width: 8, height };
+  const size = pdfPreviewBitmap(base.width, base.height, 8, 1);
+  return { width: size.bitmapWidth, height: size.bitmapHeight };
 }
 
 async function renderPdfPages(options) {
@@ -127,26 +127,31 @@ async function renderPdfPages(options) {
       const base = page.getViewport({ scale: 1 });
       const slot = document.createElement("div");
       slot.className = "attachment-preview-page-slot";
+      slot.setAttribute("role", "group");
+      slot.setAttribute("aria-label", "Page " + pageNumber + " of " + total);
       const canvas = document.createElement("canvas");
       canvas.className = "attachment-preview-page";
-      canvas.setAttribute("role", "img");
-      canvas.setAttribute("aria-label", "Page " + pageNumber + " of " + total);
+      canvas.setAttribute("aria-hidden", "true");
+      const text = document.createElement("div");
+      text.className = "sr";
+      text.dir = "auto";
       const placeholder = placeholderSize(base);
       canvas.width = placeholder.width;
       canvas.height = placeholder.height;
-      slot.appendChild(canvas);
+      slot.append(canvas, text);
       const entry = {
         page,
         pageNumber,
         base,
         slot,
         canvas,
+        text,
+        error: null,
         renderTask: null,
         token: 0,
         painted: false,
         atWidth: 0,
         dropped: false,
-        failed: false,
         visible: false,
       };
       bySlot.set(slot, entry);
@@ -155,8 +160,21 @@ async function renderPdfPages(options) {
       return entry;
     };
 
+    const readText = async (entry) => {
+      let text;
+      try {
+        const content = await entry.page.getTextContent();
+        text = content.items.map((item) => item.str + (item.hasEOL ? "\n" : " ")).join("").trim();
+        if (!text) text = "No extractable text on this page. Save or Open it instead.";
+      } catch {
+        text = "Text could not be extracted from this page. Save or Open it instead.";
+      }
+      if (settled || (signal && signal.aborted)) return;
+      entry.text.textContent = text;
+    };
+
     const paint = async (entry) => {
-      if (settled || entry.failed || entry.dropped || (signal && signal.aborted)) return;
+      if (settled || entry.dropped || (signal && signal.aborted)) return;
       const token = ++entry.token;
       let cssWidth = contentWidth(pages);
       if (cssWidth < 2) {
@@ -165,7 +183,7 @@ async function renderPdfPages(options) {
       }
       if (settled || token !== entry.token || entry.dropped || (signal && signal.aborted)) return;
       if (cssWidth < 2) throw new Error("PDF preview has no space.");
-      if (entry.painted && Math.abs(entry.atWidth - cssWidth) < 2 && entry.canvas.width > 8) return;
+      if (entry.painted && Math.abs(entry.atWidth - cssWidth) < 2) return;
       if (entry.renderTask) {
         const previousTask = entry.renderTask;
         entry.renderTask = null;
@@ -174,7 +192,9 @@ async function renderPdfPages(options) {
       }
       if (settled || token !== entry.token || entry.dropped || (signal && signal.aborted)) return;
       const size = pdfPreviewBitmap(entry.base.width, entry.base.height, cssWidth, window.devicePixelRatio || 1);
-      const viewport = entry.page.getViewport({ scale: size.bitmapWidth / entry.base.width });
+      const viewport = entry.page.getViewport({ scale: Math.min(size.bitmapWidth / entry.base.width, size.bitmapHeight / entry.base.height) });
+      entry.painted = false;
+      entry.atWidth = 0;
       entry.canvas.width = Math.max(1, Math.floor(viewport.width));
       entry.canvas.height = Math.max(1, Math.floor(viewport.height));
       const context = entry.canvas.getContext("2d");
@@ -184,6 +204,7 @@ async function renderPdfPages(options) {
         await renderTask.promise;
       } catch (error) {
         if (isCancelled(error) || settled || token !== entry.token || (signal && signal.aborted)) return;
+        try { renderTask.cancel(); } catch { /* already failed */ }
         throw error;
       } finally {
         if (entry.renderTask === renderTask) entry.renderTask = null;
@@ -191,16 +212,36 @@ async function renderPdfPages(options) {
       if (settled || token !== entry.token || entry.dropped) return;
       entry.painted = true;
       entry.atWidth = cssWidth;
+      entry.canvas.hidden = false;
+      if (entry.error && entry.error.contains(document.activeElement)) stage.focus();
+      if (entry.error) entry.error.remove();
+      entry.error = null;
     };
 
     const showSlotError = (entry) => {
-      entry.failed = true;
-      entry.dropped = true;
+      entry.painted = false;
+      entry.atWidth = 0;
+      entry.canvas.hidden = true;
+      if (entry.error) return;
       const note = document.createElement("p");
       note.className = "attachment-preview-page-error";
-      note.textContent = "This page could not be previewed.";
-      entry.slot.replaceChildren(note);
+      note.setAttribute("role", "status");
+      note.textContent = "This page could not be previewed. ";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "ghost";
+      retry.textContent = "Retry";
+      retry.setAttribute("aria-label", "Retry page " + entry.pageNumber);
+      retry.addEventListener("click", () => queuePaint(entry));
+      note.appendChild(retry);
+      entry.error = note;
+      entry.slot.appendChild(note);
     };
+
+    const queuePaint = (entry) => enqueue(() => paint(entry).catch((error) => {
+      if (settled || (signal && signal.aborted) || isCancelled(error)) return;
+      showSlotError(entry);
+    }));
 
     const firstPage = await pdf.getPage(1);
     if (settled || (signal && signal.aborted)) return;
@@ -209,19 +250,19 @@ async function renderPdfPages(options) {
     await enqueue(() => paint(first));
     if (settled || (signal && signal.aborted)) return;
     if (options.onFirstPage) options.onFirstPage();
+    if (settled || (signal && signal.aborted)) return;
     pages.removeAttribute("aria-busy");
+    await readText(first);
+    if (settled || (signal && signal.aborted)) return;
 
     observer = new IntersectionObserver((records) => {
       for (const record of records) {
         const entry = bySlot.get(record.target);
-        if (!entry || entry.failed || settled) continue;
+        if (!entry || settled) continue;
         if (record.isIntersecting) {
           entry.visible = true;
           entry.dropped = false;
-          enqueue(() => paint(entry).catch((error) => {
-            if (settled || (signal && signal.aborted) || isCancelled(error)) return;
-            showSlotError(entry);
-          }));
+          queuePaint(entry);
         } else {
           entry.visible = false;
           entry.dropped = true;
@@ -246,21 +287,24 @@ async function renderPdfPages(options) {
       requestAnimationFrame(() => {
         if (tick !== resizeTick || settled) return;
         for (const entry of entries) {
-          if (!entry.visible || entry.failed) continue;
-          enqueue(() => paint(entry).catch(() => {}));
+          if (!entry.visible) continue;
+          queuePaint(entry);
         }
       });
     });
     resize.observe(stage);
 
-    // Later pages stay out of the caller's wait so a long file does not hold the UI.
+    // Fake-worker promises can settle in microtasks; yield to input between batches.
     void (async () => {
       for (let pageNumber = 2; pageNumber <= total; pageNumber += 1) {
+        if (pageNumber % 8 === 2) await new Promise((resolve) => setTimeout(resolve, 0));
         if (settled || (signal && signal.aborted)) return;
         try {
           const page = await pdf.getPage(pageNumber);
           if (settled || (signal && signal.aborted)) return;
           const entry = makeEntry(page, pageNumber);
+          await readText(entry);
+          if (settled || (signal && signal.aborted)) return;
           observer.observe(entry.slot);
         } catch (error) {
           if (settled || (signal && signal.aborted) || isCancelled(error)) return;

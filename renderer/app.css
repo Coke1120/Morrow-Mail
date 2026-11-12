@@ -4517,6 +4517,25 @@ button.attachment-name:hover { text-decoration: underline; }
 
 .body p { margin: 0 0 0.75em; }
 
+.unsubscribe-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 20px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--hover);
+  font-size: 13px;
+}
+.unsubscribe-banner > svg { flex: none; color: var(--accent-ink); }
+.unsubscribe-copy { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.unsubscribe-copy p { margin: 4px 0 0; color: var(--muted); }
+.unsubscribe-copy .unsubscribe-status.error { color: var(--danger); }
+.unsubscribe-status:empty { display: none; }
+.unsubscribe-banner > button { flex: 0 1 auto; min-height: 32px; white-space: normal; }
+
 .remote-gate {
   display: flex;
   flex-wrap: wrap;
@@ -5041,6 +5060,7 @@ dialog h2 {
 }
 
 .attachment-preview-page-slot {
+  position: relative;
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -5053,6 +5073,8 @@ dialog h2 {
   width: 100%;
   max-width: 100%;
   height: auto;
+  max-height: 4096px;
+  object-fit: contain;
 }
 
 .attachment-preview-page-error {

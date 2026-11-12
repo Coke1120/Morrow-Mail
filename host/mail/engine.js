@@ -48,6 +48,7 @@ const perf = require("../performance-diagnostics");
 const { diagnosticMessage: gmailDiagnosticMessage } = require("./gmail-error");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
+const listUnsubscribe = require("./list-unsubscribe");
 const decoding = require("./mime-decoding");
 const composePolicy = require("../../shared/compose-policy");
 const senderHistory = require("../../shared/sender-history");
@@ -710,6 +711,8 @@ function listRow(row, generations, memberships) {
     messageId: row.rfc_message_id || null,
     inReplyTo: row.in_reply_to || null,
     recipientHeaders,
+    unsubscribe: !row.is_draft && !row.draft_pending ? listUnsubscribe.descriptor(parseUnsubscribeMetadata(row)) : null,
+    unsubscribeChecked: row.list_unsubscribe_json != null || Number(row.uid) <= 0,
     replyTo: recipientHeaders.replyTo || [],
     bodyWarning: row.body_warning || "",
     bodyComplete: row.body_complete === 1,
@@ -742,6 +745,95 @@ function conversationRows(rows, selectedId) {
     else if (row.id === selectedId) unique[index] = row;
   }
   return unique;
+}
+
+function parseUnsubscribeMetadata(row) {
+  try { return JSON.parse(row?.list_unsubscribe_json || "null"); }
+  catch { return null; }
+}
+
+function unsubscribeSource(params) {
+  const row = db.messageById(params.emailId);
+  const account = db.accountById(params.accountId);
+  if (!row || !account || row.account_id !== account.id || row.is_draft || row.draft_pending) return null;
+  actions.assertIdentityReady(row.id);
+  return { accountId: account.id, emailId: row.id, accountEmail: account.email,
+    sender: row.from_addr || "", metadata: parseUnsubscribeMetadata(row),
+    // Bind native review to the mailbox incarnation and exact provider delivery.
+    // A reconnect, move, changed source or account replacement invalidates it.
+    identity: JSON.stringify([account.id, account.created_at, accountEpochs.get(account.id) || 0,
+      account.auth_kind, account.mail_transport, account.gmail_generation, account.username,
+      account.imap_host, account.imap_port, account.imap_tls, row.id, row.folder_path,
+      row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id, row.from_addr]) };
+}
+
+async function confirmUnsubscribe(review, sender) {
+  if (!sender || sender.isDestroyed?.()) return false;
+  const { dialog, BrowserWindow } = require("electron");
+  const win = BrowserWindow.fromWebContents(sender);
+  if (!win || win.isDestroyed()) return false;
+  const display = text => String(text || "").replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, " ").slice(0, 500);
+  const mailto = review.kind === "mailto", oneclick = review.kind === "oneclick";
+  const detail = [
+    `Mailbox: ${display(review.accountEmail)}`,
+    `Sender: ${display(review.sender)}`,
+    `Destination: ${display(review.destination)}`,
+    ...(!mailto && review.secure === false ? ["Warning: this destination uses unencrypted HTTP."] : []),
+    "",
+    ...(review.fallbackReason ? [review.fallbackReason, ""] : []),
+    oneclick ? "Read and verify the complete original message (IMAP streaming up to 64 MiB; Gmail bounded download up to 35 MiB) using its DKIM signature and both unsubscribe headers. Only if verified, send a credential-free HTTPS unsubscribe POST to this destination. No redirects or automatic retries. A successful response means accepted request, not confirmed removal."
+      : mailto ? "Prepare an unsubscribe email in Morrow Mail. Review its recipient, subject and message before choosing Send. Nothing is sent now."
+      : "Open the sender's unsubscribe link in your default browser. It may require more steps. Your browser may use its signed-in session and follow redirects; Morrow Mail cannot verify the final website or confirm that you are unsubscribed.",
+    "",
+    "The sender supplied this destination. Continue only if you trust it. No messages are deleted or marked as spam.",
+  ].join("\n");
+  const chosen = await dialog.showMessageBox(win, { type: "question", title: "Review unsubscribe",
+    message: oneclick ? "Verify and request one-click unsubscribe?" : mailto ? "Prepare an unsubscribe email?" : "Open the unsubscribe website?", detail,
+    buttons: ["Cancel", oneclick ? "Verify and unsubscribe" : mailto ? "Review email" : "Open website"], defaultId: 0, cancelId: 0, noLink: true });
+  return chosen?.response === 1 && !sender.isDestroyed?.() && !win.isDestroyed();
+}
+
+async function verifyUnsubscribeOriginal(params, initial) {
+  const row = db.messageById(params.emailId);
+  if (!row || row.account_id !== params.accountId || !(row.uid > 0 && row.uid_validity > 0)) return { verified: false };
+  const account = bindAccount(db.accountById(params.accountId));
+  const stamp = JSON.stringify([initial.identity, initial.metadata, initial.accountEmail, initial.sender]);
+  let expired = false, timer;
+  const controller = new AbortController();
+  const check = () => {
+    controller.signal.throwIfAborted();
+    const latest = unsubscribeSource(params);
+    if (expired || JSON.stringify([latest?.identity, latest?.metadata, latest?.accountEmail, latest?.sender]) !== stamp) throw new Error("Unsubscribe source changed.");
+    assertAccountCurrent(account);
+  };
+  // A timed-out mailbox-lane task can no longer produce proof or cause a POST.
+  const work = exclusive(account.id, async () => {
+    check();
+    const secret = await secretFor(account); check();
+    const proof = await withMailClient(account, secret,
+      client => remote.withUnsubscribeSource(client, row,
+        { maxBytes: 64 * 1024 * 1024, check, signal: controller.signal },
+        source => require("./unsubscribe-dkim").verifyOneClick(source, { signal: controller.signal })),
+      { signal: controller.signal, check });
+    check(); return proof;
+  });
+  try {
+    return await Promise.race([work, new Promise(resolve => {
+      timer = setTimeout(() => { expired = true; controller.abort(); resolve({ verified: false }); }, 60000);
+    })]);
+  } finally { clearTimeout(timer); expired = true; controller.abort(); }
+}
+
+const unsubscribeMessage = listUnsubscribe.createUnsubscriber({ resolve: unsubscribeSource,
+  confirm: confirmUnsubscribe,
+  verifyOneClick: verifyUnsubscribeOriginal,
+  postUnsubscribe: (url, options) => require("./unsubscribe-post").postUnsubscribe(url, options),
+  openExternal: url => require("electron").shell.openExternal(url),
+});
+
+async function unsubscribeAnswer(params, event) {
+  try { return ok(await unsubscribeMessage(params, event?.sender)); }
+  catch { return fail("unsubscribe", "The unsubscribe action could not be prepared. No automatic retry was made."); }
 }
 
 function detailOf(row, generations, memberships) {
@@ -2889,6 +2981,7 @@ async function ensureBody(row, options) {
       ...(typeof fetched.from === "string" ? { from_addr: fetched.from } : {}),
       ...(typeof fetched.fromDisplayName === "string" ? { from_display_name: fetched.fromDisplayName } : {}),
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
+      list_unsubscribe_json: JSON.stringify(fetched.listUnsubscribe || null),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
       ...(account.mail_transport === "gmail_api" ? require("./reply-forward-state").patch(fetched) : {}),
@@ -4567,6 +4660,7 @@ function answer(channel, args, event) {
   if (["mail:mboxPick", "mail:mboxJobs", "mail:mboxStatus", "mail:mboxStart", "mail:mboxCancel", "mail:mboxDiscard"].includes(channel)) return mboxAnswer(channel, params || {}, event);
   if (channel === "mail:transferToLocal") return transferToLocal(params || {}, assertContextCurrent || undefined);
   if (channel === "mail:folderManagement") return folderManagementAnswer(params || {});
+  if (channel === "mail:unsubscribe") return updateGate.run(() => unsubscribeAnswer(params || {}, event));
   const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
     || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
   if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);

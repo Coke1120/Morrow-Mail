@@ -261,6 +261,9 @@ function migrate() {
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "recipient_headers_json")) {
     run("ALTER TABLE messages ADD COLUMN recipient_headers_json TEXT");
   }
+  if (!all("PRAGMA table_info(messages)").some(row => row.name === "list_unsubscribe_json")) {
+    run("ALTER TABLE messages ADD COLUMN list_unsubscribe_json TEXT");
+  }
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "body_warning")) {
     run("ALTER TABLE messages ADD COLUMN body_warning TEXT");
   }
@@ -1453,6 +1456,7 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
       updateChanged("messages", { decoding_json: require("./mime-decoding").serialize(message.decoding) }, "id = ?", [id]);
       updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
+      updateChanged("messages", { list_unsubscribe_json: JSON.stringify(message.listUnsubscribe || null) }, "id = ?", [id]);
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
@@ -1667,6 +1671,7 @@ function insertMessageRecord(row) {
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
     if (row.decoding) run("UPDATE messages SET decoding_json = ? WHERE id = ?", [require("./mime-decoding").serialize(row.decoding), row.id]);
     if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
+    if (row.listUnsubscribe) run("UPDATE messages SET list_unsubscribe_json = ? WHERE id = ?", [JSON.stringify(row.listUnsubscribe), row.id]);
     updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
     imapDispositions.refresh(row.id, row);
     indexText(row.id);
@@ -1929,7 +1934,7 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "date_source", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "decoding_json", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "decoding_json", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "list_unsubscribe_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
@@ -2794,6 +2799,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
           body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
+          list_unsubscribe_json: JSON.stringify(input.listUnsubscribe || null),
           decoding_json: require("./mime-decoding").serialize(input.decoding),
           ...require("./reply-forward-state").patch(input) };
         if (flagHeld(found.id, "read")) delete patch.unread;

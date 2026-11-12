@@ -193,6 +193,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       fromAddress: parsed.from?.value?.[0]?.address || "",
       fromDisplayName: parsed.from?.value?.[0]?.name || "",
       to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes, parsed.replyTo),
+      listUnsubscribe: require("./list-unsubscribe").parseHeaders(headerBytes),
       date: date.toISOString(), dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
       listSortTs: date.getTime(), snippet: decoding.snippet(data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ")),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),

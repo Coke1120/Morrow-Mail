@@ -168,7 +168,10 @@ for (const cached of ["partial", "complete"]) test(`IMAP flags-only refresh pres
       assert.equal(view.pane.querySelector(".body strong").textContent, "cached body");
       if (cached === "complete") {
         assert.equal(result.data.email.bodyWarning, "");
-        assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+        // Complete legacy bodies remain available; explicit reload discovers
+        // missing unsubscribe metadata without an automatic provider read.
+        assert.equal(result.data.email.unsubscribeChecked, false);
+        assert.equal(view.pane.querySelector('[data-action="retry-body"]').textContent, "Reload message");
       } else {
         assert.match(result.data.email.bodyWarning, /Retry download/);
         f.recover();

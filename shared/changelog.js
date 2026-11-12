@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.11": [
+      "Mailing-list messages can offer a reviewed Unsubscribe action. Supported RFC 8058 requests verify the original message and DKIM-covered headers before a credential-free HTTPS request; other messages offer a reviewed website or editable email. Accepted requests are not proof of removal.",
+      "One-click verification streams complete IMAP originals up to 64 MiB; Gmail originals retain a 35 MiB decoded limit. Older cached messages need an explicit Reload to obtain unsubscribe headers. No unsubscribe happens merely by opening or syncing mail.",
+      "PDF previews expose extracted text to assistive technology, load long documents progressively, and offer Retry after page-rendering failures. Closing Preview stops remaining work, and canvas limits protect unusually large pages. Scanned PDFs have no OCR; in-preview text selection and links remain unavailable.",
+    ],
     "0.4.10": [
       "Filter downloaded view matches sender, subject and preview across every downloaded message in the selected folder or view before paging. It keeps 200-message pages and accurate filtered totals; undownloaded server mail is not included.",
       "Reply and Reply All place the original and available earlier conversation text inside Message so you can edit or remove it. Save, Preview Send, Send and Schedule use your edited message without adding the original again. The separate history pane is reference only.",
