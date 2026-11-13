@@ -1,5 +1,8 @@
 # Make reply quotes part of the editable message
 
+HTML preservation supersedes the original plain-text insertion below; see
+[HTML reply quotes](2026-11-13-html-reply-quotes.md). Editor ownership remains unchanged.
+
 Fresh Reply and Reply All previously kept quoted text outside the message editor
 and appended it during payload construction. Seeing the original preview did not
 let the sender edit or remove what recipients would receive.

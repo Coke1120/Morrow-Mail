@@ -5033,13 +5033,19 @@ function mailInlineStyle(source) {
   return source.getAttribute("data-mail-style") || "";
 }
 
-function appendSafeMailHtml(parent, html, imagesOn) {
+function appendSafeMailHtml(parent, html, imagesOn, limits) {
   const template = document.createElement("template");
   template.innerHTML = parkMailStyleAttributes(html);
   const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th col colgroup caption center font h1 h2 h3 h4 h5 h6 a".split(" "));
   const blocked = new Set("script iframe object embed svg math title template link meta base audio video source input textarea select noscript".split(" "));
   const styles = [];
   const inlines = [];
+  let styleChars = 0;
+  const applyCss = (el, css, important) => {
+    styleChars += String(css || "").length;
+    if (limits && styleChars > limits.maxStyleChars) throw new Error("Quoted HTML style limit exceeded");
+    mailApplyCss(el, css, imagesOn, important);
+  };
   function decorate(dest, tag, source) {
     mailCopyLayout(dest, tag, source, imagesOn);
     const inline = mailInlineStyle(source);
@@ -5152,13 +5158,13 @@ function appendSafeMailHtml(parent, html, imagesOn) {
     for (const rule of rules) {
       let nodes = [];
       try { nodes = parent.querySelectorAll(rule.selector); } catch { continue; }
-      for (const node of nodes) mailApplyCss(node, rule.body, imagesOn, important);
+      for (const node of nodes) applyCss(node, rule.body, important);
     }
   };
   applySheet(false);
-  for (const item of inlines) mailApplyCss(item.el, item.css, imagesOn, false);
+  for (const item of inlines) applyCss(item.el, item.css, false);
   applySheet(true);
-  for (const item of inlines) mailApplyCss(item.el, item.css, imagesOn, true);
+  for (const item of inlines) applyCss(item.el, item.css, true);
 }
 
 // shortcut: one string is one address, upgrade if the host sends a comma-separated To.
@@ -5447,9 +5453,11 @@ async function fillComposeReplyHistory(fields, session) {
     });
     const messages = [source];
     let text = quote.text || "";
+    const additions = [];
     const unquote = value => String(value).replace(/\r\n?/g, "\n").replace(/^[ \t]*(?:>[ \t]?)+/gm, "").trim();
-    let chars = text.length + (source.htmlBody || "").length + (source.textBody || "").length;
-    let omitted = Math.max(0, earlier.length - 100), unavailable = 0;
+    const includedBodies = [quote.inEditor ? quote.editorBodyText : readable(source)];
+    let chars = text.length + (source.htmlBody || "").length + (source.textBody || "").length + (quote.editorHtml || "").length;
+    let omitted = Math.max(0, earlier.length - 100), unavailable = 0, unsupported = 0;
     let incomplete = source.bodyComplete === false || source.bodyWarning || source.encodingWarning ? 1 : 0;
     for (const header of earlier.slice(0, 100)) {
       if (header.bodyEpoch !== epoch) throw new Error("The mailbox connection changed.");
@@ -5467,24 +5475,41 @@ async function fillComposeReplyHistory(fields, session) {
         continue;
       }
       const block = replyBody(email);
-      // A complete, attributed quote from an earlier Morrow reply is already
-      // present. Identical unquoted messages are still separate deliveries.
-      if (block.trim() && messages.some(message => !message.historyUnavailable && unquote(readable(message)).includes(unquote(block)))) continue;
-      const cost = block.length + (email.htmlBody || "").length + (email.textBody || "").length;
+      let cost = block.length + (email.htmlBody || "").length + (email.textBody || "").length;
+      if (chars + cost > 2000000) { omitted++; continue; }
+      // Sanitize in a separate subtree: an older message's stylesheet must not
+      // restyle the original quote, attribution, signature or authored reply.
+      const rich = quote.inEditor ? composeReplyQuoteMessage(email) : null;
+      if (quote.inEditor && !rich) {
+        messages.push({ ...quoteSource(email), historyUnsupported: true });
+        unsupported++;
+        continue;
+      }
+      const bodyText = rich ? plainFromComposeHtml(rich.lastElementChild.innerHTML) : readable(email);
+      const attributed = rich ? rich.firstElementChild.textContent + "\n" + bodyText : block;
+      // Compare the representation actually included, not an alternate plain
+      // part absent from its HTML. Ignore our own added attribution so distinct
+      // unquoted deliveries from the same sender remain distinct.
+      const textual = bodyText.trim() && !(rich && rich.querySelector("img,a,table"));
+      if (textual && attributed.trim() && includedBodies.some(body => unquote(body).includes(unquote(attributed)))) continue;
+      cost += rich ? rich.outerHTML.length : 0;
       if (chars + cost > 2000000) { omitted++; continue; }
       chars += cost;
       text = outgoingBody(text, block);
-      messages.push(quoteSource(email));
+      if (rich) additions.push(rich);
+      if (rich && rich.quoteFormattingLimited) quote.formattingNote = composeQuoteFormattingNote();
+      includedBodies.push(bodyText);
+      messages.push({ ...quoteSource(email), quoteFormattingLimited: !!(rich && rich.quoteFormattingLimited) });
       if (email.bodyComplete === false || email.bodyWarning || email.encodingWarning) incomplete++;
     }
     if (!current()) return;
     // The editor owns outgoing reply text. Only extend its original quote when
     // that exact node is still untouched; typing above it is safe, but editing
     // or deleting it must never restore content the user removed.
-    if (quote.inEditor && text !== quote.text) {
+    if (quote.inEditor && additions.length) {
       const node = composeReplyQuoteNode();
       if (node && node.innerHTML === quote.editorHtml) {
-        appendSafeMailHtml(node, toHtml(text.slice(quote.text.length)), false);
+        for (const rich of additions) node.appendChild(rich);
       } else {
         quote.historyEditNote = "Earlier messages were not added to Message because its quoted text changed while loading. The original preview below is for reference.";
       }
@@ -5493,6 +5518,7 @@ async function fillComposeReplyHistory(fields, session) {
     quote.messages = messages;
     quote.historyNote = [
       unavailable ? `${unavailable} earlier message(s) have no downloaded body and are not included.` : "",
+      unsupported ? `${unsupported} earlier message(s) have no supported body content and are not included.` : "",
       incomplete ? `${incomplete} message(s) have incomplete or uncertain text. Only the available text is included.` : "",
       omitted ? `${omitted} earlier message(s) are not included. Reply history is limited to 100 earlier messages and 2 million characters.` : "",
       quote.historyEditNote || "",
@@ -14939,16 +14965,56 @@ function appendComposeReplyQuoteNode(node) {
   editor.appendChild(node);
 }
 
+function composeReplyQuoteMessage(email) {
+  if (!email) return null;
+  let body = document.createElement("blockquote");
+  let formattingLimited = false;
+  // Never inherit the reader's remote-content permission. Only inert HTML and
+  // embedded raster images may enter editable/outgoing quoted content.
+  if (email.htmlBody) {
+    try { appendSafeMailHtml(body, email.htmlBody, false, { maxStyleChars: 250000 }); }
+    catch {
+      // Stop stylesheet expansion while it is bounded, not after constructing
+      // a potentially enormous serialized subtree. Keep the available text.
+      body = document.createElement("blockquote");
+      formattingLimited = true;
+    }
+  }
+  if (!body.textContent.trim() && !body.querySelector("img")) {
+    body = document.createElement("blockquote");
+    appendSafeMailHtml(body, toHtml(readable({ ...email, snippet: "" })), false);
+  }
+  if (!body.childNodes.length) return null;
+  body.style.setProperty("margin", "0.5em 0");
+  const message = document.createElement("div");
+  message.quoteFormattingLimited = formattingLimited;
+  const attribution = document.createElement("p");
+  attribution.textContent = (String(email.from || "").trim() || "the sender") + " wrote:";
+  message.append(attribution, body);
+  return message;
+}
+
+function composeQuoteFormattingNote() {
+  return "Some quoted HTML formatting was simplified to keep Message responsive. Available body text is retained.";
+}
+
 function seedComposeReplyQuote(fields) {
   const quote = state.composeQuote;
   if (!quote || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
       || fields.botDraft || fields.partialReceipt || !composeEditorLive()) return;
   const node = document.createElement("div");
   node.setAttribute("data-compose-reply-quote", "1");
-  appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
+  const message = composeReplyQuoteMessage(quote.email);
+  if (message) node.appendChild(message);
+  else appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
   quote.inEditor = true;
   quote.editorNode = node;
   quote.editorHtml = node.innerHTML;
+  quote.editorBodyText = message ? plainFromComposeHtml(message.lastElementChild.innerHTML) : readable(quote.email);
+  if (message && message.quoteFormattingLimited) {
+    quote.formattingNote = composeQuoteFormattingNote();
+    quote.email.quoteFormattingLimited = true;
+  }
   appendComposeReplyQuoteNode(node);
 }
 
@@ -16796,11 +16862,11 @@ function paintQuoteBody() {
     root.appendChild(block);
     return;
   }
-  if (quote.historyNote) {
+  if (quote.historyNote || quote.formattingNote) {
     const note = document.createElement("p");
     note.className = "hint compose-history-note";
     note.setAttribute("role", "status");
-    note.textContent = quote.historyNote;
+    note.textContent = [quote.formattingNote, quote.historyNote].filter(Boolean).join(" ");
     root.appendChild(note);
   }
   const container = root;
@@ -16861,12 +16927,15 @@ function paintQuoteBody() {
       bar.append(note, button);
       root.appendChild(bar);
     }
-    if (email.historyUnavailable) {
+    if (email.historyUnavailable || email.historyUnsupported) {
       const missing = document.createElement("p");
       missing.className = "hint compose-history-note";
-      missing.textContent = "Body not downloaded. This message is not included in the reply.";
+      missing.textContent = email.historyUnsupported
+        ? "No supported body content. This message is not included in the reply."
+        : "Body not downloaded. This message is not included in the reply.";
       root.appendChild(missing);
-    } else appendMessageBody(root, email, allowed);
+    } else appendMessageBody(root, email.quoteFormattingLimited
+      ? { ...email, htmlBody: "", textBody: readable({ ...email, snippet: "" }) } : email, allowed);
     const files = quote.kind === "forward" ? attachmentNote(email) : "";
     if (files) {
       const line = document.createElement("p");
@@ -16893,7 +16962,7 @@ function paintComposeChrome() {
   const label = $("compose-quote-label");
   if (label) label.textContent = history ? "Conversation history" : "Original message";
   note.textContent = quote && quote.inEditor
-    ? "Edit or remove quoted text in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
+    ? "Edit or remove quoted text in Message. Safe HTML formatting is retained; remote content stays blocked in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
     : history
     ? "The quoted original and available earlier message text are included when you save, send, or schedule."
     : "The quoted original is still included when you save, send, or schedule.";

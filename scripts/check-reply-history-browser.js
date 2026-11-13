@@ -40,12 +40,17 @@ async function run() {
         to: ["owner@fixture.invalid"], subject: "Fictional delivery plan", textBody: text });
       globalThis.messages = [message("older", Array.from({ length: 45 }, (_, i) => "Earlier detail " + (i + 1) + ": retain the fictional proposal.").join("\n\n")),
         message("previous", "Previous answer: include the appendix."), message("source", "Please confirm the fictional plan."), message("later", "Later message must not be included.")];
+      messages[1].htmlBody = '<p>Previous answer: <em>include the appendix.</em></p><ul><li>Earlier HTML item</li></ul>';
+      messages[2].htmlBody = '<style>h2{color:#193c34} p{background-image:url(https://tracker.fixture.invalid/css)}</style>'
+        + '<h2>Delivery plan</h2><p><strong>Please confirm the fictional plan.</strong></p><table border="1"><tr><th>Item</th><th>Amount</th></tr><tr><td>Delivery</td><td>42</td></tr></table>'
+        + '<a href="https://docs.fixture.invalid/plan">Plan link</a><img alt="Embedded logo" width="20" height="20" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lvkAAAAASUVORK5CYII=">'
+        + '<img src="https://tracker.fixture.invalid/pixel"><script>throw new Error("Untrusted mail executed")</script>';
       state.accounts = [{ id: "fixture", email: "owner@fixture.invalid", platform: "imap", bodyEpoch: 0, folders: { primary: [], more: [] } }];
       state.accountId = "fixture"; state.prefs.images = false; state.prefs.aiReply = false; state.prefs.scheduleDelay = 0;
       globalThis.ipcCalls = [];
       call = async (channel, payload) => {
         ipcCalls.push({ channel, payload });
-        if (channel === "mail:listThreadMessages") return messages.map(({ textBody, ...row }) => row);
+        if (channel === "mail:listThreadMessages") return messages.map(({ textBody, htmlBody, ...row }) => row);
         if (channel === "mail:readCachedBody") return { email: messages.find(row => row.id === payload.emailId) };
         if (channel === "mail:getComposeContext") return { fromAddress: "owner@fixture.invalid", fromDisplayName: "Fixture Owner", selfAddresses: ["owner@fixture.invalid"],
           sendAs: [{ email: "owner@fixture.invalid" }], defaultCc: [], defaultBcc: [], settings: { ccByDomain: {}, bccByDomain: {}, accounts: {} } };
@@ -61,11 +66,21 @@ async function run() {
     assert.equal(await page.locator(".compose-quote-message").count(), 3);
     assert.match(await page.locator("#compose-quote-body").innerText(), /Earlier detail 45/);
     assert.match(await page.locator("#compose-editor").innerText(), /Please confirm.*Previous answer.*Earlier detail 45/s);
+    assert.equal(await page.locator("#compose-editor table td").count(), 2);
+    assert.equal(await page.locator("#compose-editor img").count(), 1);
+    assert.equal(await page.locator("#compose-editor h2").evaluate(node => getComputedStyle(node).color), "rgb(25, 60, 52)");
     assert.equal(await page.evaluate(() => composeSnapshot() === state.composeBaseline), true);
     await page.locator("#compose-editor").focus();
     await page.keyboard.press("Control+Home");
     await page.keyboard.insertText("Confirmed. I will include the appendix.");
+    await page.locator("#compose-editor strong").evaluate(node => {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    });
+    await page.keyboard.insertText("Please confirm the fictional plan with inline changes.");
     const payload = await page.evaluate(() => composePayload(composeAccount()).body);
+    assert.match(payload, /<strong>Please confirm the fictional plan with inline changes\.<\/strong>/);
+    assert.doesNotMatch(await page.locator("#compose-body").inputValue(), /Earlier HTML item|Earlier detail|fictional plan/);
     assert.match(payload, /Earlier detail 45/);
     assert.match(payload, /Previous answer/);
     assert.doesNotMatch(payload, /Later message/);
@@ -96,6 +111,8 @@ async function run() {
     }
     await page.evaluate(() => openComposePreview(null));
     assert.match(await page.locator("#compose-preview-body").innerText(), /Earlier detail 45/);
+    assert.equal(await page.locator("#compose-preview-body table td").count(), 2);
+    assert.equal(await page.locator("#compose-preview-body strong").innerText(), "Please confirm the fictional plan with inline changes.");
     await page.evaluate(() => cancelComposePreview());
     await page.locator("#compose-editor [data-compose-reply-quote]").fill("Edited quoted excerpt <literal> & 中文");
     const edited = await page.evaluate(() => composePayload(composeAccount()).body);
@@ -131,11 +148,13 @@ async function run() {
     const feature = page.locator(".feature-card").filter({ has: page.locator("h4", { hasText: "Reply conversation history" }) });
     assert.match(await feature.innerText(), /edit or remove/);
     assert.match(await feature.innerText(), /only the edited Message/);
+    assert.match(await feature.innerText(), /safe HTML formatting/);
+    assert.match(await feature.innerText(), /Remote images and CSS resources stay blocked/);
     await feature.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(output, "reply-editable-features.png") });
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
-    const result = { checks: ["editable earlier history and outgoing payload", "wide/narrow light/dark layout", "internal history scrolling", "collapse/hide/show", "edited quote send preview/cancel", "deleted quote never restored", "close keep/discard/reopen", "rendered Features copy"], errors, external };
+    const result = { checks: ["HTML original and earlier history", "actual inline HTML editing and outgoing payload", "tables, computed colors and embedded images", "authored input excludes HTML history", "wide/narrow light/dark layout", "internal history scrolling", "collapse/hide/show", "rich and edited quote send preview/cancel", "deleted quote never restored", "close keep/discard/reopen", "rendered Features copy", "no external resource requests"], errors, external };
     fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2));
     console.log("reply-history-browser-ok", JSON.stringify(result));
   } finally {
