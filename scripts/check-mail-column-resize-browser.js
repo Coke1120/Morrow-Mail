@@ -51,6 +51,7 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('node:os').tmpd
         globalThis.fixtureCalls = [];
         call = async (channel, params) => { fixtureCalls.push({ channel, params }); return channel === 'mail:listFromCache' ? { emails: state.emails, total: state.emails.length, initialSyncDone: true } : []; };
         offerChangelog = async () => {};
+        refreshMailVacation = async () => {};
         await loadMailColumnOrder(); wireMailColumnEditor(); renderAccounts(); renderList();
         document.getElementById('mail-ooo').hidden = true;
       });
@@ -60,7 +61,24 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('node:os').tmpd
     const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem('resize.widths') || '{}'));
     const sort = () => page.evaluate(() => JSON.stringify(state.listSort));
     async function settled() { await page.waitForFunction(() => JSON.stringify(JSON.parse(localStorage.getItem('resize.widths') || '{}')) === JSON.stringify(state.mailColumnWidths)); }
+    async function stableGeometry() {
+      // Startup/navigation motion can change flexible tracks across multiple
+      // frames. Wait for actual geometry to settle instead of loosening asserts.
+      await page.evaluate(() => { globalThis.fixtureGeometry = { sample: null, frames: 0 }; });
+      await page.waitForFunction(() => {
+        const list = document.getElementById('message-list');
+        const rects = [list, ...document.querySelectorAll('.mail-list-columns [data-sort-key]')]
+          .filter(node => node.getBoundingClientRect().width > 0)
+          .map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; });
+        const sample = JSON.stringify([list.scrollLeft, list.scrollTop, rects]);
+        const probe = globalThis.fixtureGeometry;
+        probe.frames = probe.sample === sample ? probe.frames + 1 : 0;
+        probe.sample = sample;
+        return probe.frames >= 6;
+      }, null, { polling: 'raf' });
+    }
     async function alignment() {
+      await stableGeometry();
       const values = await page.evaluate(() => [...document.querySelectorAll('.mail-list-columns [data-sort-key]')]
         .filter(head => head.getBoundingClientRect().width > 0).map(head => {
           const key = head.dataset.sortKey, cell = document.querySelector('.row-main [data-mail-column="' + key + '"]');
@@ -72,14 +90,17 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('node:os').tmpd
       return values;
     }
     async function beginDrag(id, delta) {
-      await handle(id).scrollIntoViewIfNeeded(); const box = await handle(id).boundingBox(); assert.ok(box);
+      await handle(id).scrollIntoViewIfNeeded();
+      await stableGeometry();
+      const box = await handle(id).boundingBox(); assert.ok(box);
+      const column = await page.locator('[data-sort-key="' + id + '"]').boundingBox(); assert.ok(column);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
       await page.mouse.move(box.x + box.width / 2 + delta, box.y + box.height / 2, { steps: 8 });
+      return column.width;
     }
     await page.goto('http://127.0.0.1:' + server.address().port + '/renderer/index.html'); await initialize();
-    const originalSort = await sort(), before = await alignment();
-    const senderBefore = before.find(v => v.key === 'sender').head.width;
-    await beginDrag('sender', 45); await page.mouse.up(); await settled();
+    const originalSort = await sort(); await alignment();
+    const senderBefore = await beginDrag('sender', 45); await page.mouse.up(); await settled();
     const dragWidths = await widths();
     assert.ok(Math.abs(dragWidths.sender - (senderBefore + 45)) <= 2, JSON.stringify({ senderBefore, dragWidths }));
     assert.equal(await sort(), originalSort, 'resize must not sort'); await alignment();
