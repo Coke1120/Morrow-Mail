@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.12": [
+      "Resize Date, Time, Recipient, Sender and Subject using their right-edge handles or the keyboard. Widths are remembered independently of column order and visibility; double-click a handle or press Delete to restore its responsive default.",
+      "Fresh Reply and Reply All preserve supported HTML formatting in editable quotes from the original and available earlier cached messages, including tables, lists, links and embedded raster images. Plain text is used when usable HTML is unavailable; remote images and active content stay blocked.",
+      "Edited or deleted quotes remain authoritative when saving, previewing, sending or scheduling. Late history, signature changes and AI writing preserve your quote edits; Forward and saved-draft recovery behavior are unchanged.",
+    ],
     "0.4.11": [
       "Mailing-list messages can offer a reviewed Unsubscribe action. Supported RFC 8058 requests verify the original message and DKIM-covered headers before a credential-free HTTPS request; other messages offer a reviewed website or editable email. Accepted requests are not proof of removal.",
       "One-click verification streams complete IMAP originals up to 64 MiB; Gmail originals retain a 35 MiB decoded limit. Older cached messages need an explicit Reload to obtain unsubscribe headers. No unsubscribe happens merely by opening or syncing mail.",
