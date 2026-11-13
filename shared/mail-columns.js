@@ -27,5 +27,17 @@
     const excluded = normalizeHidden(hidden);
     return normalize(order).filter(key => !excluded.includes(key));
   }
-  return { defaults, normalize, move, normalizeHidden, visible };
+  const widthBounds = Object.freeze({ date: Object.freeze([80, 360]), time: Object.freeze([60, 240]),
+    recipient: Object.freeze([100, 640]), sender: Object.freeze([100, 640]), subject: Object.freeze([140, 1200]) });
+  function normalizeWidths(value) {
+    const widths = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return widths;
+    for (const key of defaults) {
+      if (!Object.hasOwn(value, key) || typeof value[key] !== "number" || !Number.isFinite(value[key])) continue;
+      const [min, max] = widthBounds[key];
+      widths[key] = Math.max(min, Math.min(max, Math.round(value[key])));
+    }
+    return widths;
+  }
+  return { defaults, normalize, move, normalizeHidden, visible, widthBounds, normalizeWidths };
 });

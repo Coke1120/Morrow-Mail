@@ -6336,3 +6336,12 @@ html[data-window="translate"] #reader .translate-column h2 {
 #mbox-import .row { flex-wrap: wrap; }
 #mbox-import details > :not(summary) { margin-top: 10px; }
 #mbox-import :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
+
+/* Resize is a separate focusable separator, never a sort/reorder button. */
+.mail-list-columns [role="columnheader"] { position: relative; }
+.mail-list-columns [role="columnheader"] > button { padding-right: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-column-resize { position: absolute; z-index: 1; top: 0; right: -5px; bottom: 0; width: 10px; cursor: col-resize; touch-action: none; user-select: none; }
+.mail-column-resize::after { content: ""; position: absolute; top: 7px; bottom: 7px; left: 4px; width: 2px; border-radius: 2px; background: var(--line); }
+.mail-column-resize:hover::after, .mail-column-resize:focus-visible::after { background: var(--accent-ink, var(--ink)); }
+.mail-column-resize:focus-visible { outline: 2px solid var(--accent-ink, var(--ink)); outline-offset: -2px; border-radius: 3px; }
+.mail-column-resizing, .mail-column-resizing * { cursor: col-resize !important; user-select: none !important; }

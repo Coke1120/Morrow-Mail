@@ -12,6 +12,7 @@ const state = {
   toMeOnly: false,
   mailColumnOrder: ["date", "time", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
+  mailColumnWidths: {},
   outbox: false,
   outboxRows: [],
   outboxError: "",
@@ -1522,18 +1523,178 @@ function visibleMailColumns() {
     : mailColumnOrder().filter(key => key === "subject" || !state.mailHiddenColumns.includes(key));
 }
 function cancelMailColumnDrag() {
+  cancelMailColumnResize();
   if (mailColumnDrag) mailColumnClickUntil = Date.now() + 300;
   mailColumnDrag = null;
   for (const cell of document.querySelectorAll(".mail-column-drop")) cell.classList.remove("mail-column-drop");
 }
+
+let mailColumnResize = null;
+let mailColumnWidthSave = Promise.resolve();
+let mailColumnWidthRevision = 0;
+const mailColumnDefaultMinimum = { date: 110, time: 82, recipient: 130, sender: 130, subject: 180 };
+function normalizedMailColumnWidths(value = state.mailColumnWidths) {
+  return window.morrowMailColumns?.normalizeWidths ? window.morrowMailColumns.normalizeWidths(value) : {};
+}
+function mailColumnWidthBounds(key) {
+  return window.morrowMailColumns?.widthBounds?.[key] || ({ date: [80, 360], time: [60, 240], recipient: [100, 640], sender: [100, 640], subject: [140, 1200] })[key];
+}
+function applyMailColumnWidths(list = $("message-list")) {
+  if (!list) return;
+  const saved = normalizedMailColumnWidths();
+  const defaults = { date: "110px", time: "82px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
+  const visible = visibleMailColumns();
+  list.style.setProperty("--mail-columns", visible.map(key => Object.hasOwn(saved, key) ? saved[key] + "px" : defaults[key]).join(" "));
+  list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + (saved[key] ?? mailColumnDefaultMinimum[key]), 54) + (visible.length - 1) * 10) + "px");
+  for (const handle of list.querySelectorAll("[data-resize-column]")) {
+    const key = handle.dataset.resizeColumn;
+    const measured = handle.parentElement.getBoundingClientRect?.().width || 0;
+    const [min, max] = mailColumnWidthBounds(key);
+    const width = saved[key] ?? Math.max(min, Math.min(max, Math.round(measured || mailColumnDefaultMinimum[key])));
+    handle.setAttribute("aria-valuenow", String(width));
+    handle.setAttribute("aria-valuetext", width + " pixels" + (Object.hasOwn(saved, key) ? "" : ", automatic width"));
+  }
+}
+async function loadMailColumnWidths() {
+  const revision = mailColumnWidthRevision;
+  try {
+    const saved = await api.invoke("morrow:configGetMailColumnWidths");
+    if (revision !== mailColumnWidthRevision) return;
+    state.mailColumnWidths = normalizedMailColumnWidths(saved);
+    applyMailColumnWidths();
+  } catch { /* Unavailable settings keep the responsive default. */ }
+}
+function saveMailColumnWidths(key) {
+  const value = normalizedMailColumnWidths();
+  const revision = ++mailColumnWidthRevision;
+  const message = mailColumnLabels[key] + " column: " + (Object.hasOwn(value, key) ? value[key] + " pixels." : "automatic width.");
+  if ($("mail-columns-status")) $("mail-columns-status").textContent = message;
+  mailColumnWidthSave = mailColumnWidthSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnWidths", value));
+  mailColumnWidthSave.catch(() => {
+    if (revision !== mailColumnWidthRevision) return;
+    if ($("mail-columns-status")) $("mail-columns-status").textContent = "Could not save column widths. This window keeps your layout; resize again to save it.";
+    showStatus("Could not save column widths. Resize again to keep them after restart.", true);
+  });
+  return mailColumnWidthSave;
+}
+function changeMailColumnWidth(key, value) {
+  if (!Object.hasOwn(mailColumnLabels, key)) return Promise.resolve();
+  cancelMailColumnResize();
+  const next = normalizedMailColumnWidths();
+  if (value == null) delete next[key];
+  else next[key] = value;
+  state.mailColumnWidths = normalizedMailColumnWidths(next);
+  mailColumnClickUntil = Date.now() + 300;
+  applyMailColumnWidths();
+  return saveMailColumnWidths(key);
+}
+function cancelMailColumnResize() {
+  const session = mailColumnResize;
+  if (!session) return;
+  mailColumnResize = null;
+  session.cleanup();
+  state.mailColumnWidths = session.before;
+  mailColumnClickUntil = Date.now() + 300;
+  applyMailColumnWidths();
+}
+function wireMailColumnResize(cell, key) {
+  const handle = document.createElement("div");
+  handle.className = "mail-column-resize";
+  handle.dataset.resizeColumn = key;
+  handle.tabIndex = 0;
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", "Resize " + mailColumnLabels[key] + " column");
+  const [min, max] = mailColumnWidthBounds(key);
+  handle.setAttribute("aria-valuemin", String(min));
+  handle.setAttribute("aria-valuemax", String(max));
+  handle.title = "Drag to resize. Left / Right: 10 pixels; Shift: 50 pixels. Home / End: minimum / maximum. Double-click or Delete: automatic width. Escape cancels a drag.";
+  handle.addEventListener("focus", () => { if (!mailColumnResize) applyMailColumnWidths(); });
+  handle.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); });
+  handle.addEventListener("dragstart", event => { event.preventDefault(); event.stopPropagation(); });
+  handle.addEventListener("dblclick", event => {
+    event.preventDefault(); event.stopPropagation();
+    changeMailColumnWidth(key, null).catch(() => {});
+  });
+  handle.addEventListener("keydown", event => {
+    if (event.key === "Escape" && mailColumnResize) {
+      event.preventDefault(); event.stopPropagation(); cancelMailColumnResize(); return;
+    }
+    if (!["ArrowLeft", "ArrowRight", "Home", "End", "Delete", "Backspace"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault(); event.stopPropagation();
+    const current = normalizedMailColumnWidths()[key] ?? (cell.getBoundingClientRect().width || mailColumnDefaultMinimum[key]);
+    const next = event.key === "Home" ? min : event.key === "End" ? max
+      : ["Delete", "Backspace"].includes(event.key) ? null
+      : current + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 50 : 10);
+    changeMailColumnWidth(key, next).catch(() => {});
+  });
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    event.preventDefault(); event.stopPropagation();
+    cancelMailColumnResize(); cancelMailColumnDrag(); closeMailColumnMenu();
+    handle.focus();
+    const list = $("message-list"), before = normalizedMailColumnWidths();
+    const startWidth = cell.getBoundingClientRect().width || before[key] || mailColumnDefaultMinimum[key];
+    const session = { key, pointerId: event.pointerId, before, startWidth, x: event.clientX, scroll: list.scrollLeft, changed: false };
+    ++mailColumnWidthRevision; // Fence settings reads from before this interaction.
+    const move = next => {
+      if (mailColumnResize !== session || next.pointerId !== session.pointerId) return;
+      if (!handle.isConnected || cell.hidden) { cancelMailColumnResize(); return; }
+      next.preventDefault(); next.stopPropagation();
+      const width = Math.max(min, Math.min(max, Math.round(startWidth + next.clientX - session.x + list.scrollLeft - session.scroll)));
+      session.changed = width !== Math.round(startWidth);
+      state.mailColumnWidths = { ...before, [key]: width };
+      applyMailColumnWidths(list);
+    };
+    const finish = next => {
+      if (mailColumnResize !== session || next.pointerId !== session.pointerId) return;
+      next.preventDefault(); next.stopPropagation();
+      mailColumnResize = null; session.cleanup();
+      mailColumnClickUntil = Date.now() + 300;
+      if (session.changed) saveMailColumnWidths(key).catch(() => {});
+      else { state.mailColumnWidths = before; applyMailColumnWidths(list); }
+    };
+    const cancelPointer = next => { if (next.pointerId === session.pointerId) cancelMailColumnResize(); };
+    const escape = next => {
+      if (next.key !== "Escape") return;
+      next.preventDefault(); next.stopPropagation(); cancelMailColumnResize();
+    };
+    const cancel = () => cancelMailColumnResize();
+    session.cleanup = () => {
+      document.removeEventListener("pointermove", move, true);
+      document.removeEventListener("pointerup", finish, true);
+      document.removeEventListener("pointercancel", cancelPointer, true);
+      document.removeEventListener("keydown", escape, true);
+      handle.removeEventListener("lostpointercapture", cancelPointer);
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("resize", cancel);
+      document.body.classList.remove("mail-column-resizing");
+      try { if (handle.hasPointerCapture?.(session.pointerId)) handle.releasePointerCapture(session.pointerId); } catch {}
+    };
+    mailColumnResize = session;
+    document.addEventListener("pointermove", move, true);
+    document.addEventListener("pointerup", finish, true);
+    document.addEventListener("pointercancel", cancelPointer, true);
+    document.addEventListener("keydown", escape, true);
+    handle.addEventListener("lostpointercapture", cancelPointer);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("resize", cancel);
+    document.body.classList.add("mail-column-resizing");
+    try { handle.setPointerCapture?.(session.pointerId); } catch { /* Document listeners retain ownership. */ }
+  });
+  cell.appendChild(handle);
+}
+
 async function loadMailColumnOrder() {
   const revision = mailColumnRevision;
+  const widths = loadMailColumnWidths();
   try {
     const [saved, hidden] = await Promise.all([api.invoke("morrow:configGetMailColumnOrder"), api.invoke("morrow:configGetMailHiddenColumns")]);
     if (revision !== mailColumnRevision) return;
     state.mailColumnOrder = window.morrowMailColumns.normalize(saved);
     state.mailHiddenColumns = window.morrowMailColumns.normalizeHidden(hidden);
   } catch { /* Keep the default layout if settings are unavailable. */ }
+  await widths;
 }
 function changeMailColumnOrder(order) {
   const next = window.morrowMailColumns.normalize(order);
@@ -1756,17 +1917,14 @@ function paintMailListColumns(list) {
       button.addEventListener("click", () => { if (!mailColumnDrag && Date.now() >= mailColumnClickUntil) guard(() => changeMailListSort(key)); });
       wireMailColumnHeader(cell, button, key);
       cell.appendChild(button);
+      wireMailColumnResize(cell, key);
       row.appendChild(cell);
     }
     header.appendChild(row);
     header.addEventListener("contextmenu", event => openMailColumnMenu(event, event.target.closest("button") || header.querySelector("button:not(:disabled)")));
     list.prepend(header);
   }
-  const widths = { date: "110px", time: "82px", recipient: "minmax(130px, 1fr)", sender: "minmax(130px, 1fr)", subject: "minmax(180px, 1.6fr)" };
   const visible = visibleMailColumns();
-  list.style.setProperty("--mail-columns", visible.map(key => widths[key]).join(" "));
-  const minimum = { date: 110, time: 82, recipient: 130, sender: 130, subject: 180 };
-  list.style.setProperty("--mail-columns-min", (visible.reduce((sum, key) => sum + minimum[key], 54) + (visible.length - 1) * 10) + "px");
   const headerRow = header.querySelector('[role="row"]');
   mailColumnOrder().forEach((key, index) => {
     const cell = header.querySelector(`[data-sort-key="${key}"]`);
@@ -1786,6 +1944,7 @@ function paintMailListColumns(list) {
     button.title = state.outbox ? "Outbox uses scheduled send order. Use Columns to change the layout." : "Click to sort by " + button.dataset.label.toLowerCase() + "." + sortHelp + " Drag to reorder, or press Alt + Left / Right.";
     button.setAttribute("aria-label", button.dataset.label + (active ? (ascending ? ", ascending. Sort descending" : ", descending. Sort ascending") : ". Sort " + (timestampColumn ? "descending" : "ascending")) + sortHelp);
   }
+  applyMailColumnWidths(list);
   return header;
 }
 
@@ -3911,9 +4070,10 @@ function applyMailView() {
   const pref = mailViewPref(state.prefs.mailView);
   const layout = effectiveMailViewLayout();
   const scope = JSON.stringify([state.accountId, state.folderId, state.query, state.listOffset, state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.toMeOnly]);
-  if (mailViewScrollScope !== scope) { mailViewScroll.clear(); mailViewScrollScope = scope; }
+  if (mailViewScrollScope !== scope) { cancelMailColumnResize(); mailViewScroll.clear(); mailViewScrollScope = scope; }
   const previous = shell.dataset.mailLayout, list = $("message-list");
   const moving = previous && previous !== layout && list;
+  if (moving) cancelMailColumnResize();
   const position = moving ? { left: list.scrollLeft, top: list.scrollTop } : null;
   if (moving) mailViewScroll.set(previous, position);
   shell.dataset.mailLayout = layout;
@@ -4001,7 +4161,7 @@ function wireMailView() {
   document.addEventListener("pointerdown", event => { if (!control.contains(event.target)) closeMailViewMenu(); });
   control.addEventListener("focusout", event => { if (!control.contains(event.relatedTarget)) closeMailViewMenu(); });
   if (typeof window.ResizeObserver === "function") {
-    const observer = new window.ResizeObserver(() => { syncMailListMinimum(); syncMailSplitterValues(); });
+    const observer = new window.ResizeObserver(() => { syncMailListMinimum(); syncMailSplitterValues(); if (!mailColumnResize) applyMailColumnWidths(); });
     observer.observe($("list-head"));
     observer.observe($("list-paging"));
     observer.observe($("messages"));
@@ -4873,13 +5033,19 @@ function mailInlineStyle(source) {
   return source.getAttribute("data-mail-style") || "";
 }
 
-function appendSafeMailHtml(parent, html, imagesOn) {
+function appendSafeMailHtml(parent, html, imagesOn, limits) {
   const template = document.createElement("template");
   template.innerHTML = parkMailStyleAttributes(html);
   const allowed = new Set("p div span br hr b strong i em u s small sub sup blockquote pre code ul ol li table tbody thead tfoot tr td th col colgroup caption center font h1 h2 h3 h4 h5 h6 a".split(" "));
   const blocked = new Set("script iframe object embed svg math title template link meta base audio video source input textarea select noscript".split(" "));
   const styles = [];
   const inlines = [];
+  let styleChars = 0;
+  const applyCss = (el, css, important) => {
+    styleChars += String(css || "").length;
+    if (limits && styleChars > limits.maxStyleChars) throw new Error("Quoted HTML style limit exceeded");
+    mailApplyCss(el, css, imagesOn, important);
+  };
   function decorate(dest, tag, source) {
     mailCopyLayout(dest, tag, source, imagesOn);
     const inline = mailInlineStyle(source);
@@ -4992,13 +5158,13 @@ function appendSafeMailHtml(parent, html, imagesOn) {
     for (const rule of rules) {
       let nodes = [];
       try { nodes = parent.querySelectorAll(rule.selector); } catch { continue; }
-      for (const node of nodes) mailApplyCss(node, rule.body, imagesOn, important);
+      for (const node of nodes) applyCss(node, rule.body, important);
     }
   };
   applySheet(false);
-  for (const item of inlines) mailApplyCss(item.el, item.css, imagesOn, false);
+  for (const item of inlines) applyCss(item.el, item.css, false);
   applySheet(true);
-  for (const item of inlines) mailApplyCss(item.el, item.css, imagesOn, true);
+  for (const item of inlines) applyCss(item.el, item.css, true);
 }
 
 // shortcut: one string is one address, upgrade if the host sends a comma-separated To.
@@ -5287,9 +5453,11 @@ async function fillComposeReplyHistory(fields, session) {
     });
     const messages = [source];
     let text = quote.text || "";
+    const additions = [];
     const unquote = value => String(value).replace(/\r\n?/g, "\n").replace(/^[ \t]*(?:>[ \t]?)+/gm, "").trim();
-    let chars = text.length + (source.htmlBody || "").length + (source.textBody || "").length;
-    let omitted = Math.max(0, earlier.length - 100), unavailable = 0;
+    const includedBodies = [quote.inEditor ? quote.editorBodyText : readable(source)];
+    let chars = text.length + (source.htmlBody || "").length + (source.textBody || "").length + (quote.editorHtml || "").length;
+    let omitted = Math.max(0, earlier.length - 100), unavailable = 0, unsupported = 0;
     let incomplete = source.bodyComplete === false || source.bodyWarning || source.encodingWarning ? 1 : 0;
     for (const header of earlier.slice(0, 100)) {
       if (header.bodyEpoch !== epoch) throw new Error("The mailbox connection changed.");
@@ -5307,24 +5475,41 @@ async function fillComposeReplyHistory(fields, session) {
         continue;
       }
       const block = replyBody(email);
-      // A complete, attributed quote from an earlier Morrow reply is already
-      // present. Identical unquoted messages are still separate deliveries.
-      if (block.trim() && messages.some(message => !message.historyUnavailable && unquote(readable(message)).includes(unquote(block)))) continue;
-      const cost = block.length + (email.htmlBody || "").length + (email.textBody || "").length;
+      let cost = block.length + (email.htmlBody || "").length + (email.textBody || "").length;
+      if (chars + cost > 2000000) { omitted++; continue; }
+      // Sanitize in a separate subtree: an older message's stylesheet must not
+      // restyle the original quote, attribution, signature or authored reply.
+      const rich = quote.inEditor ? composeReplyQuoteMessage(email) : null;
+      if (quote.inEditor && !rich) {
+        messages.push({ ...quoteSource(email), historyUnsupported: true });
+        unsupported++;
+        continue;
+      }
+      const bodyText = rich ? plainFromComposeHtml(rich.lastElementChild.innerHTML) : readable(email);
+      const attributed = rich ? rich.firstElementChild.textContent + "\n" + bodyText : block;
+      // Compare the representation actually included, not an alternate plain
+      // part absent from its HTML. Ignore our own added attribution so distinct
+      // unquoted deliveries from the same sender remain distinct.
+      const textual = bodyText.trim() && !(rich && rich.querySelector("img,a,table"));
+      if (textual && attributed.trim() && includedBodies.some(body => unquote(body).includes(unquote(attributed)))) continue;
+      cost += rich ? rich.outerHTML.length : 0;
       if (chars + cost > 2000000) { omitted++; continue; }
       chars += cost;
       text = outgoingBody(text, block);
-      messages.push(quoteSource(email));
+      if (rich) additions.push(rich);
+      if (rich && rich.quoteFormattingLimited) quote.formattingNote = composeQuoteFormattingNote();
+      includedBodies.push(bodyText);
+      messages.push({ ...quoteSource(email), quoteFormattingLimited: !!(rich && rich.quoteFormattingLimited) });
       if (email.bodyComplete === false || email.bodyWarning || email.encodingWarning) incomplete++;
     }
     if (!current()) return;
     // The editor owns outgoing reply text. Only extend its original quote when
     // that exact node is still untouched; typing above it is safe, but editing
     // or deleting it must never restore content the user removed.
-    if (quote.inEditor && text !== quote.text) {
+    if (quote.inEditor && additions.length) {
       const node = composeReplyQuoteNode();
       if (node && node.innerHTML === quote.editorHtml) {
-        appendSafeMailHtml(node, toHtml(text.slice(quote.text.length)), false);
+        for (const rich of additions) node.appendChild(rich);
       } else {
         quote.historyEditNote = "Earlier messages were not added to Message because its quoted text changed while loading. The original preview below is for reference.";
       }
@@ -5333,6 +5518,7 @@ async function fillComposeReplyHistory(fields, session) {
     quote.messages = messages;
     quote.historyNote = [
       unavailable ? `${unavailable} earlier message(s) have no downloaded body and are not included.` : "",
+      unsupported ? `${unsupported} earlier message(s) have no supported body content and are not included.` : "",
       incomplete ? `${incomplete} message(s) have incomplete or uncertain text. Only the available text is included.` : "",
       omitted ? `${omitted} earlier message(s) are not included. Reply history is limited to 100 earlier messages and 2 million characters.` : "",
       quote.historyEditNote || "",
@@ -8599,6 +8785,7 @@ async function reviewedRemoval(messages, kind) {
 }
 
 function renderList() {
+  cancelMailColumnResize();
   applyMailView();
   paintSyncControl();
   paintListPaging();
@@ -14778,16 +14965,56 @@ function appendComposeReplyQuoteNode(node) {
   editor.appendChild(node);
 }
 
+function composeReplyQuoteMessage(email) {
+  if (!email) return null;
+  let body = document.createElement("blockquote");
+  let formattingLimited = false;
+  // Never inherit the reader's remote-content permission. Only inert HTML and
+  // embedded raster images may enter editable/outgoing quoted content.
+  if (email.htmlBody) {
+    try { appendSafeMailHtml(body, email.htmlBody, false, { maxStyleChars: 250000 }); }
+    catch {
+      // Stop stylesheet expansion while it is bounded, not after constructing
+      // a potentially enormous serialized subtree. Keep the available text.
+      body = document.createElement("blockquote");
+      formattingLimited = true;
+    }
+  }
+  if (!body.textContent.trim() && !body.querySelector("img")) {
+    body = document.createElement("blockquote");
+    appendSafeMailHtml(body, toHtml(readable({ ...email, snippet: "" })), false);
+  }
+  if (!body.childNodes.length) return null;
+  body.style.setProperty("margin", "0.5em 0");
+  const message = document.createElement("div");
+  message.quoteFormattingLimited = formattingLimited;
+  const attribution = document.createElement("p");
+  attribution.textContent = (String(email.from || "").trim() || "the sender") + " wrote:";
+  message.append(attribution, body);
+  return message;
+}
+
+function composeQuoteFormattingNote() {
+  return "Some quoted HTML formatting was simplified to keep Message responsive. Available body text is retained.";
+}
+
 function seedComposeReplyQuote(fields) {
   const quote = state.composeQuote;
   if (!quote || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
       || fields.botDraft || fields.partialReceipt || !composeEditorLive()) return;
   const node = document.createElement("div");
   node.setAttribute("data-compose-reply-quote", "1");
-  appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
+  const message = composeReplyQuoteMessage(quote.email);
+  if (message) node.appendChild(message);
+  else appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
   quote.inEditor = true;
   quote.editorNode = node;
   quote.editorHtml = node.innerHTML;
+  quote.editorBodyText = message ? plainFromComposeHtml(message.lastElementChild.innerHTML) : readable(quote.email);
+  if (message && message.quoteFormattingLimited) {
+    quote.formattingNote = composeQuoteFormattingNote();
+    quote.email.quoteFormattingLimited = true;
+  }
   appendComposeReplyQuoteNode(node);
 }
 
@@ -16635,11 +16862,11 @@ function paintQuoteBody() {
     root.appendChild(block);
     return;
   }
-  if (quote.historyNote) {
+  if (quote.historyNote || quote.formattingNote) {
     const note = document.createElement("p");
     note.className = "hint compose-history-note";
     note.setAttribute("role", "status");
-    note.textContent = quote.historyNote;
+    note.textContent = [quote.formattingNote, quote.historyNote].filter(Boolean).join(" ");
     root.appendChild(note);
   }
   const container = root;
@@ -16700,12 +16927,15 @@ function paintQuoteBody() {
       bar.append(note, button);
       root.appendChild(bar);
     }
-    if (email.historyUnavailable) {
+    if (email.historyUnavailable || email.historyUnsupported) {
       const missing = document.createElement("p");
       missing.className = "hint compose-history-note";
-      missing.textContent = "Body not downloaded. This message is not included in the reply.";
+      missing.textContent = email.historyUnsupported
+        ? "No supported body content. This message is not included in the reply."
+        : "Body not downloaded. This message is not included in the reply.";
       root.appendChild(missing);
-    } else appendMessageBody(root, email, allowed);
+    } else appendMessageBody(root, email.quoteFormattingLimited
+      ? { ...email, htmlBody: "", textBody: readable({ ...email, snippet: "" }) } : email, allowed);
     const files = quote.kind === "forward" ? attachmentNote(email) : "";
     if (files) {
       const line = document.createElement("p");
@@ -16732,7 +16962,7 @@ function paintComposeChrome() {
   const label = $("compose-quote-label");
   if (label) label.textContent = history ? "Conversation history" : "Original message";
   note.textContent = quote && quote.inEditor
-    ? "Edit or remove quoted text in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
+    ? "Edit or remove quoted text in Message. Safe HTML formatting is retained; remote content stays blocked in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
     : history
     ? "The quoted original and available earlier message text are included when you save, send, or schedule."
     : "The quoted original is still included when you save, send, or schedule.";
