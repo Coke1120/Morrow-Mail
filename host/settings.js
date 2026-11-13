@@ -36,6 +36,7 @@ const DEFAULTS = {
   onboarding: null,
   mailColumnOrder: ["date", "time", "recipient", "sender", "subject"],
   mailHiddenColumns: [],
+  mailColumnWidths: {},
 };
 
 const GET = {
@@ -67,6 +68,7 @@ const GET = {
   "morrow:configGetMailView": "mailView",
   "morrow:configGetMailColumnOrder": "mailColumnOrder",
   "morrow:configGetMailHiddenColumns": "mailHiddenColumns",
+  "morrow:configGetMailColumnWidths": "mailColumnWidths",
   "morrow:configGetOnboarding": "onboarding",
   "morrow:configGetChangelogSeen": "changelogSeen",
 };
@@ -100,6 +102,7 @@ const SET = {
   "morrow:configSetMailView": "mailView",
   "morrow:configSetMailColumnOrder": "mailColumnOrder",
   "morrow:configSetMailHiddenColumns": "mailHiddenColumns",
+  "morrow:configSetMailColumnWidths": "mailColumnWidths",
   "morrow:configSetOnboarding": "onboarding",
   "morrow:configSetChangelogSeen": "changelogSeen",
 };
@@ -177,6 +180,7 @@ function cast(key, value, loose) {
     throw new Error("Notification preview must be hidden, sender, or message");
   }
   if (key === "mailColumnOrder") return require("../shared/mail-columns").normalize(value);
+  if (key === "mailColumnWidths") return require("../shared/mail-columns").normalizeWidths(value);
   if (key === "mailHiddenColumns") return require("../shared/mail-columns").normalizeHidden(value);
   if (key === "onboarding") {
     if (value === null) return null;
