@@ -71,6 +71,8 @@ const INVOKE = [
   "morrow:configSetMailView",
   "morrow:configGetMailColumnOrder",
   "morrow:configSetMailColumnOrder",
+  "morrow:configGetMailColumnWidths",
+  "morrow:configSetMailColumnWidths",
   "morrow:configGetMailHiddenColumns",
   "morrow:configSetMailHiddenColumns",
   "morrow:configGetOnboarding",
