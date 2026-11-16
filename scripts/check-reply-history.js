@@ -382,6 +382,7 @@ test("Rendered Features catalog describes reply history, output, limits and priv
   assert.match(card.textContent, /edit or remove/);
   assert.match(card.textContent, /only the edited Message/);
   assert.match(card.textContent, /safe HTML formatting/);
+  assert.match(card.textContent, /layout defaults for tables, images and spacing/);
   assert.match(card.textContent, /Remote images and CSS resources stay blocked/);
   assert.match(card.textContent, /plain-text fallback/);
 });
@@ -394,7 +395,8 @@ test("Reply and Reply All retain safe original/earlier HTML through edit, save, 
     const f = fixture(t, [richEarlier, richSource]);
     await f.open(kind);
     const editor = f.get("compose-editor"), quote = editor.querySelector("[data-compose-reply-quote]");
-    assert.ok(quote.querySelector("h2"));
+    assert.ok(quote.querySelector("[data-compose-reply-html] h2"));
+    assert.equal(quote.querySelectorAll("[data-compose-reply-html]").length, 2);
     assert.equal(quote.querySelectorAll("li").length, 3);
     assert.equal(quote.querySelectorAll("td").length, 2);
     assert.equal(quote.querySelector("img").src, raster);
@@ -407,6 +409,7 @@ test("Reply and Reply All retain safe original/earlier HTML through edit, save, 
     const body = f.payload().body;
     assert.match(body, /<strong>Edited HTML answer<\/strong>/);
     assert.match(body, /<b>HTML proposal<\/b>/);
+    assert.doesNotMatch(body, /data-compose-reply-html/);
     assert.equal(await f.run("saveDraft()"), true);
     assert.equal(f.calls.find(row => row.channel === "mail:upsertDraft").payload.body, body);
     f.run(`globalThis.confirmed = [];
@@ -493,6 +496,7 @@ test("Plain/empty/unsupported HTML uses safe body text fallback without promotin
     assert.match(f.payload().body, /Earlier proposal: delivery on Friday/);
     assert.match(f.payload().body, /Please confirm the plan/);
     assert.doesNotMatch(f.payload().body, /evil|color:red/);
+    assert.equal(f.get("compose-editor").querySelector("[data-compose-reply-html]"), null);
   }
   const f = fixture(t, [message("unsupported", "", { hasBody:true, htmlBody:'<script>evil()</script>', snippet:'Never a full earlier body' }),
     message("svg", "", { hasBody:true, htmlBody:'<svg><text>Safe escaped fallback &lt;literal&gt;</text></svg>' }), source]);

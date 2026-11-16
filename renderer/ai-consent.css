@@ -1,4 +1,4 @@
-/* Shared Settings / AI Setup permission controls. Material disclosure stays open. */
+/* Shared Settings / AI Setup controls. Show material disclosure before the permission action. */
 .ai-consent {
   margin-top: 18px;
   padding: 16px;
@@ -41,3 +41,9 @@
 }
 
 .ai-consent #ai-consent-status { font-weight: 600; padding: 10px; border-radius: 6px; background: var(--hover, #dbe7d9); }
+
+.ai-consent-disclosure > summary { padding: 8px 0; cursor: pointer; font-weight: 600; }
+.ai-consent-disclosure > summary:focus-visible { outline: 2px solid var(--accent-ink, #193c34); outline-offset: 2px; }
+.ai-consent-disclosure > summary .hint { font-weight: 400; }
+#ai-consent-summary { display: inline-block; margin-inline-start: 8px; white-space: nowrap; }
+#ai-consent-optional { border-block: 1px solid var(--line, #bfd2c5); }

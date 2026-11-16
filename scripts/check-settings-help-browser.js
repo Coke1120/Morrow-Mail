@@ -45,7 +45,7 @@ async function run() {
         if (channel === 'mail:getComposeContext') return { sendAs: [{ email: 'alex@example.invalid', name: 'Provider name', isDefault: true }] };
         throw Error(channel);
       } });
-      window.testConsent = morrowChatgptSettings.mount({ container: document.getElementById('ai-account-settings'), consentContainer: document.getElementById('ai-data-settings'), invoke: morrow.invoke });
+      window.testConsent = morrowChatgptSettings.mount({ container: document.getElementById('ai-account-settings'), consentContainer: document.getElementById('ai-data-settings'), compact: true, invoke: morrow.invoke });
       await testConsent.load({ authMode: 'api_key' });
     });
     const refresh = page.locator('#brain-compose-refresh');
@@ -64,12 +64,20 @@ async function run() {
     await help.click(); await page.locator('#brain-compose-from-help button').click();
     assert.equal(await page.locator('#brain-compose-from-help').evaluate(node => node.matches(':popover-open')), false);
     await page.locator('#settings-tab-ai').click();
+    const review = page.locator('#ai-consent-edit > summary'), optional = page.locator('#ai-consent-optional > summary');
     const opener = page.locator('#ai-consent-details-open'), modal = page.locator('#ai-consent-details');
     for (const theme of ['light', 'dark']) {
       await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 900 });
+        assert.equal(await page.locator('#settings-ai input[type=checkbox]:visible').count(), 1, 'only the Writing preference is visible');
         await page.screenshot({ path: path.join(output, `consent-${theme}-${width}.png`) });
+        await review.focus(); await page.keyboard.press('Enter');
+        assert.equal(await page.locator('#ai-data-settings input[type=checkbox]:visible').count(), 1, 'only core consent is visible during first review');
+        assert.equal(await page.locator('#ai-consent-data').isVisible(), true);
+        await optional.click();
+        assert.equal(await page.locator('#ai-data-settings input[type=checkbox]:visible').count(), 4);
+        await optional.click();
         await opener.focus(); await page.keyboard.press('Enter');
         assert.equal(await modal.evaluate(node => node.open), true);
         assert.equal(await page.locator('#ai-consent-details-close').evaluate(node => node === document.activeElement), true);
@@ -89,8 +97,10 @@ async function run() {
         assert.equal(await page.locator('#ai-consent-manual').isChecked(), false);
         assert.equal(await page.locator('#ai-consent-background').isChecked(), false);
         assert.equal(await page.locator('#ai-consent-allow').isDisabled(), true);
+        await review.click();
       }
     }
+    await review.click();
     await page.locator('#ai-consent-manual').check();
     await opener.click(); await page.locator('#ai-consent-details-close').click();
     assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);

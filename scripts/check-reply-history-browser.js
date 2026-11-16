@@ -42,7 +42,7 @@ async function run() {
         message("previous", "Previous answer: include the appendix."), message("source", "Please confirm the fictional plan."), message("later", "Later message must not be included.")];
       messages[1].htmlBody = '<p>Previous answer: <em>include the appendix.</em></p><ul><li>Earlier HTML item</li></ul>';
       messages[2].htmlBody = '<style>h2{color:#193c34} p{background-image:url(https://tracker.fixture.invalid/css)}</style>'
-        + '<h2>Delivery plan</h2><p><strong>Please confirm the fictional plan.</strong></p><table border="1"><tr><th>Item</th><th>Amount</th></tr><tr><td>Delivery</td><td>42</td></tr></table>'
+        + '<h2>Delivery plan</h2><p><strong>Please confirm the fictional plan.</strong></p><table border="1"><tr>\n  <th>Item</th>\n  <th>Amount</th>\n</tr><tr>\n  <td>Delivery</td>\n  <td>42</td>\n</tr></table>'
         + '<a href="https://docs.fixture.invalid/plan">Plan link</a><img alt="Embedded logo" width="20" height="20" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lvkAAAAASUVORK5CYII=">'
         + '<img src="https://tracker.fixture.invalid/pixel"><script>throw new Error("Untrusted mail executed")</script>';
       state.accounts = [{ id: "fixture", email: "owner@fixture.invalid", platform: "imap", bodyEpoch: 0, folders: { primary: [], more: [] } }];
@@ -79,7 +79,7 @@ async function run() {
     });
     await page.keyboard.insertText("Please confirm the fictional plan with inline changes.");
     const payload = await page.evaluate(() => composePayload(composeAccount()).body);
-    assert.match(payload, /<strong>Please confirm the fictional plan with inline changes\.<\/strong>/);
+    assert.match(payload, /<(strong|b)>Please confirm the fictional plan with inline changes\.<\/\1>/);
     assert.doesNotMatch(await page.locator("#compose-body").inputValue(), /Earlier HTML item|Earlier detail|fictional plan/);
     assert.match(payload, /Earlier detail 45/);
     assert.match(payload, /Previous answer/);
@@ -96,6 +96,23 @@ async function run() {
       assert.ok(layout.paneHeight > 30 && layout.editorHeight > 30, "history and editor remain usable");
       assert.ok(layout.paneScroll > layout.paneHeight, "long history scrolls inside its pane");
       assert.ok(layout.dialogScroll <= layout.dialogWidth + 2, "no horizontal compose overflow");
+      const quoteLayout = await page.evaluate(() => {
+        const editor = $("compose-editor"), quote = editor.querySelector("[data-compose-reply-html]");
+        const readOnly = $("compose-quote-body").querySelector(".body.is-html");
+        const defaults = body => {
+          const wrap = getComputedStyle(body);
+          return [wrap.whiteSpace, wrap.color, wrap.backgroundColor,
+            getComputedStyle(body.querySelector("td")).boxSizing,
+            getComputedStyle(body.querySelector("img")).maxWidth,
+            getComputedStyle(body.querySelector("p")).marginBottom];
+        };
+        return { editable: defaults(quote), readOnly: defaults(readOnly),
+          authoredWhiteSpace: getComputedStyle(editor.firstElementChild).whiteSpace };
+      });
+      assert.deepEqual(quoteLayout.editable, quoteLayout.readOnly, "quoted HTML uses reader layout in both themes and widths");
+      assert.equal(quoteLayout.editable[0], "normal");
+      assert.equal(quoteLayout.editable[3], "content-box");
+      assert.equal(quoteLayout.authoredWhiteSpace, "pre-wrap");
       await page.locator("#compose-quote-body").evaluate(node => { node.scrollTop = node.scrollHeight; });
       await page.screenshot({ path: path.join(output, `reply-history-${width}-${theme}.png`) });
       if (width < 900) {
@@ -112,7 +129,7 @@ async function run() {
     await page.evaluate(() => openComposePreview(null));
     assert.match(await page.locator("#compose-preview-body").innerText(), /Earlier detail 45/);
     assert.equal(await page.locator("#compose-preview-body table td").count(), 2);
-    assert.equal(await page.locator("#compose-preview-body strong").innerText(), "Please confirm the fictional plan with inline changes.");
+    assert.equal(await page.locator("#compose-preview-body :is(strong, b)").innerText(), "Please confirm the fictional plan with inline changes.");
     await page.evaluate(() => cancelComposePreview());
     await page.locator("#compose-editor [data-compose-reply-quote]").fill("Edited quoted excerpt <literal> & 中文");
     const edited = await page.evaluate(() => composePayload(composeAccount()).body);
@@ -149,6 +166,7 @@ async function run() {
     assert.match(await feature.innerText(), /edit or remove/);
     assert.match(await feature.innerText(), /only the edited Message/);
     assert.match(await feature.innerText(), /safe HTML formatting/);
+    assert.match(await feature.innerText(), /layout defaults for tables, images and spacing/);
     assert.match(await feature.innerText(), /Remote images and CSS resources stay blocked/);
     await feature.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(output, "reply-editable-features.png") });
