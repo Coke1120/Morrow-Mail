@@ -3,13 +3,13 @@
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory;
   else root.morrowChatgptSettings = { mount: factory };
-})(typeof window === "object" ? window : globalThis, function mount({ container, consentContainer = container, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {}, onSave = () => {}, onReviewConnection = () => {} }) {
+})(typeof window === "object" ? window : globalThis, function mount({ container, consentContainer = container, compact = false, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {}, onSave = () => {}, onReviewConnection = () => {} }) {
   container.innerHTML = `
     <label for="ai-auth-mode">AI authentication</label>
     <select id="ai-auth-mode"><option value="api_key">API key / custom endpoint</option><option value="chatgpt">ChatGPT account</option></select>
     <section id="chatgpt-panel" hidden aria-label="ChatGPT connection">
-      <p class="hint">Use your eligible ChatGPT plan for Morrow Mail AI. Plan, app and workspace limits apply. This feature is free in Morrow Mail.</p>
-      <p class="hint">Review the <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">OpenAI privacy policy</a> and <a href="https://openai.com/policies/sign-in-with-chatgpt-terms/" target="_blank" rel="noreferrer">sign-in terms</a>. Sign-in connects this account. AI data permission below is a separate choice.</p>
+      ${compact ? "" : '<p class="hint">Use your eligible ChatGPT plan for Morrow Mail AI. Plan, app and workspace limits apply. This feature is free in Morrow Mail.</p>'}
+      <p class="hint">Review the <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">OpenAI privacy policy</a> and <a href="https://openai.com/policies/sign-in-with-chatgpt-terms/" target="_blank" rel="noreferrer">sign-in terms</a>. ${compact ? "Signing in does not grant AI data access." : "Sign-in connects this account. AI data permission below is a separate choice."}</p>
       <label for="chatgpt-account">ChatGPT account registration</label>
       <select id="chatgpt-account"><option value="">Add a new ChatGPT account or workspace</option></select>
       <p id="chatgpt-active" class="hint"></p>
@@ -30,8 +30,8 @@
       <button id="chatgpt-enable" type="button" class="ghost" hidden>Enable ChatGPT plan usage</button>
       <label for="chatgpt-model">ChatGPT model</label>
       <select id="chatgpt-model"><option value="">Fetch models and choose one</option></select>
-      <p class="hint">Only models returned for this account are offered. Use Fetch models below. Save AI applies the authentication choice and model.</p>
-      <p class="hint">Use AI data permission below to separately allow background processing for this saved connection. No automatic API billing fallback or account rotation.</p>
+      ${compact ? "" : `<p class="hint">Only models returned for this account are offered. Use Fetch models below. Save AI applies the authentication choice and model.</p>
+      <p class="hint">Use AI data permission below to separately allow background processing for this saved connection. No automatic API billing fallback or account rotation.</p>`}
       <p><a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage in ChatGPT</a></p>
       <button id="chatgpt-resume" type="button" class="ghost" hidden>Retry after checking usage</button>
       <dialog id="chatgpt-welcome" aria-label="You're using your ChatGPT plan" hidden>
@@ -40,10 +40,13 @@
         <button id="chatgpt-got-it" type="button" class="primary">Got it</button>
       </dialog>
     </section>`;
+  const privacyButton = '<button id="ai-consent-details-open" type="button" class="ghost" aria-haspopup="dialog" aria-controls="ai-consent-details">Privacy details…</button>';
   const consentMarkup = `
     <section class="ai-consent" aria-labelledby="ai-consent-title">
-      <div class="ai-consent-heading"><h3 id="ai-consent-title">AI data permission</h3><button id="ai-consent-details-open" type="button" class="ghost" aria-haspopup="dialog" aria-controls="ai-consent-details">Privacy details…</button></div>
-      <p class="hint">Saving or signing in does not allow AI data use. Review what is shared, then choose below.</p>
+      <div class="ai-consent-heading"><h3 id="ai-consent-title">AI data permission</h3>${compact ? "" : privacyButton}</div>
+      ${compact ? `<details class="ai-consent-disclosure" id="ai-consent-edit">
+        <summary>Manage permissions <span class="hint" id="ai-consent-summary" role="status">Checking…</span></summary>`
+        : '<p class="hint">Saving or signing in does not allow AI data use. Review what is shared, then choose below.</p>'}
       <p id="ai-consent-destination" class="ai-consent-target"></p>
       <p id="ai-consent-locality" class="hint"></p>
       <p id="ai-consent-data"></p>
@@ -52,6 +55,8 @@
         <label class="check" for="ai-consent-manual"><input id="ai-consent-manual" type="checkbox" aria-describedby="ai-consent-purposes ai-consent-data ai-consent-destination" /> Allow my explicit AI actions at this saved destination</label>
         <p id="ai-consent-purposes" class="hint"></p>
       </div>
+      ${compact ? `<details class="ai-consent-disclosure" id="ai-consent-optional">
+        <summary>Optional access: Timeline, Case and background AI <span class="hint" id="ai-consent-optional-count"></span></summary>` : ""}
       <div class="ai-consent-choice">
         <label class="check" for="ai-consent-timeline"><input id="ai-consent-timeline" type="checkbox" aria-describedby="ai-consent-timeline-data" /> Also allow reviewed Thread Timeline data (optional)</label>
         <p id="ai-consent-timeline-data" class="hint">After Generate: selected message text, subjects, attachment names, sender names and addresses, mail timestamps/date provenance, and optional keywords/contact emails. Independent To/Cc headers stay local; bodies and focus may contain recipient addresses.</p>
@@ -62,14 +67,17 @@
         <label class="check" for="ai-consent-background"><input id="ai-consent-background" type="checkbox" aria-describedby="ai-consent-background-data" /> Also allow background AI (optional)</label>
         <p id="ai-consent-background-data" class="hint"></p>
       </div>
+      ${compact ? "</details>" : ""}
       <p id="ai-consent-revocation" class="hint">Unchanged data-use permissions survive app updates. A provider, endpoint, model or account change requires fresh permission; expanded data uses need approval only for the affected scope. Cancel / revoke stops pending and future requests; data already delivered cannot be recalled.</p>
       <p id="ai-consent-reason" class="ai-consent-reason" role="status" aria-live="polite"></p>
       <div class="row ai-consent-actions">
         <button id="ai-consent-allow" type="button" class="primary" aria-describedby="ai-consent-reason" disabled>Allow selected AI data use</button>
         <button id="ai-consent-connection" type="button" class="ghost">Review connection</button>
         <button id="ai-consent-revoke" type="button" class="ghost">Cancel / revoke</button>
+        ${compact ? privacyButton : ""}
       </div>
       <p id="ai-consent-status" role="status" aria-live="polite"></p>
+      ${compact ? "</details>" : ""}
       <dialog id="ai-consent-details" class="ai-consent-modal" aria-labelledby="ai-consent-details-title">
         <div class="ai-consent-heading"><h3 id="ai-consent-details-title">AI data use and privacy</h3><button id="ai-consent-details-close" type="button" class="ghost" autofocus>Close details</button></div>
         <p>Reading these details does not enable AI. Choose permission in the settings behind this dialog.</p>
@@ -154,6 +162,12 @@
     $("ai-consent-connection").disabled = disposed || connectionSaving || consentBusy;
     $("ai-consent-connection").textContent = connectionDirty ? "Save & review connection" : "Review connection";
     $("ai-consent-reason").textContent = consentReason();
+    if (compact) {
+      $("ai-consent-summary").textContent = consentBusy || consentLoading ? "Checking…" : connectionDirty || consentError
+        ? "Review needed" : permission?.manual ? "AI actions allowed" : "AI data use off";
+      const selected = ["timeline", "case", "background"].filter(name => $("ai-consent-" + name).checked).length;
+      $("ai-consent-optional-count").textContent = selected ? ` · ${selected} selected` : "";
+    }
   }
   function setConnectionState({ dirty = false, saving = false } = {}) {
     if (connectionDirty !== dirty || connectionSaving !== saving) clearConsentChoices();
@@ -449,6 +463,10 @@
     dispose: () => {
       disposed = true;
       closeDetails();
+      if (compact) {
+        $("ai-consent-optional").open = false;
+        $("ai-consent-edit").open = false;
+      }
       actionRevision++; statusRevision++; modelRevision++;
       consentRevision++; consentBusy = false; consentLoading = false; consentRefreshPending = false; permission = null;
       clearConsentChoices();

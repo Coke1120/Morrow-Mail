@@ -4494,7 +4494,8 @@ button.attachment-name:hover { text-decoration: underline; }
 
 /* HTML mail is authored for white paper and content-box table widths.
    pre-wrap here turns the source whitespace between cells into extra columns. */
-.body.is-html {
+.body.is-html,
+:where(.compose-editor [data-compose-reply-html]) {
   white-space: normal;
   color: #1c1c1c;
   background: #fff;
@@ -4505,17 +4506,21 @@ button.attachment-name:hover { text-decoration: underline; }
 }
 
 .body.is-html,
-.body.is-html * { box-sizing: content-box; }
+.body.is-html *,
+:where(.compose-editor [data-compose-reply-html], .compose-editor [data-compose-reply-html] *) { box-sizing: content-box; }
 
-.body.is-html img {
+.body.is-html img,
+:where(.compose-editor [data-compose-reply-html]) img {
   max-width: 100%;
   border: 0;
   vertical-align: middle;
 }
 
-.body.is-html a { color: #1a56c4; }
+.body.is-html a,
+:where(.compose-editor [data-compose-reply-html]) a { color: #1a56c4; }
 
-.body p { margin: 0 0 0.75em; }
+.body p,
+:where(.compose-editor [data-compose-reply-html]) p { margin: 0 0 0.75em; }
 
 .unsubscribe-banner {
   display: flex;
@@ -5426,13 +5431,12 @@ textarea { min-height: 140px; resize: vertical; }
   pointer-events: none;
 }
 
-.compose-editor ul,
-.compose-editor ol {
+.compose-editor :is(ul, ol):not(:where([data-compose-reply-html] *)) {
   margin: 0.35em 0;
   padding-left: 1.4em;
 }
 
-.compose-editor p { margin: 0 0 0.45em; }
+.compose-editor p:not(:where([data-compose-reply-html] *)) { margin: 0 0 0.45em; }
 
 .compose-editor [data-compose-reply-quote] {
   margin-top: 1em;

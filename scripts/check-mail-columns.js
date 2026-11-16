@@ -88,6 +88,8 @@ async function run() {
 
   const dom = new JSDOM(fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8"), { url: "https://fixture.invalid" });
   const ui = renderer({ document: dom.window.document, localStorage: dom.window.localStorage });
+  ui.run(fs.readFileSync(path.join(__dirname, "../shared/display-format.js"), "utf8"));
+  ui.run("globalThis.morrowDisplayFormat = window.morrowDisplayFormat");
   ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   ui.run(`
     state.listOffset = 200; state.listCursors = [{offset:200}];
@@ -167,7 +169,34 @@ async function run() {
   assert.equal(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').dateTime`), timestamp);
   assert.match(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').title`), /2026-11-01T06:30:00.000Z/);
   assert.ok(ui.run(`messageRow(stampFixture).querySelector('[data-mail-column="time"]').textContent.length > 0`));
+  ui.run(`
+    state.outbox = false;
+    state.prefs.dateFormat = 'yyyy-mm-dd';
+    globalThis.beforeMidnight = new Date(2026, 10, 1, 23, 59);
+    globalThis.afterMidnight = new Date(2026, 10, 2);
+    state.emails = [{id:'relative-date',accountId:'synthetic',date:new Date(2026,10,1,0,1).toISOString()}];
+    renderList();
+    globalThis.relativeRow = $('message-list').querySelector('.message-row');
+    relativeRow.querySelector('button.message').focus();
+    refreshMailListDates(beforeMidnight);
+  `);
+  const relativeCell = dom.window.document.querySelector('.message-row [data-mail-column="date"]');
+  assert.equal(relativeCell.textContent, "Today");
+  assert.ok(relativeCell.title.includes(relativeCell.dateTime));
+  const timeCell = dom.window.document.querySelector('.message-row [data-mail-column="time"]');
+  const originalTime = timeCell.textContent;
+  ui.run('refreshMailListDates(afterMidnight)');
+  assert.equal(relativeCell.textContent, "Yesterday");
+  assert.equal(ui.run("document.activeElement === relativeRow.querySelector('button.message')"), true);
+  assert.equal(timeCell.textContent, originalTime);
+  ui.run('refreshMailListDates(new Date(2026,10,3))');
+  assert.equal(relativeCell.textContent, "2026-11-01");
+  assert.equal(ui.run(`messageRow({...state.emails[0],outbox:true}).querySelector('[data-mail-column="date"]').textContent`), "2026-11-01");
+  assert.equal(ui.run('mailListDateText(new Date(2026,10,2),beforeMidnight)'), "2026-11-02");
+  assert.equal(ui.run('mailListDateText(new Date(2026,9,31,0,1),beforeMidnight)'), "Yesterday", "calendar days work across month boundaries");
+  assert.match(dom.window.document.getElementById("mail-columns-help").textContent, /Date column shows Today or Yesterday/);
   ui.run(`paintFeatureCatalog()`);
+  assert.match(dom.window.document.getElementById("features-catalog").textContent, /Date shows Today or Yesterday/);
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /sort all matching downloaded mail before paging/);
   assert.match(dom.window.document.getElementById("features-catalog").textContent, /Reply \/ forward icons appear inline before Subject/);
   const dispositionHelp = dom.window.document.getElementById("mail-columns-provider-help").textContent;

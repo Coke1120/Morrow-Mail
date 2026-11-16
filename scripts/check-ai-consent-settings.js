@@ -495,8 +495,39 @@ test("Features and Settings help render the same explicit consent prerequisites"
   assert.match(f.get("features-catalog").textContent, /If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
   assert.match(f.get("features-catalog").textContent, /Save & review connection saves without approving/);
   assert.match(f.get("features-catalog").textContent, /Reopening Settings preserves unsaved connection edits and clearly shows saved permission choices/);
-  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>Review the saved connection[\s\S]*?Thread Timeline, Case and background use are optional/);
-  assert.match(source("renderer/index.html"), /id="ai-consent-help"[^>]*>[\s\S]*If Allow is unavailable, follow the status message/);
+  assert.match(f.get("features-catalog").textContent, /Manage permissions shows the saved status.*Timeline, Case and background choices are under Optional access/);
+  f.assertNoModelCalls();
+});
+
+test("Settings keeps permission controls collapsed until review, with optional scopes separately disclosed", async t => {
+  const f = fixture({ useDom: true }); t.after(f.dispose); await f.load();
+  const get = f.get, review = get("ai-consent-edit"), optional = get("ai-consent-optional");
+  assert.equal(review.open, false);
+  assert.equal(optional.open, false);
+  assert.match(get("ai-consent-summary").textContent, /AI data use off/);
+  assert.ok(review.contains(get("ai-consent-manual")));
+  assert.equal(optional.contains(get("ai-consent-manual")), false);
+  for (const name of ["timeline", "case", "background"]) {
+    assert.ok(optional.contains(get("ai-consent-" + name)));
+    assert.equal(get("ai-consent-" + name).checked, false);
+  }
+  assert.ok(review.contains(get("ai-consent-allow")));
+  assert.ok(review.contains(get("ai-consent-revoke")));
+  review.open = true; await f.checkManual(true);
+  assert.equal(optional.open, false);
+  get("ai-consent-allow").click(); await tick();
+  assert.equal(f.consent.status().manual, true);
+  assert.equal(f.consent.status().scopes.timeline, false);
+  assert.equal(f.consent.status().scopes.case, false);
+  assert.equal(f.consent.status().background, false);
+  assert.match(get("ai-consent-summary").textContent, /AI actions allowed/);
+  f.component.dispose();
+  assert.equal(review.open, false);
+  assert.equal(optional.open, false);
+  await f.component.resume();
+  assert.equal(review.open, false);
+  assert.equal(get("ai-consent-manual").checked, true);
+  assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 1);
   f.assertNoModelCalls();
 });
 
@@ -507,7 +538,11 @@ test("Settings and Setup keep material disclosure outside the details dialog, af
     const f = fixture(), document = dom.window.document;
     dom.window.eval(source("renderer/chatgpt-settings.js"));
     const component = dom.window.morrowChatgptSettings.mount({ container: document.getElementById("ai-account-settings"),
-      consentContainer: document.getElementById("ai-data-settings"), invoke: f.bridge.invoke });
+      consentContainer: document.getElementById("ai-data-settings"), compact: filename.startsWith("renderer"), invoke: f.bridge.invoke });
+    if (filename.startsWith("renderer")) {
+      document.getElementById("ai-consent-edit").open = true;
+      document.getElementById("ai-consent-optional").open = true;
+    }
     await component.load(f.config.publicConfig());
     const get = id => document.getElementById(id), permission = f.consent.status();
     assert.ok(get(filename.startsWith("host") ? "save" : "ai-save").compareDocumentPosition(get("ai-consent-title")) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);

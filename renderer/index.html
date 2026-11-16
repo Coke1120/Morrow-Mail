@@ -760,7 +760,7 @@
     <dialog id="mail-columns" aria-labelledby="mail-columns-title" aria-describedby="mail-columns-help">
       <div class="dialog-body">
         <div class="sheet-head"><h2 id="mail-columns-title">Mail columns</h2><button type="button" class="ghost" id="mail-columns-close">Close</button></div>
-        <p id="mail-columns-help">Choose which columns to show, including the separate Date and Time columns. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Time, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. Date and Time both sort by the full timestamp, including the date. Display uses your date/time formats and device timezone; hover a date or time for the full timestamp and timezone. The same layout is used across mailboxes, search and Outbox. Drag a visible header’s right-edge resize handle to set its width, or focus the handle and use Left / Right (Shift for larger steps). Escape cancels a resize; Delete / Backspace or double-clicking the handle restores its responsive default. Widths are saved by column ID and remain attached to that column when reordered or hidden; untouched columns keep their responsive defaults.</p>
+        <p id="mail-columns-help">Choose which columns to show, including the separate Date and Time columns. Subject stays visible. Right-click any header, or focus it and press Shift + F10, for the same visibility choices. Drag a column header to reorder it, or use these buttons. You can also focus a header and press Alt + Left or Right. Click Date, Time, Recipient, Sender or Subject to sort, even if the sorted column is later hidden. Date and Time both sort by the full timestamp, including the date. The mail-list Date column shows Today or Yesterday for those local calendar dates, otherwise your date format. Labels refresh across midnight and after waking. Time, Outbox and other date displays keep their existing formats. Display uses the device timezone; hover a date or time for the full timestamp and timezone. The same layout is used across mailboxes, search and Outbox. Drag a visible header’s right-edge resize handle to set its width, or focus the handle and use Left / Right (Shift for larger steps). Escape cancels a resize; Delete / Backspace or double-clicking the handle restores its responsive default. Widths are saved by column ID and remain attached to that column when reordered or hidden; untouched columns keep their responsive defaults.</p>
         <p class="hint" id="mail-columns-provider-help">Reply / forward icons sit before Subject. Outlook OAuth, Yahoo app-password and other IMAP accounts use cached provider flags and confirmed successful Morrow sends. After complete SMTP acceptance, Morrow adds the server flag where permitted. Read-only folders, unsupported keywords or flag errors keep a local indicator; flag errors never resend mail. Transient flag failures retry during ordinary sync after five minutes. Cross-device IMAP icons require server and client support. Gmail uses confirmed successful Morrow sends or a unique matching In-Reply-To in downloaded Sent mail; emoji reactions are excluded. Confirmed local replies keep the original Gmail identity even without a Message-ID. Sent sync gradually checks already cached, uninspected reply candidates, at most two per pass within its normal read budget, and resumes after restart or connection recovery. Failed, canceled, partial and uncertain sends add no local indicator. Local evidence stays on this device and survives ordinary sync and restart; cross-device forwards cannot be inferred. No icon means no positive evidence. Drafts and Outbox show no indicators. Both icons can appear; explicit Gmail provider evidence takes priority.</p>
         <ol id="mail-columns-order"></ol>
         <button type="button" class="ghost" id="mail-columns-reset">Reset column order</button>
@@ -1386,7 +1386,7 @@
               <label for="ai-model-select">Fetched models</label>
               <select id="ai-model-select" size="6" aria-describedby="ai-model-help"></select>
             </div>
-            <p class="hint" id="ai-model-help">Type a model id, or fetch models and click one in the list.</p>
+            <p class="hint" id="ai-model-help">Enter a model ID or fetch models.</p>
             </div>
             <div class="field settings-full-width" id="ai-api-key-field">
             <label for="ai-key">API key</label>
@@ -1400,18 +1400,15 @@
             </div>
             <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
-            <p class="hint settings-full-width">Fetch models reads the catalog using your credentials, without mail context. Test sends a short AI request after permission and uses provider usage.</p>
-            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection and saved AI data permissions below. Thread Timeline, Case and background use are optional. Unchanged permissions survive app updates. If Allow is unavailable, follow the status message.</p>
           </div>
           <div id="ai-data-settings"></div>
           <details id="ai-connection-details" class="settings-disclosure"><summary>Connection details</summary>
-            <p class="hint">Save AI applies the submitted settings; edits made while saving remain unsaved. Reopening Settings keeps unsaved connection edits, refreshes saved permission and restores saved checkbox choices without granting new uses. Test connection sends a short model request after AI data permission and uses plan usage in ChatGPT mode. Results from older tests or changed settings are ignored. Save and approve a changed destination/model before testing it. Fetch models only reads the selected provider's model catalog, sends its credentials, and sends no mail context. API mode keeps the saved key when its field is blank.</p>
-            <p class="hint">API settings are preserved when choosing ChatGPT. ChatGPT credentials are encrypted by operating system secure storage, controlled by the main process, and separate from mailbox OAuth. Paste-back is optional; cancellation and timeout require a fresh sign-in. See the AI connection feature for supported requests and limits.</p>
+            <p class="hint">Fetch models only reads the selected provider’s model catalog using your credentials, without sending mail. Test connection sends a short model request after permission and uses provider usage. A new destination or model needs fresh permission.</p>
+            <p class="hint">Save AI applies the submitted settings; edits made while saving remain unsaved. Switching to ChatGPT keeps your API settings. ChatGPT sign-in is separate from mailbox sign-in. See Features → AI connection for limits.</p>
           </details>
           <div class="settings-group">
             <h4>Writing</h4>
             <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-            <p class="hint">This preference saves automatically. Reply and Reply All open the write popover when it is on.</p>
           </div>
           </div>
         </section>
