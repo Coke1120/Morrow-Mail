@@ -7,6 +7,11 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.13": [
+      "The mail list shows Today and Yesterday using your device’s local calendar. Older messages keep your chosen date format.",
+      "Editable HTML quotes in fresh replies use the original preview’s table, image and spacing defaults. Remote resources remain blocked in the editable quote.",
+      "Settings → AI shows permission status and keeps detailed choices under Manage permissions. Existing grants and approval requirements are unchanged.",
+    ],
     "0.4.12": [
       "Resize Date, Time, Recipient, Sender and Subject using their right-edge handles or the keyboard. Widths are remembered independently of column order and visibility; double-click a handle or press Delete to restore its responsive default.",
       "Fresh Reply and Reply All preserve supported HTML formatting in editable quotes from the original and available earlier cached messages, including tables, lists, links and embedded raster images. Plain text is used when usable HTML is unavailable; remote images and active content stay blocked.",
