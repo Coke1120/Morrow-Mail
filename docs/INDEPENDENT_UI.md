@@ -1,5 +1,9 @@
 Visible Date, Time, Recipient, Sender and Subject columns can be resized using their right-edge handles, or Left / Right on a focused handle (Shift for larger steps). Escape cancels; Delete / Backspace or double-clicking the handle restores its responsive default. Width overrides are saved in settings.json by column ID independently of ordering and visibility; untouched columns keep responsive defaults. Narrow layouts scroll horizontally without changing the reading-pane layout.
 
+The mail-list Date column shows Today or Yesterday for those local calendar days,
+and uses the configured date format otherwise. Labels refresh across midnight
+without replacing focused rows. Time, Outbox, and timestamp-based sorting are unchanged.
+
 Readers show a reviewed Unsubscribe banner for supported downloaded mailing-list
 headers from Gmail API and IMAP (including Outlook and Yahoo). The host confirms
 the exact mailbox and sender-supplied destination before opening a manual website

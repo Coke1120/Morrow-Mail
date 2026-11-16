@@ -8395,6 +8395,49 @@ function mailReplyForwardCell(email) {
   return cell;
 }
 
+// Only the mail-list Date column uses relative calendar-day labels. Readers,
+// Time, Outbox and stored/sort timestamps keep their existing formats.
+function mailListDateText(date, now = new Date()) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  if (date.toDateString() === now.toDateString()) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return displayStamp(date, "date");
+}
+
+let mailListDateDay = "";
+function refreshMailListDates(now = new Date()) {
+  const day = now.toDateString() + "|" + now.getTimezoneOffset();
+  if (day === mailListDateDay) return;
+  mailListDateDay = day;
+  for (const { row } of messageRows.values()) {
+    const email = row.mailMessage;
+    if (!email || email.outbox) continue;
+    const when = row.querySelector('[data-mail-column="date"]');
+    if (!when) continue;
+    const text = mailListDateText(email.date ? new Date(email.date) : null, now);
+    if (when.textContent !== text) when.textContent = text;
+  }
+}
+
+function watchMailListDates() {
+  let timer = null;
+  const tick = () => {
+    if (timer !== null) clearTimeout(timer);
+    const now = new Date();
+    refreshMailListDates(now);
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    // Wake at local midnight, not 24 hours later. A bounded recheck also handles
+    // clock changes; focus/visibility catches timers delayed during sleep.
+    timer = setTimeout(tick, Math.max(1, Math.min(60000, midnight - now)));
+  };
+  window.addEventListener("focus", tick);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  tick();
+}
+
 function messageRow(email) {
   const row = document.createElement("div");
   row.className = "message-row" + (email.outbox ? " outbox-row" : "");
@@ -8463,7 +8506,7 @@ function messageRow(email) {
   const validStamp = stamp && !Number.isNaN(stamp.getTime());
   const stampTitle = validStamp ? shownWhen(stamp, true) + " · " + stamp.toISOString() : "No date or time";
   if (validStamp) when.dateTime = stamp.toISOString();
-  when.textContent = validStamp ? displayStamp(stamp, "date") : "";
+  when.textContent = validStamp ? (email.outbox ? displayStamp(stamp, "date") : mailListDateText(stamp)) : "";
   const time = document.createElement("time");
   time.className = "when mail-time";
   if (validStamp) time.dateTime = stamp.toISOString();
@@ -8472,6 +8515,7 @@ function messageRow(email) {
   time.setAttribute("aria-label", validStamp ? "Time: " + stampTitle : "Time unavailable");
   subject.title = subject.textContent;
   when.title = stampTitle;
+  when.setAttribute("aria-label", validStamp ? "Date: " + stampTitle : "Date unavailable");
   const recipient = document.createElement("span");
   recipient.className = "recipient";
   recipient.textContent = mailRecipientText(email) || "(no recipient)";
@@ -8903,6 +8947,7 @@ function renderList() {
       previous = row;
     }
   }
+  refreshMailListDates();
   const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : "", state.allInboxStarredOnly ? "starred" : ""].join("\0");
   if (motionKey !== listMotionKey) {
     listMotionKey = motionKey;
@@ -29317,6 +29362,7 @@ async function boot() {
   api.on("app:confirmQuitScheduled", acceptQuitScheduled);
   api.on("app:dismissQuitScheduled", dismissQuitScheduled);
   wire();
+  watchMailListDates();
   setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
