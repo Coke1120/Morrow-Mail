@@ -15028,6 +15028,10 @@ function composeReplyQuoteMessage(email) {
   if (!body.textContent.trim() && !body.querySelector("img")) {
     body = document.createElement("blockquote");
     appendSafeMailHtml(body, toHtml(readable({ ...email, snippet: "" })), false);
+  } else {
+    // Share the reader's layout for sanitized HTML only. This editor marker
+    // is not copied by the outgoing sanitizer and does not affect plain text.
+    body.setAttribute("data-compose-reply-html", "");
   }
   if (!body.childNodes.length) return null;
   body.style.setProperty("margin", "0.5em 0");
@@ -20431,7 +20435,7 @@ function mountChatgptSettings() {
   const container = $("ai-account-settings");
   if (!chatgptSettings && container && window.morrowChatgptSettings) {
     chatgptSettings = window.morrowChatgptSettings.mount({
-      container, consentContainer: $("ai-data-settings") || container,
+      container, consentContainer: $("ai-data-settings") || container, compact: true,
       invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
       onSave: saveAiSettings,
       onReviewConnection: () => $("ai-base").focus(),

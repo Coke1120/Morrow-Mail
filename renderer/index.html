@@ -1386,7 +1386,7 @@
               <label for="ai-model-select">Fetched models</label>
               <select id="ai-model-select" size="6" aria-describedby="ai-model-help"></select>
             </div>
-            <p class="hint" id="ai-model-help">Type a model id, or fetch models and click one in the list.</p>
+            <p class="hint" id="ai-model-help">Enter a model ID or fetch models.</p>
             </div>
             <div class="field settings-full-width" id="ai-api-key-field">
             <label for="ai-key">API key</label>
@@ -1400,18 +1400,15 @@
             </div>
             <p id="ai-dirty" class="hint settings-dirty settings-full-width" role="status" hidden></p>
             <p id="ai-status" class="settings-full-width" role="status"></p>
-            <p class="hint settings-full-width">Fetch models reads the catalog using your credentials, without mail context. Test sends a short AI request after permission and uses provider usage.</p>
-            <p class="hint settings-full-width" id="ai-consent-help">Review the saved connection and saved AI data permissions below. Thread Timeline, Case and background use are optional. Unchanged permissions survive app updates. If Allow is unavailable, follow the status message.</p>
           </div>
           <div id="ai-data-settings"></div>
           <details id="ai-connection-details" class="settings-disclosure"><summary>Connection details</summary>
-            <p class="hint">Save AI applies the submitted settings; edits made while saving remain unsaved. Reopening Settings keeps unsaved connection edits, refreshes saved permission and restores saved checkbox choices without granting new uses. Test connection sends a short model request after AI data permission and uses plan usage in ChatGPT mode. Results from older tests or changed settings are ignored. Save and approve a changed destination/model before testing it. Fetch models only reads the selected provider's model catalog, sends its credentials, and sends no mail context. API mode keeps the saved key when its field is blank.</p>
-            <p class="hint">API settings are preserved when choosing ChatGPT. ChatGPT credentials are encrypted by operating system secure storage, controlled by the main process, and separate from mailbox OAuth. Paste-back is optional; cancellation and timeout require a fresh sign-in. See the AI connection feature for supported requests and limits.</p>
+            <p class="hint">Fetch models only reads the selected provider’s model catalog using your credentials, without sending mail. Test connection sends a short model request after permission and uses provider usage. A new destination or model needs fresh permission.</p>
+            <p class="hint">Save AI applies the submitted settings; edits made while saving remain unsaved. Switching to ChatGPT keeps your API settings. ChatGPT sign-in is separate from mailbox sign-in. See Features → AI connection for limits.</p>
           </details>
           <div class="settings-group">
             <h4>Writing</h4>
             <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-            <p class="hint">This preference saves automatically. Reply and Reply All open the write popover when it is on.</p>
           </div>
           </div>
         </section>

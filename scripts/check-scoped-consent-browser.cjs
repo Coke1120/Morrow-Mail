@@ -46,7 +46,7 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
     await page.evaluate(async () => {
       document.querySelector('#settings').showModal(); document.querySelectorAll('#settings .fold').forEach(el => el.hidden = true);
       document.querySelector('#settings-ai').hidden = false; document.querySelector('#settings-ai-panel').hidden = false;
-      window.fixtureComponent = window.morrowChatgptSettings.mount({ container: document.querySelector('#ai-account-settings'), consentContainer: document.querySelector('#ai-data-settings'), invoke: morrow.invoke });
+      window.fixtureComponent = window.morrowChatgptSettings.mount({ container: document.querySelector('#ai-account-settings'), consentContainer: document.querySelector('#ai-data-settings'), compact: true, invoke: morrow.invoke });
       await fixtureComponent.load({ authMode: 'api_key' });
     });
     assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);
@@ -56,6 +56,8 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
     await page.evaluate(async () => { fixtureComponent.dispose(); await fixtureComponent.resume(); });
     assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);
     assert.equal(calls.filter(x => x === 'host:aiConsentGrant').length, 0);
+    const review = page.locator('#ai-consent-edit > summary'), optional = page.locator('#ai-consent-optional > summary');
+    await review.click(); await optional.click();
     await page.locator('#ai-consent-case').check(); assert.equal(consent.status().scopes.case, false);
     await page.locator('#ai-consent-allow').click();
     await page.waitForFunction(() => document.querySelector('#ai-consent-status').textContent.includes('Case allowed'));
