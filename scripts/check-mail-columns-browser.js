@@ -13,6 +13,7 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try {
   const page=await browser.newPage({viewport:{width:1440,height:900},locale:'en-US',timezoneId:'America/New_York'});
+  await page.clock.setFixedTime(new Date('2026-11-04T16:00:00.000Z'));
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.addInitScript(()=>{
    if(!localStorage.getItem('fixture.mailColumnOrder'))localStorage.setItem('fixture.mailColumnOrder',JSON.stringify(['date','recipient','sender','subject']));
@@ -63,6 +64,28 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
   for(const row of stamps){assert.match(row.title,/America\/New_York/);assert.ok(row.title.includes(row.datetime));}
   assert.notEqual(stamps[0].title,stamps[1].title,'repeated DST times retain distinct exact UTC tooltips');
   assert.match(await page.evaluate(()=>{state.prefs.timeFormat='12h';const row=messageRow({id:'twelve',date:'2026-11-01T05:30:00.000Z'});state.prefs.timeFormat='24h';return row.querySelector('[data-mail-column="time"]').textContent;}),/1:30 AM/);
+  const relative = await page.evaluate(() => {
+   const local = new Date('2026-11-02T04:59:00.000Z');
+   const values = ['2026-11-02T03:30:00.000Z','2026-11-01T03:30:00.000Z','2026-10-31T03:30:00.000Z','2026-11-02T05:00:00.000Z','bad'];
+   return values.map(value => mailListDateText(new Date(value), local));
+  });
+  assert.deepEqual(relative,['Today','Yesterday','2026-10-30','2026-11-02',''],'relative labels use local calendar days, not UTC dates or rolling 24-hour windows');
+  await page.clock.setFixedTime(new Date('2026-11-02T04:59:00.000Z'));
+  await page.evaluate(() => {
+   watchMailListDates();
+   globalThis.focusedDateRow = document.querySelector('.message-row button.message');
+   focusedDateRow.focus();
+  });
+  const firstDate = page.locator('.message-row [data-mail-column="date"]').first();
+  assert.equal(await firstDate.textContent(),'Today');
+  const exactStamp = await firstDate.getAttribute('datetime');
+  assert.ok((await firstDate.getAttribute('title')).includes(exactStamp));
+  assert.equal(await page.evaluate(() => messageRow({id:'outbox-date',outbox:true,date:'2026-11-02T03:30:00.000Z'}).querySelector('[data-mail-column="date"]').textContent),'2026-11-01');
+  await page.clock.setFixedTime(new Date('2026-11-02T05:00:00.000Z'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  assert.equal(await firstDate.textContent(),'Yesterday');
+  assert.equal(await firstDate.getAttribute('datetime'),exactStamp);
+  assert.equal(await page.evaluate(() => focusedDateRow === document.activeElement),true,'midnight rollover keeps row focus');
   await page.locator('[data-sort-key="time"] button').click();
   await page.waitForFunction(()=>document.querySelector('[data-sort-key="time"]').getAttribute('aria-sort')==='descending');
   await page.locator('[data-sort-key="time"] button').press('Space');
@@ -118,6 +141,8 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
   await page.screenshot({path:path.join(output,'comfortable.png')});
   await page.evaluate(()=>showFeatures());
   const columnHelp=page.locator('.feature-card').filter({has:page.getByRole('heading',{name:'Mail columns and sorting',exact:true})});
+  assert.match(await columnHelp.textContent(),/Date shows Today or Yesterday/);
+  assert.match(await page.locator('#mail-columns-help').textContent(),/Date column shows Today or Yesterday/);
   assert.match(await columnHelp.textContent(),/Both headers sort by the full timestamp, including the date/);
   assert.match(await columnHelp.textContent(),/Older saved layouts gain Time immediately after Date/);
   const replyHelp=page.locator('.feature-card').filter({has:page.getByRole('heading',{name:'Reply / forward indicators',exact:true})});
