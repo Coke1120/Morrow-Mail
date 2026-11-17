@@ -70,7 +70,10 @@ function createRenderer(invoke) {
     querySelector: (selector) => body.querySelector(selector),
   };
   const ui = renderer({ document, window: { morrow: { invoke, on() {} } } });
-  ui.run("renderList = () => {}; settleOpenView = async () => {}; state.view = 'mail';");
+  ui.run(`
+    renderList = () => {}; settleOpenView = async () => {}; state.view = "mail";
+    state.accounts = [{ id: "synthetic", email: "me@example.test", bodyEpoch: 1 }];
+  `);
   return ui;
 }
 
@@ -131,7 +134,7 @@ async function run() {
     if (channel === "nativeAgent:learning:forget") return { success: true, data: learning.forget(payload) };
     return { success: true, data: null };
   });
-  const seed = (id, categoryId = "needs-you") => ({ messageId: id, accountId: "synthetic", categoryId, unread: true, from: "same@example.test", threadId: "shared" });
+  const seed = (id, categoryId = "needs-you") => ({ messageId: id, accountId: "synthetic", folderId: "INBOX", categoryId, unread: true, from: "same@example.test", threadId: "shared" });
   const outcome = (id, status, extra = {}) => ({ id, actionId: "action-" + id, generation: 1, kind: "read", status, projection: { unread: status === "failed" || status === "not_attempted" }, ...extra });
   const reset = () => {
     calls.length = 0;
@@ -185,7 +188,12 @@ async function run() {
     for (const category of [false, true]) {
       reset();
       ui.context.items = [seed("first", category ? "fyi" : "needs-you"), seed("second", category ? "fyi" : "needs-you")];
-      await ui.run(category ? "markAgentCategoryRead(items)" : "applyReplySelection(items, 'read')");
+      await ui.run(category ? "markAgentCategoryRead(items)" : "applyReplySelection(items, 'read', 'reply')");
+      const batch = calls.filter((row) => row.channel === "mail:markReadBatch");
+      assert.equal(batch.length, 1);
+      if (!category) assert.deepEqual(Array.from(batch[0].payload.contextOwners, (owner) =>
+        [owner.emailId, owner.accountId, owner.folderId, owner.bodyEpoch]),
+      [["first", "synthetic", "INBOX", 1], ["second", "synthetic", "INBOX", 1]]);
       assert.equal(learning.list().patterns.length, 0);
       await settle(ui, [outcome("first", "completed")]);
       learning.observe({ kind: "action", action: "mark-read", begunAt: 123, items: [seed("interleaved")] });

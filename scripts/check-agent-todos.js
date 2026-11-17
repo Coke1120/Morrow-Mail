@@ -12,6 +12,7 @@ function configure(dir) {
     MORROW_MAIL_DIR: dir,
     MORROW_AI_CONFIG_DIR: dir,
     MORROW_MAIL_SECRETS: "memory",
+    MORROW_AI_API_KEY: "synthetic-key-not-used-for-requests",
   });
 }
 
@@ -21,7 +22,7 @@ function writeTriage(dir) {
     updatedAt: new Date().toISOString(),
     stale: false,
     items: [
-      { messageId: "m-need", accountId: "ada", categoryId: "needs-you", subject: "Need", unread: true, from: "Ada <ada@example.test>" },
+      { messageId: "m-need", accountId: "ada", categoryId: "needs-you", subject: "Need", unread: true, from: "Ada <ada@example.test>", folderId: "Not the cached folder" },
       { messageId: "m-fyi", accountId: "ada", categoryId: "fyi", subject: "Notice", unread: true, from: "News <news@example.test>" },
       { messageId: "m-other-box", accountId: "grace", categoryId: "needs-you", subject: "Other box", unread: true, from: "Grace <grace@example.test>" },
       { messageId: "m-queued", accountId: "ada", categoryId: "needs-you", subject: "Queued", unread: true, from: "Ada <ada@example.test>" },
@@ -63,6 +64,11 @@ async function hostChecks() {
   seedAccount(db, "ada");
   seedAccount(db, "grace");
   try {
+    db.insertMessage({ id: "m-need", accountId: "ada", folderPath: "INBOX", subject: "Need",
+      from: "Ada <ada@example.test>", date: "2026-10-29T00:00:00.000Z", listSortTs: 1, unread: true });
+    const projected = agent.getTriage().data.sections.flatMap((section) => section.items);
+    assert.equal(projected.find((item) => item.messageId === "m-need").folderId, "INBOX");
+    assert.equal(projected.find((item) => item.messageId === "m-fyi").folderId, "", "missing cache row cannot become a mutation target");
     const target = agent.answer("nativeAgent:home:replyTarget", [{ messageId: "m-need", accountId: "ada" }]);
     assert.equal(target.success, true);
     assert.deepEqual(target.data, { messageId: "m-need", accountId: "ada" });
@@ -256,12 +262,15 @@ async function rendererChecks() {
       { id: "other", name: "Other", items: [] },
     ],
   };
-  ui.run(`paintAgentHome(${JSON.stringify(payload)})`);
+  for (const section of payload.sections) for (const item of section.items) item.folderId = "INBOX";
+  ui.run(`state.accounts = [{ id: "ada", email: "ada@example.test", bodyEpoch: 1 }];
+    paintAgentHome(${JSON.stringify(payload)})`);
   assert.equal(home.querySelectorAll('[data-testid="agent-category-read"]').length, 1);
   assert.equal(home.querySelector('[data-testid="agent-category-read"]').dataset.pile, "fyi");
   assert.equal(home.querySelector('[data-testid="agent-category-read"]').disabled, false);
   assert.equal(sectionNamed(home, "Other").querySelector('[data-testid="agent-category-read"]'), null);
-  assert.equal(sectionNamed(home, "Worth a look").querySelector(".agent-section-tools button"), null);
+  assert.ok(sectionNamed(home, "Worth a look").querySelector(".agent-archive-selected"));
+  assert.equal(sectionNamed(home, "Worth a look").querySelector(".agent-complete-selected"), null);
   const replyTools = sectionNamed(home, "Needs You").querySelector(".agent-section-tools");
   assert.equal(replyTools.querySelector('[data-testid="agent-category-read"]'), null);
   assert.equal(replyTools.querySelector('[data-action="read"]'), null);
@@ -304,12 +313,15 @@ async function rendererChecks() {
   needs.querySelector(".agent-select").dispatchEvent(new dom.window.Event("change"));
   needs.querySelector(".agent-mark-selected").click();
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.deepEqual([...ui.run("readIds")], ["m1"]);
-  assert.deepEqual(calls.map((row) => row.channel), ["nativeAgent:learning:observe"]);
-  assert.equal(calls[0].payload.kind, "action");
-  assert.equal(calls[0].payload.action, "mark-read");
-  assert.equal(calls[0].payload.items.length, 1);
-  assert.equal(calls[0].payload.items[0].messageId, "m1");
+  assert.equal(ui.run("readIds.length"), 0);
+  assert.deepEqual(calls.map((row) => row.channel), ["mail:markReadBatch", "nativeAgent:learning:observe"]);
+  assert.deepEqual(Array.from(calls[0].payload.items, (item) => item.emailId), ["m1"]);
+  assert.equal(calls[0].payload.contextOwners[0].accountId, "ada");
+  assert.equal(calls[0].payload.contextOwners[0].folderId, "INBOX");
+  assert.equal(calls[1].payload.kind, "action");
+  assert.equal(calls[1].payload.action, "mark-read");
+  assert.equal(calls[1].payload.items.length, 1);
+  assert.equal(calls[1].payload.items[0].messageId, "m1");
 
   ui.run("state.prefs.markReadCompletesTodos = true; readIds = [];");
   calls.length = 0;
@@ -376,6 +388,96 @@ async function rendererChecks() {
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(calls.some((row) => row.channel === "mail:markReadBatch"), false);
   assert.match(dom.window.document.getElementById("status").textContent, /Already read/);
+
+  // The second selected mailbox and a late checkbox change do not affect the reviewed snapshot.
+  const archivePayload = { sections: [{ id: "fyi", name: "FYI", items: [
+    { messageId: "ax", accountId: "ada", folderId: "INBOX", subject: "First reviewed", unread: true, threadId: "shared" },
+    { messageId: "gx", accountId: "grace", folderId: "Inbox", subject: "Second reviewed", unread: true, threadId: "same" },
+    { messageId: "late", accountId: "ada", folderId: "INBOX", subject: "Late selection", unread: true, threadId: "shared" },
+  ] }] };
+  ui.run(`globalThis.archiveCalls = []; globalThis.reviewCopies = [];
+    state.accounts.push({ id: "grace", email: "grace@example.test", bodyEpoch: 4 });
+    state.view = "agent";
+    queueBulkRemoval = (label, specs, messages, action) => archiveCalls.push({ label, specs, messages, action });
+    askConfirm = (copy) => { reviewCopies.push(copy); return new Promise((resolve) => { globalThis.answerReview = resolve; }); };
+    agentPaintPayload = null;
+    paintAgentHome(${JSON.stringify(archivePayload)});
+  `);
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const select = (box) => { box.checked = true; box.dispatchEvent(new dom.window.Event("change")); };
+  const archiveSection = sectionNamed(home, "FYI");
+  const archiveButton = archiveSection.querySelector(".agent-archive-selected");
+  const archiveBoxes = [...archiveSection.querySelectorAll(".agent-select")];
+  assert.equal(archiveButton.disabled, true);
+  select(archiveBoxes[0]); select(archiveBoxes[1]);
+  archiveButton.click();
+  assert.equal(ui.run("archiveCalls.length"), 0, "selection never writes before review");
+  assert.match(ui.run("reviewCopies[0].body"), /Archive 2 messages.*ada@example.test.*grace@example.test.*not their conversations/);
+  assert.equal(archiveButton.disabled, true);
+  ui.run("answerReview({ok:false})");
+  await tick();
+  assert.equal(ui.run("archiveCalls.length"), 0, "Cancel performs no mutation");
+
+  archiveButton.click();
+  select(archiveBoxes[2]);
+  ui.run("answerReview({ok:true})");
+  await tick();
+  assert.equal(ui.run("archiveCalls.length"), 1);
+  assert.equal(ui.run("archiveCalls[0].specs[0].channel"), "mail:archiveBatch");
+  const batchItems = ui.run("archiveCalls[0].specs[0].params.items");
+  assert.deepEqual(Array.from(batchItems, (item) => [item.emailId, item.accountId]), [["ax", "ada"], ["gx", "grace"]]);
+  const batchOwners = ui.run("archiveCalls[0].specs[0].params.contextOwners");
+  assert.deepEqual(Array.from(batchOwners, (owner) => [owner.emailId, owner.folderId, owner.bodyEpoch]), [["ax", "INBOX", 1], ["gx", "Inbox", 4]]);
+  assert.equal(ui.run("archiveCalls[0].specs[0].params.threadId"), undefined);
+  assert.equal(calls.length, 0, "no body, attachment, provider permission or model call while reviewing");
+
+  archiveButton.click();
+  ui.run("state.accounts.find((account) => account.id === 'ada').bodyEpoch += 1; answerReview({ok:true});");
+  await tick();
+  assert.equal(ui.run("archiveCalls.length"), 1, "a changed connection retires its review");
+  assert.match(dom.window.document.getElementById("status").textContent, /mailbox or pending selection changed/);
+
+  const batchUI = renderer({ requestAnimationFrame: (fn) => setTimeout(fn, 0) });
+  await batchUI.run(`
+    const packed = Array.from({length: 6}, (_, i) => ({ id: "b" + i, accountId: i % 2 ? "grace" : "ada",
+      contextOwner: { emailId: "b" + i, accountId: i % 2 ? "grace" : "ada" } }));
+    beginRemovalRequest = () => 1;
+    renderList = () => {};
+    showStatus = () => {};
+    globalThis.packedCalls = null;
+    runBulk = async (calls) => { globalThis.packedCalls = calls; return {}; };
+    finishBulkRemoval = async () => {};
+    queueBulkRemoval("Archive", contextOwnedCalls(bulkRemovalCalls(packed, "archive", false), packed), packed, "archive");
+    new Promise(resolve => setTimeout(resolve, 10))
+  `);
+  assert.deepEqual(Array.from(batchUI.run("packedCalls"), (spec) => Array.from(spec.params.items, (item) => item.emailId)),
+    [["b0", "b1", "b2", "b3"], ["b4", "b5"]]);
+  assert.deepEqual(Array.from(batchUI.run("packedCalls"), (spec) => Array.from(spec.params.contextOwners, (owner) => owner.emailId)),
+    [["b0", "b1", "b2", "b3"], ["b4", "b5"]], "each journal chunk carries only its own exact proofs");
+
+  const mixed = renderer();
+  await mixed.run(`
+    globalThis.mixedCalls = [];
+    globalThis.summary = null;
+    globalThis.reversible = null;
+    state.accounts = [{ id: "ada", email: "ada@example.test", bodyEpoch: 2 }];
+    call = async (channel, params) => {
+      mixedCalls.push({channel, params});
+      return { outcomes: [
+        { id: "a", status: "completed", generation: 2 },
+        { id: "b", status: "failed", generation: 2 },
+        { id: "d", status: "not_attempted", generation: 2 }
+      ], pending: [{ id: "c", generation: 2 }] };
+    };
+    learnAgent = async () => {};
+    paintAgentReadProjection = () => {};
+    showStatus = () => {};
+    showReadUndo = (text, rows) => { summary = text; reversible = rows; };
+    applyReplySelection(["a", "b", "c", "d", "missing"].map(messageId => ({ messageId, accountId:"ada", folderId:"INBOX", unread: true })), "read", "fyi")
+  `);
+  assert.equal(mixed.run("mixedCalls.length"), 1, "one read journal invocation, no fallback or unconfirmed retry");
+  assert.match(mixed.run("summary"), /1 completed · 1 awaiting confirmation · 1 failed · 1 unknown · 1 not attempted/);
+  assert.deepEqual(Array.from(mixed.run("reversible"), (row) => row.emailId), ["a", "c"]);
 
   ui.run('showUndo("Moved.", ["op-1"])');
   ui.run('showStatus("Background note.")');
