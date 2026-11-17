@@ -488,7 +488,7 @@ function cachedMessage(id) {
   try {
     const db = require("./mail/db");
     if (!db.hasAccounts()) return null;
-    const row = db.messageById(id);
+    const row = db.messageById(id, { headersOnly: true });
     if (!row || !row.id) return null;
     return {
       id: row.id,
@@ -614,9 +614,12 @@ function projectSections(categories, items, todos) {
     const bucket = byId.get(item.categoryId) || other;
     if (bucket) {
       const threadId = triageThreadId(item.threadId);
-      const message = threadId ? null : cachedMessage(item.messageId);
-      const cachedThread = message && (!item.accountId || item.accountId === message.accountId) ? triageThreadId(message.threadId) : "";
-      bucket.items.push(Object.assign({}, item, { threadId: threadId || cachedThread }));
+      const message = cachedMessage(item.messageId);
+      const sameAccount = message && item.accountId === message.accountId;
+      const cachedThread = message && (!item.accountId || sameAccount) ? triageThreadId(message.threadId) : "";
+      // This local header belongs to the exact cached row, never the model response.
+      const folderId = sameAccount ? message.folderPath : "";
+      bucket.items.push(Object.assign({}, item, { threadId: threadId || cachedThread, folderId }));
     }
   }
   return sections;

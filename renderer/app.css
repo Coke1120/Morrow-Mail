@@ -6349,3 +6349,37 @@ html[data-window="translate"] #reader .translate-column h2 {
 .mail-column-resize:hover::after, .mail-column-resize:focus-visible::after { background: var(--accent-ink, var(--ink)); }
 .mail-column-resize:focus-visible { outline: 2px solid var(--accent-ink, var(--ink)); outline-offset: -2px; border-radius: 3px; }
 .mail-column-resizing, .mail-column-resizing * { cursor: col-resize !important; user-select: none !important; }
+
+.agent-batch-toolbar,
+.agent-decisions,
+.agent-batch-receipts { margin: 0 0 14px; }
+.agent-batch-toolbar {
+  position: sticky;
+  top: 2px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.agent-batch-toolbar[hidden], #agent-actions-surface[hidden] { display: none; }
+.agent-batch-toolbar strong { margin-inline-end: auto; }
+.agent-decision-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr));
+}
+.agent-decision-card, .agent-batch-receipts {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-decision-card :is(h4, p) { margin: 0 0 5px; }
+.agent-decision-status { font-weight: 650; }
+.agent-decision-card .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-batch-receipts ul { max-height: 15rem; overflow: auto; padding-inline-start: 23px; }

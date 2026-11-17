@@ -102,7 +102,8 @@ async function rendererChecks() {
   assert.equal(card.querySelector(".agent-card-thread").textContent, "Can you send Friday's number?");
   assert.ok(card.querySelector(".agent-select"));
   const fyi = sectionNamed(home, "FYI").querySelector('[data-testid="agent-card"]');
-  assert.equal(fyi.querySelector(".agent-select"), null);
+  assert.ok(fyi.querySelector(".agent-select"));
+  assert.equal(fyi.querySelector(".agent-select").getAttribute("aria-label"), "Select Newsletter");
   assert.equal(fyi.querySelector(".agent-card-thread").textContent, "Thread · Newsletter");
   assert.equal(needs.querySelector(".agent-section-head").getAttribute("aria-describedby"), null);
   assert.equal(document.querySelector(".space-head").querySelector("[aria-describedby]"), null);

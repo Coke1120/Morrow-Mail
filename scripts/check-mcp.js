@@ -84,6 +84,73 @@ async function protocolChecks() {
   }
 }
 
+async function batchChecks() {
+  const input = new PassThrough(), output = new PassThrough(), replies = new Map(), calls = [];
+  let scenario = "normal", abortHeld;
+  output.on("data", bytes => { const row = JSON.parse(bytes.toString()); replies.set(row.id, row); });
+  const wire = adapter.start({ input, output, config: {}, async invoke(_config, operation, params, requestId, signal, checkBatchCredential) {
+    const ordinal = calls.push({ operation, params, requestId });
+    checkBatchCredential?.(scenario === "rotated" && ordinal === 2 ? "rotated-fixture" : "original-fixture");
+    if (scenario === "cancelled") {
+      await new Promise(resolve => { abortHeld = resolve; signal.addEventListener("abort", resolve, { once: true }); });
+    }
+    if (scenario === "transport" && ordinal === 2) throw Object.assign(Error("private"), { code: "WRITE_OUTCOME_UNCONFIRMED" });
+    if (scenario === "limited" && ordinal === 2) return { ok: false, error: { code: "RATE_LIMITED" } };
+    if (scenario === "forbidden") return { ok: false, error: { code: "FORBIDDEN" } };
+    if (scenario === "unknown" && ordinal === 2) return { ok: false, error: { code: "INTERNAL" } };
+    if (scenario === "scoped" && params.messageId === "m1") return { ok: false, error: { code: "NOT_FOUND" } };
+    const state = ordinal === 1 ? "completed" : "pending";
+    return { ok: true, data: { ...params, operation, requestId, receiptId: crypto.randomUUID(), state,
+      providerConfirmed: ordinal === 1, ...(ordinal === 1 ? { undoOpId: "undo-fixture" } : {}) } };
+  } });
+  const send = (id, method, params) => input.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  send(0, "initialize", INIT); send(undefined, "notifications/initialized", {});
+  const archive = "mail.archive.batch", mark = "mail.mark_read.batch";
+  assert.equal(mcp.toolsFor([]).some(row => row.name.endsWith("_batch")), false);
+  assert.ok(mcp.toolsFor(["mail.archive"]).some(row => row.name === tool(archive)));
+  assert.ok(!mcp.toolsFor(["mail.archive"]).some(row => row.name === tool(mark)));
+  assert.ok(mcp.toolsFor(["mail.mark_read"]).some(row => row.name === tool(mark)));
+  const items = Array.from({ length: 3 }, (_, i) => ({ messageId: "m" + i, requestId: crypto.randomUUID() }));
+  let next = 0;
+  async function submit(op, args) {
+    const id = ++next; send(id, "tools/call", { name: tool(op), arguments: { accountId: "alpha", ...args } });
+    await tick(); return replies.get(id)?.result?.structuredContent;
+  }
+  try {
+    for (const bad of [[], [...items, { ...items[0], requestId: crypto.randomUUID() }],
+      [...items, { messageId: "foreign", requestId: items[0].requestId.toUpperCase() }],
+      Array.from({ length: 11 }, (_, i) => ({ messageId: "more-" + i, requestId: crypto.randomUUID() }))]) {
+      assert.equal((await submit(archive, { items: bad })).ok, false);
+    }
+    assert.equal((await submit(archive, { items, query: "inbox" })).ok, false);
+    assert.equal((await submit(mark, { items })).ok, false);
+    assert.equal(calls.length, 0, "the whole batch is validated before the first bridge call");
+    let value = await submit(mark, { items, isRead: false });
+    assert.deepEqual(value.data.results.map(row => row.state), ["completed", "pending", "pending"]);
+    assert.equal(value.data.allProviderConfirmed, false);
+    assert.equal(value.data.stopped, null);
+    assert.deepEqual(calls.map(row => row.params), items.map(row => ({ accountId: "alpha", messageId: row.messageId, isRead: false })));
+    assert.deepEqual(calls.map(row => row.requestId), items.map(row => row.requestId));
+    for (const [kind, reason, states, count] of [
+      ["scoped", null, ["completed", "failed", "pending"], 3],
+      ["forbidden", "FORBIDDEN", ["failed", "not_attempted", "not_attempted"], 1],
+      ["limited", "RATE_LIMITED", ["completed", "failed", "not_attempted"], 2],
+      ["unknown", "INTERNAL", ["completed", "unknown", "not_attempted"], 2],
+      ["transport", "WRITE_OUTCOME_UNCONFIRMED", ["completed", "unknown", "not_attempted"], 2],
+      ["rotated", "MCP_BATCH_CREDENTIAL_CHANGED", ["completed", "not_attempted", "not_attempted"], 2],
+    ]) {
+      scenario = kind; calls.length = 0; value = await submit(archive, { items });
+      assert.equal(value.data.stopped, reason);
+      assert.deepEqual(value.data.results.map(row => row.state), states);
+      assert.equal(calls.length, count, "no automatic replay or request for later stopped items");
+    }
+    scenario = "cancelled"; calls.length = 0;
+    assert.equal(await submit(archive, { items }), undefined);
+    send(undefined, "notifications/cancelled", { requestId: next }); await tick();
+    assert.equal(calls.length, 1); assert.equal(replies.has(next), false);
+  } finally { abortHeld?.(); wire.stop(); input.destroy(); output.destroy(); }
+}
+
 function childClient(script, tokenFile, installationId, cwd) {
   const child = spawn(process.execPath, [script, "--token-file", tokenFile, "--installation", installationId],
     { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -248,7 +315,13 @@ async function integrationChecks() {
     assert.equal((await writes.call("draft.proposals.submit", { ...proposal, bodyText: "different" })).error.code, "INVALID_REQUEST");
     assert.equal(effects.length, 0, "draft proposals stay inert");
     const uuid = crypto.randomUUID(), change = { accountId: "alpha", messageId: "alpha-message", requestId: uuid };
-    const pending = await writes.call("mail.archive", change); assert.equal(pending.data.providerConfirmed, false);
+    const batch = { accountId: "alpha", items: [
+      { messageId: "alpha-message", requestId: uuid }, { messageId: "beta-message", requestId: crypto.randomUUID() },
+    ] };
+    const pending = await writes.call("mail.archive.batch", batch);
+    assert.equal(pending.data.results[0].providerConfirmed, false);
+    assert.equal(pending.data.results[1].errorCode, "NOT_FOUND");
+    assert.equal(db.messageById("beta-message").folder_path, "INBOX");
     await actions.settleActions();
     const confirmed = await writes.call("mail.archive", change);
     assert.equal(confirmed.data.state, "completed"); assert.equal(confirmed.data.providerConfirmed, true); assert.equal(effects.length, 1);
@@ -258,7 +331,8 @@ async function integrationChecks() {
       "--installation", installationId, "--operation", "mail.archive", "--request-id", uuid, "--params-file", paramsFile]);
     let cliOut = "", cliErr = ""; cli.stdout.on("data", data => { cliOut += data; }); cli.stderr.on("data", data => { cliErr += data; });
     const [cliCode] = await once(cli, "exit"); assert.equal(cliCode, 0, cliErr);
-    assert.equal(JSON.parse(cliOut).data.receiptId, confirmed.data.receiptId); assert.equal(effects.length, 1, "MCP and CLI share one durable receipt");
+    assert.equal(JSON.parse(cliOut).data.receiptId, confirmed.data.receiptId);
+    assert.equal(confirmed.data.receiptId, pending.data.results[0].receiptId); assert.equal(effects.length, 1, "MCP and CLI share one durable receipt");
     auth.revoke(writer.grant.clientId);
     const denied = await writes.call("mail.archive", change); assert.equal(denied.error.code, "UNAUTHENTICATED"); assert.equal(effects.length, 1);
     const rotated = auth.rotate(grant.grant.clientId);
@@ -290,6 +364,6 @@ async function integrationChecks() {
   }
 }
 
-async function run() { await protocolChecks(); await transportChecks(); await integrationChecks(); console.log("mcp-ok (stdio, bounded/failed transport, standalone package, actual bridge permissions, receipts, CLI compatibility; synthetic mail only)"); }
+async function run() { await protocolChecks(); await batchChecks(); await transportChecks(); await integrationChecks(); console.log("mcp-ok (stdio, bounded/failed transport, standalone package, actual bridge permissions, receipts, CLI compatibility; synthetic mail only)"); }
 module.exports = { run };
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

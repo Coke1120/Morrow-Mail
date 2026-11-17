@@ -60,8 +60,9 @@ function readToken(file) {
   } finally { if (handle !== undefined) fs.closeSync(handle); }
 }
 
-function callBridge(config, operation, params, id, signal) {
+function callBridge(config, operation, params, id, signal, checkBatchCredential) {
   const token = readToken(config.tokenFile);
+  checkBatchCredential?.(token);
   const body = Buffer.from(JSON.stringify({ apiVersion: API_VERSION, requestId: id,
     installationId: config.installationId, operation, params }), "utf8");
   if (body.length > catalog.requestBytes(operation)) throw failure("REQUEST_TOO_LARGE", "The request exceeds this operation's existing byte limit.");
@@ -115,6 +116,63 @@ function callBridge(config, operation, params, id, signal) {
     signal?.addEventListener("abort", abort, { once: true });
     req.end(body);
   });
+}
+
+const RECEIPT_STATES = new Set(["pending", "completed", "failed", "unknown", "superseded", "not_attempted"]);
+const ITEM_ERRORS = new Set(["NOT_FOUND", "UNSUPPORTED_OPERATION"]);
+const BEFORE_SUBMIT = new Set(["PRIVATE_TOKEN_FILE_REQUIRED", "TOKEN_FILE_UNAVAILABLE", "REQUEST_TOO_LARGE", "MCP_BATCH_CREDENTIAL_CHANGED"]);
+
+async function invokeBatch(config, operation, args, signal, invoke) {
+  const items = args.items.map(item => ({ messageId: item.messageId, requestId: item.requestId.toLowerCase() }));
+  const unique = key => new Set(items.map(item => item[key])).size === items.length;
+  if (!unique("messageId") || !unique("requestId")) return {
+    ok: false, error: { code: "INVALID_REQUEST", message: "Each batch needs unique message IDs and unique per-message UUIDs." },
+  };
+
+  // Bind the entire request to one local credential without storing it.
+  let credentialDigest;
+  function checkBatchCredential(token) {
+    const current = crypto.createHash("sha256").update(token).digest("hex");
+    if (credentialDigest && current !== credentialDigest) throw failure("MCP_BATCH_CREDENTIAL_CHANGED", "The MCP credential changed during this batch.");
+    credentialDigest = current;
+  }
+  const results = [];
+  let stopped = null;
+  for (const item of items) {
+    if (signal.aborted && !stopped) stopped = "MCP_CANCELLED";
+    if (stopped) {
+      results.push({ ...item, state: "not_attempted", providerConfirmed: false });
+      continue;
+    }
+    const params = { accountId: args.accountId, messageId: item.messageId,
+      ...(operation === "mail.mark_read" ? { isRead: args.isRead } : {}) };
+    try {
+      const result = await invoke(config, operation, params, item.requestId, signal, checkBatchCredential);
+      if (!result.ok && Object.hasOwn(ERRORS, result.error?.code)) {
+        const errorCode = result.error.code;
+        if (!ITEM_ERRORS.has(errorCode)) stopped = errorCode;
+        // An INTERNAL error can occur after the durable claim, not just before admission.
+        results.push({ ...item, state: errorCode === "INTERNAL" ? "unknown" : "failed", errorCode, providerConfirmed: false });
+        continue;
+      }
+      const row = result.data;
+      if (!result.ok || row?.accountId !== args.accountId || row?.messageId !== item.messageId
+        || row?.requestId !== item.requestId || row?.operation !== operation
+        || !new RegExp(mcp.uuid).test(row.receiptId || "") || !RECEIPT_STATES.has(row.state) || row.providerConfirmed !== (row.state === "completed")) throw Error("Unexpected receipt");
+      results.push({ ...item, receiptId: row.receiptId, state: row.state, providerConfirmed: row.providerConfirmed,
+        ...(row.idempotentReplay === true ? { idempotentReplay: true } : {}),
+        ...(row.errorCode ? { errorCode: row.errorCode } : {}),
+        ...(row.undoOpId && row.providerConfirmed ? { undoOpId: row.undoOpId } : {}),
+      });
+      if (row.state === "unknown") stopped = "WRITE_OUTCOME_UNCONFIRMED";
+    } catch (error) {
+      stopped = signal.aborted ? "MCP_CANCELLED" : BEFORE_SUBMIT.has(error.code) ? error.code : "WRITE_OUTCOME_UNCONFIRMED";
+      results.push({ ...item, state: BEFORE_SUBMIT.has(stopped) ? "not_attempted" : "unknown",
+        errorCode: stopped, providerConfirmed: false });
+    }
+  }
+  return { ok: true, data: { accountId: args.accountId, operation, results, stopped,
+    allProviderConfirmed: results.every(row => row.providerConfirmed) } };
 }
 
 function start({ input, output, config, invoke = callBridge, onClose = () => {} }) {
@@ -195,6 +253,9 @@ function start({ input, output, config, invoke = callBridge, onClose = () => {} 
           if (!envelope.ok || !Array.isArray(envelope.data?.operations)) error(id, -32000, "Cannot discover tools; review Agent access / MCP.", envelope.error);
           else result(id, { tools: mcp.toolsFor(envelope.data.operations) });
         }
+      } else if (row.batch) {
+        const outcome = await invokeBatch(config, row.operation, params.arguments, current.controller.signal, invoke);
+        if (!current.cancelled) result(id, toolResult(outcome));
       } else {
         const args = params.arguments || {}, spec = catalog.operation(row.operation);
         const body = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "requestId"));
