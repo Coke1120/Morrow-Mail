@@ -154,10 +154,15 @@ const undoSnapshots = new Map();
 const optimisticRemovals = new Map();
 let readUndoItems = null;
 let readUndoTimer = 0;
+let readUndoSerial = 0;
 let undoReceipt = "";
 let undoReceiptError = false;
 const agentReplySelection = new Set();
 let agentArchiveReviewBusy = false;
+let agentUxSections = [];
+let agentUxStale = false;
+let agentUxReceipt = null;
+const agentLocalDecisions = new Map();
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
@@ -11432,6 +11437,7 @@ function showReadUndo(text, items) {
   }
   clearReadUndoTimer();
   undoKind = "read";
+  readUndoSerial += 1;
   closeUndoDetails(false);
   undoOpIds = null;
   undoItems = null;
@@ -11566,10 +11572,22 @@ function takeEmails(rows) {
 
 function applyActionSettlement(batch) {
   const outcomes = batch && Array.isArray(batch.outcomes) ? batch.outcomes : [];
+  const receiptOwnedReads = new Set();
   let moved = false;
   for (const outcome of outcomes) {
     if (!outcome || !outcome.id) continue;
-    if (typeof settleAgentReadOutcome === "function") settleAgentReadOutcome(outcome).catch((error) => showStatus(error.message || String(error), true));
+    const entry = typeof agentPendingReads !== "undefined" && outcome.kind === "read"
+      ? agentPendingReads.get(String(outcome.id)) : null;
+    const matchingOwnedRead = !!entry?.uxReceipt && (!entry.receipt ||
+      (entry.receipt.actionId === outcome.actionId && entry.receipt.generation === outcome.generation));
+    if (matchingOwnedRead) receiptOwnedReads.add(outcome);
+    const receipt = entry?.uxReceipt || (typeof agentUxReceipt !== "undefined" ? agentUxReceipt : null);
+    // Match the exact journal identity. Older or unrelated events cannot
+    // turn a row into a success or give it an Undo.
+    const observed = receipt?.settle(outcome);
+    if (typeof settleAgentReadOutcome === "function") settleAgentReadOutcome(outcome).then((status) => {
+      if (observed && receipt.kind === "read" && status === "completed") showAgentUxReadUndo(receipt);
+    }).catch((error) => showStatus(error.message || String(error), true));
     const pendingRemoval = pendingRemovalMessages.get(String(outcome.id));
     if (outcome.kind === "remove" && pendingRemoval && (typeof outcome.generation !== "number" || outcome.generation >= pendingRemoval.generation)) pendingRemovalMessages.delete(String(outcome.id));
     const optimistic = optimisticRemovals.get(outcome.id);
@@ -11592,8 +11610,9 @@ function applyActionSettlement(batch) {
       paintStars([{ id: outcome.id }], !!projection.isStarred);
     }
   }
-  const bad = outcomes.some((row) => row.status && row.status !== "completed");
-  const receipt = receiptText("Mailbox", { outcomes });
+  const visibleOutcomes = outcomes.filter((row) => !receiptOwnedReads.has(row));
+  const bad = visibleOutcomes.some((row) => row.status && row.status !== "completed");
+  const receipt = receiptText("Mailbox", { outcomes: visibleOutcomes });
   if (settleUndoInflight(batch)) {
     if (!undoBusy && !undoPending.size) flushUndoSettleQueue();
     if (moved) loadList(false).catch(() => {});
@@ -13430,10 +13449,14 @@ function operationIds(spec) {
   return params.items ? params.items.map((item) => item.emailId || item.id) : (params.emailId ? [params.emailId] : []);
 }
 
-function receiptRows(data, spec) {
+function receiptRows(data, spec, strict = false) {
   const pending = data && Array.isArray(data.pending)
     ? data.pending.map((row) => ({ ...row, status: "completed", phase: "accepted" }))
     : [];
+  if (strict) {
+    const byId = new Map([...pending, ...(Array.isArray(data?.outcomes) ? data.outcomes : [])].map(row => [String(row.id), row]));
+    return operationIds(spec).map(id => byId.get(String(id)) || { id, status: "unknown" });
+  }
   if (data && Array.isArray(data.outcomes)) return [...pending, ...data.outcomes];
   const ids = operationIds(spec);
   // Legacy multi-message/thread responses do not establish per-message outcomes.
@@ -13453,7 +13476,7 @@ function receiptText(label, outcome) {
     + (count("unknown") ? " Refresh before retrying unknown changes." : "");
 }
 
-async function runBulk(calls, removalEpoch) {
+async function runBulk(calls, removalEpoch, strict = false) {
   const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
   const snapshots = removalEpoch == null ? null : new Map(calls.flatMap((spec) => operationIds(spec).map((id) => [String(id), undoSnapshots.get(String(id))])));
   if (removalEpoch != null) outcome.removalEpoch = removalEpoch;
@@ -13468,7 +13491,7 @@ async function runBulk(calls, removalEpoch) {
       if (removalEpoch != null) await new Promise((resolve) => afterPaint(resolve));
       const data = await call(spec.channel, spec.params);
       rememberRemovalReceipt(data, removalEpoch, snapshots);
-      rows = receiptRows(data, spec);
+      rows = receiptRows(data, spec, strict);
     } catch (error) {
       const message = error.message || String(error);
       rows = operationIds(spec).map((id) => ({ id, status: "unknown", error: message }));
@@ -13526,7 +13549,7 @@ async function finishBulkRemoval(label, outcome, ids, extra) {
   else renderList();
 }
 
-function queueBulkRemoval(label, calls, messages, action) {
+function queueBulkRemoval(label, calls, messages, action, receipt = null) {
   const epoch = beginRemovalRequest(messages, action);
   const optimistic = new Map();
   for (const message of messages) {
@@ -13559,7 +13582,8 @@ function queueBulkRemoval(label, calls, messages, action) {
     return batches;
   });
   afterPaint(() => {
-    runBulk(chunks, epoch).then(async (outcome) => {
+    runBulk(chunks, epoch, !!receipt).then(async (outcome) => {
+      receipt?.accept(outcome.outcomes);
       try {
         await finishBulkRemoval(label, outcome, [...ids], { messages, action, optimistic });
       } catch (error) {
@@ -13567,6 +13591,7 @@ function queueBulkRemoval(label, calls, messages, action) {
         showStatus(label + ": result received, but the message list could not refresh. " + (error.message || String(error)), true);
       }
     }).catch((error) => {
+      receipt?.unknown();
       for (const [id, entry] of optimistic) if (optimisticRemovals.get(id) === entry) optimisticRemovals.delete(id);
       renderList();
       showStatus(label + ": outcome is unknown. Refresh before retrying. " + (error.message || String(error)), true);
@@ -20880,6 +20905,8 @@ function showAgentTab(name) {
   }
   $("agent-skill-chips").hidden = name !== "home";
   $("agent-safety-review").hidden = name !== "home";
+  const actionSurface = $("agent-actions-surface");
+  if (actionSurface) actionSurface.hidden = name !== "home";
   // Switching sections should never scroll two competing containers.
   if (!changed) return;
   if (name === "conversation") {
@@ -24568,10 +24595,11 @@ function invalidatePeek() {
   pruneBodyNotices();
 }
 
-async function peekMessage(messageId, full) {
+async function peekMessage(messageId, full, scopedAccountId = "") {
   if (!messageId) throw new Error("That message is not in the mailbox.");
   const gen = ++peekGen;
-  pendingPeekId = String(messageId); pendingPeekAccountId = peekEmail?.id === messageId ? peekEmail.accountId : listedMessage(messageId)?.accountId || "";
+  pendingPeekId = String(messageId);
+  pendingPeekAccountId = scopedAccountId || (peekEmail?.id === messageId ? peekEmail.accountId : listedMessage(messageId)?.accountId || "");
   const accountId = pendingPeekAccountId;
   let data;
   try {
@@ -24583,7 +24611,8 @@ async function peekMessage(messageId, full) {
   }
   if (gen !== peekGen) return;
   const email = data && data.email;
-  if (!email || (accountId && email.accountId !== accountId) || (email.bodyEpoch != null && !bodyIdentity(email))) {
+  if (!email || (accountId && email.accountId !== accountId) || (scopedAccountId && String(email.id) !== String(messageId))
+    || (email.bodyEpoch != null && !bodyIdentity(email))) {
     pendingPeekId = ""; pendingPeekAccountId = ""; pruneBodyNotices();
     throw new Error("That message is no longer available for this mailbox.");
   }
@@ -24985,6 +25014,14 @@ function paintAgentHome(payload) {
   if (greet) greet.textContent = agentGreeting();
   const reason = payload && payload.reason;
   const sections = agentSections(payload);
+  agentUxSections = payload?.accepted === false ? [] : sections;
+  agentUxStale = payload?.stale === true || payload?.accepted === false || payload?.reason === "error";
+  // A retired result cannot keep a message selected for a later snapshot.
+  if (window.morrowAgentActions && $("agent-actions-surface")) {
+    const visible = new Set(agentUxSections.flatMap((section) => (section.items || []).map(agentSelectionKey)));
+    for (const key of agentReplySelection) if (!visible.has(key)) agentReplySelection.delete(key);
+    paintAgentActionSurface();
+  }
   const key = JSON.stringify([sections, reason, agentTodoView, [...agentReplySelection], [...agentMarkedRead], [...agentPendingReads.keys()],
     learningApplyStamp(state.agentLearning), state.prefs.markReadCompletesTodos, sections.flatMap(section => (section.items || []).map(item => agentWhen(item.date)))]);
   if (root.morrowHomeKey === key) return;
@@ -25131,6 +25168,126 @@ function paintReplySelectionLabels(root) {
     if (done) { done.textContent = labels.done; done.disabled = !selected; }
     if (archive) archive.disabled = !selected || agentArchiveReviewBusy;
   }
+  paintAgentActionSurface();
+}
+
+function agentUxRows() {
+  const api = window.morrowAgentActions;
+  if (!api) return [];
+  const rows = new Map();
+  for (const section of agentUxSections) {
+    const role = section.id === "upcoming-today" ? "today" : agentPileRole(section);
+    for (const item of section.items || []) {
+      const key = agentSelectionKey(item);
+      if (!key || rows.has(key)) continue;
+      const context = agentMessageContext(item);
+      const account = state.accounts.find((entry) => entry.id === context.accountId);
+      const connection = contextAccountProof(context.accountId);
+      if (!connection) continue;
+      rows.set(key, { ...context, key, item, connection, subject: item.subject, sender: item.from,
+        mailbox: accountLabel(account), read: !agentLooksUnread(item), reason: api.reasonFor(item, role) });
+    }
+  }
+  return [...rows.values()];
+}
+
+function agentDecisionValue(row) {
+  const saved = agentLocalDecisions.get(row.key);
+  // Bind a local note to the displayed message, not simply the cached ID.
+  return saved?.connection === row.connection && saved.subject === row.subject && saved.sender === row.sender
+    ? saved.value : "";
+}
+
+function currentAgentDecisionRow(candidate) {
+  if (state.view !== "agent" || agentTab !== "home") return null;
+  return agentUxRows().find((row) => row.key === candidate.key && row.connection === candidate.connection
+    && row.subject === candidate.subject && row.sender === candidate.sender && row.reason) || null;
+}
+
+function beginAgentUxReceipt(kind, messages) {
+  const api = window.morrowAgentActions;
+  if (!api) return null;
+  agentUxReceipt = api.createReceipt(kind, messages.map((row) => {
+    const account = state.accounts.find((entry) => entry.id === row.accountId);
+    return { ...row, mailbox: account ? accountLabel(account) : "Disconnected mailbox" };
+  }), (receipt) => { if (agentUxReceipt === receipt) paintAgentActionSurface(); });
+  agentUxReceipt.readUndoSerial = readUndoSerial;
+  agentUxReceipt.undoEpoch = undoEpoch;
+  paintAgentActionSurface();
+  return agentUxReceipt;
+}
+
+function agentUxReadSkips(receipt, targets) {
+  const selected = new Set(targets.map((row) => String(row.messageId)));
+  return [...receipt.rows.values()].filter((row) => !selected.has(row.id)).map((row) => ({
+    id: row.id, status: agentPendingReads.has(row.id) ? "unknown" : "skipped",
+  }));
+}
+
+function showAgentUxReadUndo(receipt) {
+  if (agentUxReceipt !== receipt || state.view !== "agent" || agentTab !== "home" || undoBusy
+    || receipt.undoEpoch !== undoEpoch || receipt.readUndoSerial !== readUndoSerial
+    || (undoKind === "removal" && (undoOpIds?.length || hasPendingRemovalUndo()))) return;
+  const reversible = receipt.reversible().filter((row) => (actionGeneration.get(row.id) || 0) === row.generation)
+    .map((row) => ({ emailId: row.id, accountId: row.accountId, generation: row.generation }));
+  if (!reversible.length) return;
+  showReadUndo("Confirmed Agent reads: " + reversible.length + ".", reversible);
+  receipt.readUndoSerial = readUndoSerial;
+}
+
+function paintAgentActionSurface() {
+  const root = $("agent-actions-surface");
+  if (!root || !window.morrowAgentActions) return;
+  root.hidden = agentTab !== "home";
+  const rows = agentUxRows();
+  const selection = rows.filter((row) => agentReplySelection.has(row.key));
+  const visible = new Set(rows.map((row) => row.key));
+  for (const key of agentLocalDecisions.keys()) if (!visible.has(key)) agentLocalDecisions.delete(key);
+  const reviewRows = rows.filter((row) => row.reason);
+  const cards = [...reviewRows.filter((row) => agentDecisionValue(row) !== "own"),
+    ...reviewRows.filter((row) => agentDecisionValue(row) === "own")]
+    .slice(0, 12).map((row) => ({ ...row, decision: agentDecisionValue(row) }));
+  const busy = () => agentArchiveReviewBusy || [...(agentUxReceipt?.rows.values() || [])].some(row => row.status === "submitting");
+  const freeze = () => selection.map((row) => {
+    if (contextAccountProof(row.accountId) !== row.connection) throw new Error("A mailbox connection changed. Review the selection again.");
+    return { ...row.item };
+  });
+  window.morrowAgentActions.render(root, {
+    selected: selection.length, mailboxes: new Set(selection.map((row) => row.accountId)).size,
+    busy: busy(), stale: agentUxStale,
+    cards, receipt: agentUxReceipt,
+  }, {
+    read: () => guard(async () => {
+      if (state.view !== "agent" || agentTab !== "home" || busy() || !selection.length) return;
+      const items = freeze();
+      const messages = captureAgentSelectedMessages(items);
+      if (refusePaused(messages)) return;
+      const receipt = beginAgentUxReceipt("read", messages);
+      await markAgentCategoryRead(items, false, messages, receipt);
+    }),
+    archive: () => guard(() => {
+      if (state.view !== "agent" || agentTab !== "home" || busy()) return;
+      return archiveAgentSelection(freeze(), true);
+    }),
+    clear: () => {
+      agentReplySelection.clear();
+      const home = $("agent-home");
+      if (home) for (const box of home.querySelectorAll(".agent-select")) box.checked = false;
+      paintReplySelectionLabels();
+    },
+    open: (candidate) => guard(() => {
+      const row = currentAgentDecisionRow(candidate);
+      if (!row) throw new Error("This source changed. Refresh Agent and review again.");
+      return peekMessage(row.messageId, false, row.accountId);
+    }),
+    decide: (candidate, value) => {
+      const row = currentAgentDecisionRow(candidate);
+      if (agentUxStale || !row || row.reason.kind !== "security" || !["own", "not-me", ""].includes(value)) return;
+      if (value) agentLocalDecisions.set(row.key, { connection: row.connection, subject: row.subject, sender: row.sender, value });
+      else agentLocalDecisions.delete(row.key);
+      paintAgentActionSurface();
+    },
+  });
 }
 
 function selectedReplyItems(block, items) {
@@ -25175,7 +25332,9 @@ function agentReplySelectionTools(block, items, role) {
     const captured = selectedReplyItems(block, items);
     if (captured.length) guard(() => archiveAgentSelection(captured));
   });
-  wrap.append(read, archive);
+  // The real home uses one sticky toolbar; older fixtures/embedders may have
+  // only category controls. Completing selected todos remains category-local.
+  if (!window.morrowAgentActions || !$("agent-actions-surface")) wrap.append(read, archive);
   if (role === "reply") wrap.appendChild(done);
   return wrap;
 }
@@ -25200,16 +25359,33 @@ function captureAgentSelectedMessages(items) {
   return messages;
 }
 
-async function archiveAgentSelection(items) {
+function assertAgentUxArchiveScope(items) {
+  if (agentUxStale) throw new Error("Agent results are out of date. Nothing was archived; refresh or review the selection in Mail.");
+  const current = new Map(agentUxRows().map((row) => [row.key, row]));
+  for (const item of items) {
+    const row = current.get(agentSelectionKey(item));
+    if (!row || row.item.folderId !== item.folderId || row.subject !== item.subject || row.item.from !== item.from) {
+      throw new Error("The selection changed. Nothing was archived; refresh and review again.");
+    }
+    if (row.reason && agentDecisionValue(row) !== "own") {
+      throw new Error("A selected message still needs a decision. Nothing was archived; review it before selecting Archive.");
+    }
+  }
+}
+
+async function archiveAgentSelection(items, withReceipt = false) {
   if (agentArchiveReviewBusy || !items.length) return;
   const messages = captureAgentSelectedMessages(items);
+  if (withReceipt) assertAgentUxArchiveScope(items);
+
   if (refusePaused(messages)) return;
   agentArchiveReviewBusy = true;
   paintReplySelectionLabels();
   try {
     const detail = { scope: selectionScopeCopy(messages, messages) + " Only these selected messages are included, not their conversations." };
     const answer = await askConfirm(bulkConfirmCopy("archive", messages.length, detail));
-    if (!answer?.ok || state.view !== "agent") return;
+    if (!answer?.ok || state.view !== "agent" || (withReceipt && agentTab !== "home")) return;
+    if (withReceipt) assertAgentUxArchiveScope(items);
     if (messages.some((row) => contextAccountProof(row.accountId) !== row.contextOwner.connection
       || pendingRemovalMessages.has(row.id) || optimisticRemovals.has(row.id))) {
       throw new Error("The mailbox or pending selection changed. Refresh Agent and review again.");
@@ -25217,7 +25393,9 @@ async function archiveAgentSelection(items) {
     if (refusePaused(messages)) return;
     const calls = contextOwnedCalls(bulkRemovalCalls(messages, "archive", false), messages);
     if (!calls.length) return;
-    queueBulkRemoval("Archive", calls, messages, "archive");
+    const receipt = withReceipt ? beginAgentUxReceipt("remove", messages) : null;
+    if (receipt) queueBulkRemoval("Archive", calls, messages, "archive", receipt);
+    else queueBulkRemoval("Archive", calls, messages, "archive");
     for (const item of items) agentReplySelection.delete(agentSelectionKey(item));
     if (agentPaintPayload) paintAgentHome(agentPaintPayload);
   } finally {
@@ -25259,8 +25437,8 @@ function paintAgentReadProjection(messageId, unread, original) {
   if (state.view === "agent" && agentPaintPayload) paintAgentHome(agentPaintPayload);
 }
 
-function beginAgentRead(item, begunAt, complete) {
-  const entry = { item, begunAt, complete, signal: learningSignalItem(item), receipt: null, early: [] };
+function beginAgentRead(item, begunAt, complete, uxReceipt = null) {
+  const entry = { item, begunAt, complete, signal: learningSignalItem(item), receipt: null, early: [], uxReceipt };
   agentPendingReads.set(String(item.messageId), entry);
   return entry;
 }
@@ -25287,10 +25465,10 @@ async function settleAgentReadOutcome(outcome) {
   }
   if (outcome.generation >= (actionGeneration.get(outcome.id) || 0)) paintAgentReadProjection(String(outcome.id), unread, entry.item);
   if (!completed) {
-    showStatus("Mark as read was not confirmed.", true);
+    if (!entry.uxReceipt) showStatus("Mark as read was not confirmed.", true);
     return same && outcome.status !== "completed" ? outcome.status : "superseded";
   }
-  showStatus(entry.complete ? "Marked as read; todo completed." : "Marked as read.");
+  if (!entry.uxReceipt) showStatus(entry.complete ? "Marked as read; todo completed." : "Marked as read.");
   return "completed";
 }
 
@@ -25380,15 +25558,16 @@ async function applyReplySelection(items, mode, role) {
   }
 }
 
-async function markAgentCategoryRead(items, complete = false, capturedMessages = []) {
+async function markAgentCategoryRead(items, complete = false, capturedMessages = [], receipt = null) {
   const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) {
+    if (receipt) receipt.accept(agentUxReadSkips(receipt, snapshot));
     showStatus("Already read.");
     return;
   }
   const byKey = new Map(items.map((item) => [JSON.stringify([String(item.accountId || "").trim(), String(item.messageId || "").trim()]), item]));
-  const entries = snapshot.map((row) => beginAgentRead(byKey.get(JSON.stringify([row.accountId, row.messageId])), begunAt, complete));
+  const entries = snapshot.map((row) => beginAgentRead(byKey.get(JSON.stringify([row.accountId, row.messageId])), begunAt, complete, receipt));
   let data;
   try {
     const spec = { channel: "mail:markReadBatch", params: {
@@ -25399,6 +25578,12 @@ async function markAgentCategoryRead(items, complete = false, capturedMessages =
     data = await call(request.channel, request.params);
   } catch (error) {
     for (const entry of entries) abandonAgentRead(entry);
+    if (receipt) {
+      // The per-message receipt already reports Unknown without replacing a
+      // more recent Undo in Mail.
+      receipt.accept(agentUxReadSkips(receipt, snapshot));
+      return;
+    }
     throw new Error("Mark as read was not confirmed. Refresh before trying again. " + (error.message || String(error)));
   }
   if (typeof rememberActionGeneration === "function") {
@@ -25413,13 +25598,24 @@ async function markAgentCategoryRead(items, complete = false, capturedMessages =
     outcomes.push(status === "pending" ? { status: "unknown", phase: "accepted" }
       : { status: explicit && ["completed", "failed", "not_attempted"].includes(status) ? status : "unknown" });
   }
+  if (receipt) {
+    const packet = entries.map((entry, i) => {
+      const id = String(entry.item.messageId);
+      const reported = (data?.outcomes || []).find((row) => row.id === id) || {};
+      return { ...entry.receipt, ...reported, ...outcomes[i], id };
+    });
+    receipt.accept([...packet, ...agentUxReadSkips(receipt, snapshot)]);
+  }
   if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
   const copy = receiptText("Mark as read", { outcomes });
   const confirmed = new Set(entries.filter((entry, i) => ["completed", "accepted"].includes(outcomes[i].phase || outcomes[i].status))
     .map((entry) => String(entry.item.messageId)));
-  const reversible = undoRows.filter((row) => confirmed.has(row.emailId));
-  if (reversible.length) showReadUndo(copy, reversible);
-  else showStatus(copy, true);
+  if (receipt) showAgentUxReadUndo(receipt);
+  else {
+    const reversible = undoRows.filter((row) => confirmed.has(row.emailId));
+    if (reversible.length) showReadUndo(copy, reversible);
+    else showStatus(copy, true);
+  }
 }
 
 function agentTodoActions(item, section) {
