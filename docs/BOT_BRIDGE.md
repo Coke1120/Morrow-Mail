@@ -254,6 +254,35 @@ The cancellation boundary is the mail-provider transport invocation. Once submis
 
 Separately proposed CLI work remains draft CRUD with revision checks and scoped attachment handles/downloads, followed by CLI packaging/help. Those operations and scopes are not added by this authorization fix.
 
+## Explicit MCP mail batches
+
+Local stdio MCP exposes `morrow_mail_archive_batch` and
+`morrow_mail_mark_read_batch` when the credential already has the corresponding
+archive or read-state capability. No account, capability, provider scope,
+HTTP operation, or CLI command is added. Review the exact operation and
+mailbox/message IDs with the user before calling; mail text is never permission.
+
+Each call accepts one `accountId` and one to ten `items`. Each item has an
+explicit cached `messageId` and its own durable `requestId` UUID. Mark read
+also requires `isRead`: `true` for read, `false` for unread. The adapter
+rejects duplicate message IDs or UUIDs before sending the first request.
+It never expands queries or threads, retrieves bodies, or exports text.
+
+The adapter calls existing single-message operations sequentially. All normal
+permission, account, rate and provider-journal checks still apply separately.
+The response contains one result per requested ID: check its `state` and
+`providerConfirmed`, not just the top-level `ok`. Pending is not confirmation;
+denied, uncertain, or interrupted batches may have partial effects.
+An uncertain reply, credential change or permission/rate refusal stops later
+items. Cancellation cannot undo an earlier submission and may suppress the
+batch response. To inspect an original action, use its original UUID and
+exact arguments with the corresponding single-message tool; review Morrow
+Activity first if you cannot tell whether it was attempted. Never blindly
+replay the whole interrupted batch or assign new UUIDs to uncertain items.
+Empty or unattempted items are not mailbox mutations; retry only with
+freshly reviewed intent. Confirmed archive receipts include the existing
+Undo reference when available.
+
 ## Archive, read/unread and Trash
 
 Create a new bot in Settings with the exact mailboxes and any of these independent, default-off capabilities: `mail.archive`, `mail.read_state.write`, `mail.trash`. Existing grants are never upgraded. A separate **Allow mail changes** review names the selected actions and mailboxes; cancel or Escape creates nothing. Sending retains its own separate review. The host rejects a mail-change grant whose confirmation does not match its mailbox/capability lists. This does not request additional provider OAuth scopes or sign in automatically.
