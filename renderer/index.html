@@ -422,7 +422,26 @@
           <div class="hint" data-review-result role="status"></div>
         </form>
       </details>
-      <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
+      <section id="agent-actions-surface" aria-label="Agent decisions and selected messages">
+        <div class="agent-batch-toolbar" data-agent-batch-toolbar hidden role="group" aria-label="Selected messages">
+          <strong data-selection-scope role="status"></strong>
+          <button type="button" class="ghost" data-batch-read>Mark selected as read</button>
+          <button type="button" class="ghost" data-batch-archive>Review archive</button>
+          <button type="button" class="ghost" data-batch-clear>Clear selection</button>
+        </div>
+        <section class="agent-decisions" data-agent-decision-cards aria-label="Pending decisions" hidden>
+          <h3 tabindex="-1">Pending decisions</h3>
+          <p class="hint">From recent Agent results only. Local decisions apply while the message remains in this window’s results. Reading or recognizing a mail does not change its folder or create a rule.</p>
+          <p class="hint" data-decision-stale hidden>These results are out of date. Refresh before recording a decision or archiving.</p>
+          <div class="agent-decision-grid" data-decision-list></div>
+        </section>
+        <details class="agent-batch-receipts" data-agent-batch-receipts hidden open>
+          <summary aria-label="Latest batch receipt"></summary>
+          <p class="hint"></p>
+          <ul aria-label="Message outcomes"></ul>
+        </details>
+        <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
+      </section>
       <section id="agent-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
       <form id="agent-composer" class="agent-composer">
@@ -2021,6 +2040,7 @@
     <script src="./timeline.js"></script>
     <script src="../shared/mail-columns.js"></script>
     <script src="./agent-safety-review.js"></script>
+    <script src="./agent-actions.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
