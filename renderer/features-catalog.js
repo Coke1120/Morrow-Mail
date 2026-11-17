@@ -121,6 +121,12 @@ id: "mail-workflow-feedback",
         blurb: "Profile, categories, skills, and inbox rules built from your mail. Settings → Brain chooses Daily (default), Weekly, or Manual only for automatic profile refresh. Timer checks and opening Brain share the same 24-hour or seven-day interval across connected mailboxes. Only downloaded Sent/Inbox snippets and the previous generated profile go to the saved AI connection; API or plan usage may apply. Background AI data permission remains a separate opt-in in Settings → AI. Changes to frequency never grant it. Runs while Morrow Mail is running; missed slots combine into one attempt. A failed automatic attempt waits the full interval across restart. Refresh/Rebuild remain explicit retries, and repeated requests share one profile job. Manual only stops future automatic work; a run already processing can finish. Settings shows last success and next eligibility. Skill schedules and Agent triage keep their own controls. Skills can draft a reply or propose a move. You still press Send. Explicit Run buttons and Home chips run the selected skill ID, even when names repeat or resemble chat commands. Typed chat runs a skill only when the whole message is that skill's name or id, or run followed by that name or id. Dirty schedule editors survive polls and background schedule events. Scheduled preflight refusals are currently visible in schedule status, not run history.",
       },
       {
+        id: "agent-safety-review",
+        title: "Agent safety review",
+        category: "Agent",
+        blurb: "Expand Safety review in Agent → Todos to see recent cached threads grouped as Needs attention, Ordinary mail or Possible cleanup. Subject cues and existing categories are advisory, not proof of safety or sender authenticity. Select one mailbox and enter the exact displayed sender and subject to preview matching current todos, including messages held for review. No rule is approved, saved or run. Nothing is downloaded, marked read, archived, flagged or sent, and no additional AI access is requested.",
+      },
+      {
         id: "agent-triage",
         title: "Agent triage",
         category: "Agent",
