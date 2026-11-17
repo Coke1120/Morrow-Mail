@@ -20872,6 +20872,7 @@ function showAgentTab(name) {
     $(tab.getAttribute("aria-controls")).hidden = !active;
   }
   $("agent-skill-chips").hidden = name !== "home";
+  $("agent-safety-review").hidden = name !== "home";
   // Switching sections should never scroll two competing containers.
   if (!changed) return;
   if (name === "conversation") {
@@ -24932,6 +24933,7 @@ function paintThread() {
 }
 
 function paintAgent(payload, errorText) {
+  window.morrowAgentSafetyReview?.paint($("agent-safety-review"), payload, state.accounts);
   if (payload && typeof payload === "object") agentPaintPayload = payload;
   if (payload && payload.learning) applyAgentLearning(payload.learning);
   const status = $("agent-status");

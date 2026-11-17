@@ -407,6 +407,21 @@
         <p id="agent-context" class="hint"></p>
       </div>
       <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
+      <details id="agent-safety-review" class="motion-block">
+        <summary>Safety review</summary>
+        <p class="hint">Suggestions from recent cached Agent todos only. No message or rule is changed. Check the original mail before acting.</p>
+        <div data-review-tiers class="hint"></div>
+        <form hidden aria-label="Preview an exact cleanup scope">
+          <p class="hint">Preview an exact scope. Use the displayed From and subject; a matching sender is not verified.</p>
+          <div class="row">
+            <label>Mailbox <select name="account" required></select></label>
+            <label>Exact displayed sender <input type="text" name="sender" maxlength="400" required /></label>
+            <label>Exact subject <input type="text" name="subject" maxlength="500" required /></label>
+            <button type="submit" class="ghost">Preview cleanup scope</button>
+          </div>
+          <div class="hint" data-review-result role="status"></div>
+        </form>
+      </details>
       <div id="agent-home" class="motion-block" role="tabpanel" aria-labelledby="agent-tab-home" aria-label="Suggested todos"></div>
       <section id="agent-conversation" role="tabpanel" aria-labelledby="agent-tab-conversation" hidden>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
@@ -2004,6 +2019,7 @@
     <script src="./ai-provider-indicator.js"></script>
     <script src="./timeline.js"></script>
     <script src="../shared/mail-columns.js"></script>
+    <script src="./agent-safety-review.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
