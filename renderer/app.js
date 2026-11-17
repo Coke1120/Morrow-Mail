@@ -157,6 +157,7 @@ let readUndoTimer = 0;
 let undoReceipt = "";
 let undoReceiptError = false;
 const agentReplySelection = new Set();
+let agentArchiveReviewBusy = false;
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
@@ -13547,7 +13548,13 @@ function queueBulkRemoval(label, calls, messages, action) {
     if (!spec.params.items) return [spec];
     const batches = [];
     for (let offset = 0; offset < spec.params.items.length; offset += 4) {
-      batches.push({ ...spec, params: { ...spec.params, items: spec.params.items.slice(offset, offset + 4) } });
+      const items = spec.params.items.slice(offset, offset + 4);
+      const params = { ...spec.params, items };
+      if (Array.isArray(params.contextOwners)) {
+        const itemIds = new Set(items.map((item) => item.emailId || item.id));
+        params.contextOwners = params.contextOwners.filter((owner) => itemIds.has(owner.emailId));
+      }
+      batches.push({ ...spec, params });
     }
     return batches;
   });
@@ -24959,7 +24966,7 @@ let agentHomeUsed = new Set();
 function retainedAgentCard(item, section) {
   const key = `${section.id || section.name}\0${item.accountId || ""}\0${item.messageId || item.id || JSON.stringify(item)}`;
   const signature = JSON.stringify([item, section.name, section.title, agentTodoView, agentLooksUnread(item), agentWhen(item.date),
-    agentReplySelection.has(String(item.messageId)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning)]);
+    agentReplySelection.has(agentSelectionKey(item)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning)]);
   agentHomeUsed.add(key);
   const previous = agentHomeCards.get(key);
   if (previous?.signature === signature) return previous.node;
@@ -25019,7 +25026,7 @@ function paintAgentHome(payload) {
     tools.className = "agent-section-tools";
     const role = agentPileRole(section);
     if ((role === "fyi" || role === "other") && items.length) tools.appendChild(agentCategoryReadButton(role, items));
-    if (role === "reply" && items.length) tools.appendChild(agentReplySelectionTools(block, items));
+    if (items.some(agentSelectionKey)) tools.appendChild(agentReplySelectionTools(block, items, role));
     if (section.collapseView && items.length) {
       const toggle = document.createElement("button");
       toggle.type = "button";
@@ -25059,7 +25066,7 @@ function paintAgentHome(payload) {
   const note = document.createElement("p");
   note.id = "agent-todo-note";
   note.className = "agent-note";
-  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. Both wait for mailbox confirmation before completing a todo or counting a read for Learned. FYI and Other can mark the listed messages read, with Undo, and do not complete todos. Successful replies in any category can count for Learned without an open todo. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern and refreshes suggestions in open views.";
+  note.textContent = "Mark todo done and Dismiss only update this local Agent list. They do not archive, delete, mark read, or reply. A successful Reply or Reply All completes only the Needs You todo recorded when that reply starts. Mark as read leaves it open unless Settings → Mark as read also completes Agent todos is on. Mark read & done marks read and completes. Both wait for mailbox confirmation before completing a todo or counting a read for Learned. Select messages in a category to mark them read in one batch or review an archive. Archive changes only the selected messages, not their conversations, and never completes a todo. FYI and Other can also mark the whole listed category read with Undo. Successful replies in any category can count for Learned without an open todo. Settings → Learned keeps a correction after the same pattern happens 3 times. Delete removes that one pattern and refreshes suggestions in open views.";
   root.appendChild(note);
   for (const cardKey of agentHomeCards.keys()) if (!agentHomeUsed.has(cardKey)) agentHomeCards.delete(cardKey);
   if (focused?.isConnected) focused.focus({ preventScroll: true });
@@ -25080,20 +25087,26 @@ async function replyToAgentItem(item, kind) {
   await presentCompose(composeSeed(email, kind === "all" ? "all" : "reply", self));
 }
 
-function agentSelectBox(item) {
+function agentSelectionKey(item) {
   const context = agentMessageContext(item);
+  return context?.accountId && context.accountId !== LOCAL_ACCOUNT_ID
+    ? JSON.stringify([context.accountId, context.messageId]) : "";
+}
+
+function agentSelectBox(item) {
+  const key = agentSelectionKey(item);
   const box = document.createElement("input");
   box.type = "checkbox";
   box.className = "agent-select";
-  if (context) box.dataset.messageId = context.messageId;
+  if (key) box.dataset.selectionKey = key;
   const subject = String((item && item.subject) || "").trim() || "(no subject)";
   box.setAttribute("aria-label", "Select " + subject);
-  box.checked = !!(context && agentReplySelection.has(context.messageId));
+  box.checked = !!(key && agentReplySelection.has(key));
   box.addEventListener("click", (event) => event.stopPropagation());
   box.addEventListener("change", () => {
-    if (!context) return;
-    if (box.checked) agentReplySelection.add(context.messageId);
-    else agentReplySelection.delete(context.messageId);
+    if (!key) return;
+    if (box.checked) agentReplySelection.add(key);
+    else agentReplySelection.delete(key);
     paintReplySelectionLabels();
   });
   return box;
@@ -25107,26 +25120,29 @@ function paintReplySelectionLabels(root) {
     if (!tools) continue;
     const boxes = [...block.querySelectorAll(".agent-select")];
     if (!boxes.length) continue;
-    const labels = agentSelectionLabels(boxes.filter((box) => box.checked).length, boxes.length);
+    const selected = boxes.filter((box) => box.checked).length;
+    const labels = agentSelectionLabels(selected, boxes.length);
     const read = tools.querySelector(".agent-mark-selected");
     const done = tools.querySelector(".agent-complete-selected");
-    if (read) read.textContent = labels.read;
-    if (done) done.textContent = labels.done;
+    const archive = tools.querySelector(".agent-archive-selected");
+    if (read) { read.textContent = labels.read; read.disabled = !selected; }
+    if (done) { done.textContent = labels.done; done.disabled = !selected; }
+    if (archive) archive.disabled = !selected || agentArchiveReviewBusy;
   }
 }
 
 function selectedReplyItems(block, items) {
   const wanted = new Set();
   for (const box of block.querySelectorAll(".agent-select")) {
-    if (box.checked && box.dataset.messageId) wanted.add(box.dataset.messageId);
+    if (box.checked && box.dataset.selectionKey) wanted.add(box.dataset.selectionKey);
   }
-  return (items || []).filter((item) => wanted.has(String(item && item.messageId || "")));
+  return (items || []).filter((item) => wanted.delete(agentSelectionKey(item)));
 }
 
-function agentReplySelectionTools(block, items) {
+function agentReplySelectionTools(block, items, role) {
   const wrap = document.createElement("div");
   wrap.className = "agent-reply-tools";
-  wrap.dataset.pile = "reply";
+  wrap.dataset.pile = role;
   const labels = agentSelectionLabels(0, items.length);
   const read = document.createElement("button");
   read.type = "button";
@@ -25141,15 +25157,71 @@ function agentReplySelectionTools(block, items) {
   read.addEventListener("click", () => {
     const captured = selectedReplyItems(block, items);
     if (!captured.length) return;
-    guard(() => applyReplySelection(captured, "read"));
+    guard(() => applyReplySelection(captured, "read", role));
   });
   done.addEventListener("click", () => {
     const captured = selectedReplyItems(block, items);
     if (!captured.length) return;
     guard(() => applyReplySelection(captured, "done"));
   });
-  wrap.append(read, done);
+  const archive = document.createElement("button");
+  archive.type = "button";
+  archive.className = "ghost agent-archive-selected";
+  archive.dataset.testid = "agent-archive-selected";
+  archive.textContent = "Archive selected";
+  archive.addEventListener("click", () => {
+    const captured = selectedReplyItems(block, items);
+    if (captured.length) guard(() => archiveAgentSelection(captured));
+  });
+  wrap.append(read, archive);
+  if (role === "reply") wrap.appendChild(done);
   return wrap;
+}
+
+function captureAgentSelectedMessages(items) {
+  if (items.length > 200) throw new Error("Select up to 200 messages at a time.");
+  const seenIds = new Set();
+  const messages = [];
+  for (const item of items) {
+    const context = agentMessageContext(item);
+    if (!agentSelectionKey(item)) throw new Error("A selected mailbox is unavailable. Refresh Agent and review again.");
+    if (seenIds.has(context.messageId)) throw new Error("A selected message has conflicting mailbox references. Refresh Agent and review again.");
+    seenIds.add(context.messageId);
+    const row = { id: context.messageId, accountId: context.accountId, folderId: item.folderId, subject: item.subject, from: item.from };
+    row.contextOwner = capturedContextOwner(row);
+    if (!row.contextOwner) throw new Error("A selected message or mailbox changed. Refresh Agent and review again.");
+    if (pendingRemovalMessages.has(row.id) || optimisticRemovals.has(row.id)) {
+      throw new Error("A selected message is already waiting for mailbox confirmation.");
+    }
+    messages.push(row);
+  }
+  return messages;
+}
+
+async function archiveAgentSelection(items) {
+  if (agentArchiveReviewBusy || !items.length) return;
+  const messages = captureAgentSelectedMessages(items);
+  if (refusePaused(messages)) return;
+  agentArchiveReviewBusy = true;
+  paintReplySelectionLabels();
+  try {
+    const detail = { scope: selectionScopeCopy(messages, messages) + " Only these selected messages are included, not their conversations." };
+    const answer = await askConfirm(bulkConfirmCopy("archive", messages.length, detail));
+    if (!answer?.ok || state.view !== "agent") return;
+    if (messages.some((row) => contextAccountProof(row.accountId) !== row.contextOwner.connection
+      || pendingRemovalMessages.has(row.id) || optimisticRemovals.has(row.id))) {
+      throw new Error("The mailbox or pending selection changed. Refresh Agent and review again.");
+    }
+    if (refusePaused(messages)) return;
+    const calls = contextOwnedCalls(bulkRemovalCalls(messages, "archive", false), messages);
+    if (!calls.length) return;
+    queueBulkRemoval("Archive", calls, messages, "archive");
+    for (const item of items) agentReplySelection.delete(agentSelectionKey(item));
+    if (agentPaintPayload) paintAgentHome(agentPaintPayload);
+  } finally {
+    agentArchiveReviewBusy = false;
+    paintReplySelectionLabels();
+  }
 }
 
 function agentCategoryReadButton(role, items) {
@@ -25283,7 +25355,7 @@ async function markAgentMessageRead(item, card, mode, begunAt = Date.now()) {
   showStatus("Marked as read.");
 }
 
-async function applyReplySelection(items, mode) {
+async function applyReplySelection(items, mode, role) {
   const captured = (items || []).filter((item) => agentMessageContext(item));
   if (!captured.length) return;
   if (mode === "done") {
@@ -25294,45 +25366,58 @@ async function applyReplySelection(items, mode) {
     showStatus(captured.length === 1 ? "Todo completed." : "Todos completed.");
     return;
   }
-  const begunAt = Date.now();
-  for (const item of captured) {
-    await markAgentMessageRead(item, null, undefined, begunAt);
+  const messages = captureAgentSelectedMessages(captured);
+  if (refusePaused(messages)) return;
+  const complete = role === "reply" && state.prefs.markReadCompletesTodos === true;
+  const already = complete ? captured.filter((item) => !agentPendingReads.has(String(item.messageId))
+    && (agentReadIntent(item) === "already" || agentMarkedRead.has(String(item.messageId)))) : [];
+  await markAgentCategoryRead(captured, complete, messages);
+  for (const item of already) {
+    const context = agentMessageContext(item);
+    await updateTodo(context.messageId, "done", context.accountId);
   }
-  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
 }
 
-async function markAgentCategoryRead(items) {
+async function markAgentCategoryRead(items, complete = false, capturedMessages = []) {
   const begunAt = Date.now();
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) {
     showStatus("Already read.");
     return;
   }
-  const entries = snapshot.map((row) => beginAgentRead(items.find((item) => item.messageId === row.messageId), begunAt, false));
+  const byKey = new Map(items.map((item) => [JSON.stringify([String(item.accountId || "").trim(), String(item.messageId || "").trim()]), item]));
+  const entries = snapshot.map((row) => beginAgentRead(byKey.get(JSON.stringify([row.accountId, row.messageId])), begunAt, complete));
   let data;
   try {
-    data = await call("mail:markReadBatch", {
+    const spec = { channel: "mail:markReadBatch", params: {
       isRead: true,
       items: snapshot.map((row) => ({ emailId: row.messageId, accountId: row.accountId })),
-    });
+    } };
+    const [request] = contextOwnedCalls([spec], capturedMessages);
+    data = await call(request.channel, request.params);
   } catch (error) {
     for (const entry of entries) abandonAgentRead(entry);
-    throw error;
+    throw new Error("Mark as read was not confirmed. Refresh before trying again. " + (error.message || String(error)));
   }
   if (typeof rememberActionGeneration === "function") {
     rememberActionGeneration(data && data.pending);
     rememberActionGeneration(data && data.outcomes);
   }
   const undoRows = readUndoRows(snapshot, data);
-  await Promise.all(entries.map((entry) => acceptAgentRead(entry, data)));
-  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
-  if (!undoRows.length) {
-    showStatus("Mark as read was not confirmed.", true);
-    return;
+  const outcomes = [];
+  for (const entry of entries) {
+    const status = await acceptAgentRead(entry, data);
+    const explicit = (data?.outcomes || []).some((row) => row.id === String(entry.item.messageId));
+    outcomes.push(status === "pending" ? { status: "unknown", phase: "accepted" }
+      : { status: explicit && ["completed", "failed", "not_attempted"].includes(status) ? status : "unknown" });
   }
-  const noun = undoRows.length === 1 ? "message" : "messages";
-  const waiting = entries.some((entry) => agentPendingReads.get(String(entry.item.messageId)) === entry);
-  showReadUndo(waiting ? "Mark as read requested for " + undoRows.length + " " + noun + "." : "Marked " + undoRows.length + " " + noun + " as read.", undoRows);
+  if (state.view === "agent" && agentPaintPayload) paintAgent(agentPaintPayload, "");
+  const copy = receiptText("Mark as read", { outcomes });
+  const confirmed = new Set(entries.filter((entry, i) => ["completed", "accepted"].includes(outcomes[i].phase || outcomes[i].status))
+    .map((entry) => String(entry.item.messageId)));
+  const reversible = undoRows.filter((row) => confirmed.has(row.emailId));
+  if (reversible.length) showReadUndo(copy, reversible);
+  else showStatus(copy, true);
 }
 
 function agentTodoActions(item, section) {
@@ -25613,7 +25698,7 @@ function agentSkimCard(item, section) {
   face.setAttribute("aria-controls", detailId);
   const top = document.createElement("div");
   top.className = "agent-card-top";
-  if (agentPileRole(section || item) === "reply") top.appendChild(agentSelectBox(item));
+  if (agentSelectionKey(item)) top.appendChild(agentSelectBox(item));
   const sender = document.createElement("p");
   sender.className = "agent-card-sender";
   if (agentLooksUnread(item)) {
@@ -25681,7 +25766,7 @@ function agentTodoCard(item, section) {
   if (!agentMessageContext(item)) return agentCard(item);
   if (agentTodoView === "card") return agentSkimCard(item, section);
   const card = agentCard(item, { actions: false });
-  if (agentPileRole(section || item) === "reply") {
+  if (agentSelectionKey(item)) {
     const main = card.querySelector(".agent-item-main");
     if (main) main.prepend(agentSelectBox(item));
   }
