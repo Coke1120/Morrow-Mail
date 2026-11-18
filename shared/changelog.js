@@ -8,6 +8,7 @@
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
     "0.4.14": [
+      "Batch mail actions distinguish an unknown result from a confirmed failure, and Agent Todos keeps Undo when an early confirmation verifies a reversible read change.",
       "Agent → Todos puts pending decisions first, with the mailbox, a reason and an explicit due date when available. Recognized this time applies only to that message in the current window; Not me keeps it pending.",
       "Select messages across mailboxes to mark them read or review an archive of exactly those messages. See each result separately and use Undo only when a confirmed change can be reversed.",
       "Agent safety review groups messages by urgency and can preview which cached messages match a proposed rule without enabling it. The local MCP adapter supports bounded mark-read and archive batches within an already authorized mailbox.",

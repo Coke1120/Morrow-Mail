@@ -25456,6 +25456,7 @@ async function settleAgentReadOutcome(outcome) {
   agentPendingReads.delete(String(outcome.id));
   const same = outcome.generation === receipt.generation && (!receipt.actionId || outcome.actionId === receipt.actionId);
   const completed = same && outcome.status === "completed" && (!outcome.kind || outcome.kind === "read") && (!outcome.projection || outcome.projection.unread === false);
+  if (same && (completed || ["failed", "not_attempted"].includes(outcome.status))) entry.settlement = outcome;
   const unread = outcome.projection ? !!outcome.projection.unread : !completed;
   // Record the confirmation before painting. A list repaint must not drop it.
   if (completed && entry.signal) await learnAgent({ kind: "action", action: "mark-read", begunAt: entry.begunAt, items: [entry.signal] });
@@ -25560,6 +25561,8 @@ async function applyReplySelection(items, mode, role) {
 
 async function markAgentCategoryRead(items, complete = false, capturedMessages = [], receipt = null) {
   const begunAt = Date.now();
+  const begunUndoEpoch = undoEpoch;
+  const begunReadUndoSerial = readUndoSerial;
   const snapshot = agentUnreadSnapshot(items);
   if (!snapshot.length) {
     if (receipt) receipt.accept(agentUxReadSkips(receipt, snapshot));
@@ -25594,15 +25597,15 @@ async function markAgentCategoryRead(items, complete = false, capturedMessages =
   const outcomes = [];
   for (const entry of entries) {
     const status = await acceptAgentRead(entry, data);
-    const explicit = (data?.outcomes || []).some((row) => row.id === String(entry.item.messageId));
+    // The confirmed event can arrive before a response which only lists this
+    // message as pending. Classify the matched settlement, not that snapshot.
     outcomes.push(status === "pending" ? { status: "unknown", phase: "accepted" }
-      : { status: explicit && ["completed", "failed", "not_attempted"].includes(status) ? status : "unknown" });
+      : { status: entry.settlement && ["completed", "failed", "not_attempted"].includes(status) ? status : "unknown" });
   }
   if (receipt) {
     const packet = entries.map((entry, i) => {
       const id = String(entry.item.messageId);
-      const reported = (data?.outcomes || []).find((row) => row.id === id) || {};
-      return { ...entry.receipt, ...reported, ...outcomes[i], id };
+      return { ...entry.receipt, ...entry.settlement, ...outcomes[i], id };
     });
     receipt.accept([...packet, ...agentUxReadSkips(receipt, snapshot)]);
   }
@@ -25612,9 +25615,11 @@ async function markAgentCategoryRead(items, complete = false, capturedMessages =
     .map((entry) => String(entry.item.messageId)));
   if (receipt) showAgentUxReadUndo(receipt);
   else {
-    const reversible = undoRows.filter((row) => confirmed.has(row.emailId));
-    if (reversible.length) showReadUndo(copy, reversible);
-    else showStatus(copy, true);
+    const reversible = undoRows.filter((row) => confirmed.has(row.emailId)
+      && (actionGeneration.get(row.emailId) || 0) === row.generation);
+    const ownsUndo = !undoBusy && begunUndoEpoch === undoEpoch && begunReadUndoSerial === readUndoSerial;
+    if (reversible.length && ownsUndo) showReadUndo(copy, reversible);
+    else if (!reversible.length) showStatus(copy, true);
   }
 }
 

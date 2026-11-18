@@ -97,6 +97,7 @@ async function batchChecks() {
     if (scenario === "transport" && ordinal === 2) throw Object.assign(Error("private"), { code: "WRITE_OUTCOME_UNCONFIRMED" });
     if (scenario === "limited" && ordinal === 2) return { ok: false, error: { code: "RATE_LIMITED" } };
     if (scenario === "forbidden") return { ok: false, error: { code: "FORBIDDEN" } };
+    if (scenario === "auth-unconfirmed" && ordinal === 2) return { ok: false, error: { code: "UNAUTHENTICATED" } };
     if (scenario === "unknown" && ordinal === 2) return { ok: false, error: { code: "INTERNAL" } };
     if (scenario === "scoped" && params.messageId === "m1") return { ok: false, error: { code: "NOT_FOUND" } };
     const state = ordinal === 1 ? "completed" : "pending";
@@ -136,12 +137,18 @@ async function batchChecks() {
       ["forbidden", "FORBIDDEN", ["failed", "not_attempted", "not_attempted"], 1],
       ["limited", "RATE_LIMITED", ["completed", "failed", "not_attempted"], 2],
       ["unknown", "INTERNAL", ["completed", "unknown", "not_attempted"], 2],
+      ["auth-unconfirmed", "UNAUTHENTICATED", ["completed", "unknown", "not_attempted"], 2],
       ["transport", "WRITE_OUTCOME_UNCONFIRMED", ["completed", "unknown", "not_attempted"], 2],
       ["rotated", "MCP_BATCH_CREDENTIAL_CHANGED", ["completed", "not_attempted", "not_attempted"], 2],
     ]) {
       scenario = kind; calls.length = 0; value = await submit(archive, { items });
       assert.equal(value.data.stopped, reason);
       assert.deepEqual(value.data.results.map(row => row.state), states);
+      if (kind === "auth-unconfirmed") {
+        assert.deepEqual(value.data.results.map(row => row.requestId), items.map(row => row.requestId));
+        assert.equal(value.data.results[1].providerConfirmed, false);
+        assert.equal(value.data.results[1].undoOpId, undefined);
+      }
       assert.equal(calls.length, count, "no automatic replay or request for later stopped items");
     }
     scenario = "cancelled"; calls.length = 0;

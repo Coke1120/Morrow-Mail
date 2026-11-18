@@ -218,3 +218,61 @@ test("late Agent receipts do not steal a newer unrelated Mail read Undo", async 
   assert.match(s.control("agent-batch-receipts").textContent, /Newsletter: Completed.*Ordinary mail: Failed/s);
   s.dom.window.close();
 });
+
+test("early Agent read settlement supplies the batch receipt and only its verified Undo", async () => {
+  for (const toolbar of [true, false]) {
+    for (const variant of ["completed", "failed", "wrong-action", "newer-undo"]) {
+      const s = setup();
+      try {
+        s.ui.context.variant = variant;
+        s.ui.run(`
+          input.sections[1].items = input.sections[1].items.slice(0, 1);
+          paintAgentHome(input);
+          globalThis.learnCount = 0;
+          learnAgent = async () => { learnCount++; };
+          call = async (channel, params) => {
+            calls.push({ channel, params });
+            if (channel !== "mail:markReadBatch") return null;
+            if (variant === "newer-undo") showReadUndo("Unrelated Mail read",
+              [{emailId:"newer", accountId:"ada", generation:1}]);
+            applyActionSettlement({opIds:[], outcomes:[{
+              id:"a", kind:"read", actionId:variant === "wrong-action" ? "unrelated" : "a31",
+              generation:31, status:variant === "failed" ? "failed" : "completed",
+              projection:{unread:variant === "failed"},
+            }]});
+            return { outcomes:[], pending:[{id:"a", actionId:"a31", generation:31, kind:"read"}] };
+          };
+        `);
+        if (toolbar) {
+          s.check("Newsletter");
+          s.control("batch-read").click();
+        } else {
+          s.doc.querySelector("[data-testid=agent-category-read]").click();
+        }
+        await tick();
+        const context = (toolbar ? "toolbar: " : "category: ") + variant;
+        const status = s.doc.querySelector("#status").textContent;
+        const receipt = toolbar ? s.control("agent-batch-receipts").textContent : status;
+        const undo = JSON.parse(s.ui.run("JSON.stringify(readUndoItems)"));
+        assert.equal(s.calls.filter(x => x.channel === "mail:markReadBatch").length, 1, context);
+        if (variant === "completed") {
+          assert.deepEqual(undo, [{emailId:"a", accountId:"ada", generation:31}], context);
+          assert.equal(s.ui.run("learnCount"), 1, context);
+          assert.match(receipt, /1 completed/i, context);
+          assert.doesNotMatch(receipt, /Refresh before retrying|check before retrying/i, context);
+        } else if (variant === "newer-undo") {
+          assert.equal(undo[0].emailId, "newer", context);
+          assert.equal(s.ui.run("undoReceipt"), "Unrelated Mail read", context);
+          if (toolbar) assert.match(receipt, /1 completed/i, context);
+        } else {
+          assert.equal(undo, null, context);
+          assert.equal(s.ui.run("learnCount"), 0, context);
+          if (variant === "failed") assert.match(receipt, /1 failed/i, context);
+          else assert.match(receipt, /1 unknown/i, context);
+        }
+      } finally {
+        s.dom.window.close();
+      }
+    }
+  }
+});
