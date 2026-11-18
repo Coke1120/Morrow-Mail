@@ -6023,7 +6023,7 @@ html[data-window="compose"] #compose[data-layout="narrow"][data-quote="shown"]:n
   max-height: 180px;
 }
 
-#compose-editing-help { margin-top: 8px; }
+#compose-editing-help { flex-basis: 100%; }
 #compose-editing-help p { margin: 8px 0; }
 
 @media (max-height: 700px) {
