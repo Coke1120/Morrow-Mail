@@ -5985,18 +5985,49 @@ html[data-window="compose"] #compose[open].is-quoting > form {
   flex-direction: column;
   height: 100%;
   max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
+/* The standalone window has a definite height. Spend its remaining space on
+   writing, not on the quote's intrinsic length. Keep actions outside the scroller. */
+html[data-window="compose"] #compose[open] .compose-split {
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+html[data-window="compose"] #compose[open] :is(.compose-head, #compose-note, #compose-status, .row) {
+  flex: none;
+}
+
+html[data-window="compose"] #compose[open] .row { position: static; }
+
 html[data-window="compose"] #compose[open] .compose-draft {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: auto;
 }
 
+html[data-window="compose"] .compose-draft > * { flex-shrink: 0; }
+
 html[data-window="compose"] #compose-editor {
-  flex: 1 1 auto;
+  flex: 1 0 180px;
   min-height: 180px;
+}
+
+html[data-window="compose"] #compose[data-layout="narrow"][data-quote="shown"]:not([data-quote-collapsed="true"]) .compose-quote {
+  flex: 0 1 25%;
+  min-height: 44px;
+  max-height: 180px;
+}
+
+#compose-editing-help { flex-basis: 100%; }
+#compose-editing-help p { margin: 8px 0; }
+
+@media (max-height: 700px) {
+  html[data-window="compose"] #compose[open] > form { padding: 12px 16px; }
 }
 
 #sender-history {
