@@ -199,6 +199,39 @@ test("mailto uses reviewed compose defaults once, without saving or sending", as
   assert.equal(f.calls.length, 1); assert.equal(f.opened.length, 1);
 });
 
+test("Google Groups mailto explains leaving in both readers without sending", async t => {
+  const destination = "googlegroups-manage+123456789012+unsubscribe@googlegroups.com";
+  for (const role of ["shell", "reader"]) {
+    const f = fixture(t, role);
+    f.show({ unsubscribe: { kind: "mailto", destination } });
+    assert.match(f.get(".unsubscribe-copy").textContent, /Google Groups unsubscribe.*requests to leave the group, not just stop mail from this sender.*Nothing is sent until you choose Send/);
+    assert.ok(f.get(".unsubscribe-copy").textContent.includes(destination));
+    assert.deepEqual(f.calls, []);
+    f.answer(async () => ({ status: "draft", draft: { accountId: "alpha", sourceMessageId: "one", to: destination, subject: "Unsubscribe", text: "" } }));
+    f.click();
+    await settle();
+    assert.deepEqual(f.calls, [{ channel: "mail:unsubscribe", payload: { accountId: "alpha", emailId: "one" } }]);
+    assert.equal(f.opened.length, 1);
+    assert.equal(f.opened[0].to, destination);
+    assert.equal(f.opened[0].unsubscribeDraft, true);
+    assert.match(f.opened[0].status, /Nothing is sent until you choose Send/);
+  }
+  const f = fixture(t);
+  f.show({ unsubscribe: { kind: "mailto", destination: "synthetic-news+unsubscribe@googlegroups.com" } });
+  assert.match(f.get(".unsubscribe-copy").textContent, /requests to leave the group/);
+  for (const unsubscribe of [
+    { kind: "mailto", destination: destination + ".fixture.invalid" },
+    { kind: "mailto", destination: destination + "\n" },
+    { kind: "mailto", destination: "person@googlegroups.com" },
+    { kind: "mailto", destination: "+unsubscribe@googlegroups.com" },
+    { kind: "web", destination },
+  ]) {
+    f.show({ unsubscribe });
+    assert.doesNotMatch(f.get(".unsubscribe-copy").textContent, /requests to leave the group/);
+  }
+  assert.deepEqual(f.calls, []);
+});
+
 test("late mailto response waits for the source message and preserves its own mailbox", async t => {
   const f = fixture(t), result = deferred(); f.answer(() => result.promise);
   const mailto = { unsubscribe: { kind: 'mailto', destination: 'leave@fixture.invalid' } };
@@ -319,6 +352,7 @@ test("rendered Features tab describes actual providers, confirmation, and one-cl
   for (const text of [/Gmail API, Outlook, Yahoo and other IMAP/, /List-Unsubscribe/, /separate reader/, /native confirmation/,
     /Older cached mail keeps its available body/, /Reload message or Retry download/, /no automatic metadata download/,
     /does not confirm removal/, /nothing sends until you choose Send/, /without automatic Cc\/Bcc or a signature/,
+    /Google Groups \+unsubscribe@googlegroups\.com address/, /requests to leave the group/,
     /RFC 8058 one-click requests require/, /independently verified DKIM/, /No bulk unsubscribe, automatic unsubscribe/]) assert.match(feature.textContent, text);
   assert.deepEqual(f.calls, []);
 });

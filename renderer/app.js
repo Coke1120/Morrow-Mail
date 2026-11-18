@@ -9761,9 +9761,14 @@ function renderUnsubscribe(pane, email) {
   const copy = document.createElement("div");
   copy.className = "unsubscribe-copy";
   const title = document.createElement("strong");
-  title.textContent = "This message offers an unsubscribe option.";
+  // Copy only: an advertised address does not verify group membership.
+  const googleGroup = offer.kind === "mailto" && offer.destination === offer.destination.trim() &&
+    /^[a-z0-9](?:[a-z0-9._-]{0,50}[a-z0-9])?(?:\+[0-9]+)?\+unsubscribe@googlegroups\.com$/i.test(offer.destination);
+  title.textContent = googleGroup ? "Google Groups unsubscribe" : "This message offers an unsubscribe option.";
   const detail = document.createElement("p");
-  detail.textContent = offer.kind === "oneclick"
+  detail.textContent = googleGroup
+    ? `Sending an email to ${offer.destination} requests to leave the group, not just stop mail from this sender. Nothing is sent until you choose Send.`
+    : offer.kind === "oneclick"
     ? `Review verifying the original message and requesting one-click unsubscribe at ${offer.destination}.`
     : offer.kind === "mailto"
     ? `Review an unsubscribe email to ${offer.destination}. You choose whether to send it.`
