@@ -1,102 +1,32 @@
-# Agent notes
+# Morrow Mail agent notes
 
-Project-level standing rules for humans and coding agents (Cloud Agent / Claude / Codex).
+## Branches and releases
 
-## Branches
+- Open feature and fix PRs against `dev`. Do not merge or push to `main` or `production` unless Leo explicitly authorizes that destination.
+- No GitHub auto-merge, force-push to `main` or `dev`, or production deploy on agent initiative.
+- Record durable architecture or process decisions in [docs/adr/](docs/adr/). Keep lightweight UX backlog in Issues. These repo rules and ADRs take precedence over cross-repo habits in `leo-coding-prefs` and `projects.yaml`.
+- Use the [security-audit skill](.cursor/skills/security-audit/SKILL.md) only when Leo explicitly asks for a security audit, pen-test, or full security review. Do not run full audit mode on routine PRs; reserve it for a requested full audit or artifacts.
 
-- **Working / PR base: `dev`** — open feature/fix PRs against `dev`.
-- **`main`** — production / default. Do **not** merge or push here unless Leo explicitly says merge to main/production.
-- **`production`** (if present) — treat like main for merge gates.
+## UI and help
 
-## Hard limits
+- Match existing icon and Motion conventions. Preserve accessible labels, decorative-icon semantics, and reduced-motion behavior. Do not introduce a framework for a scoped UI fix.
+- Update the Features catalog and affected help in the same change as user-facing behavior, including the CLI tab for bot/API/command changes. Keep capabilities, permission and cancellation limits, and examples aligned with handlers. Do not describe planned work as shipped.
+- Add or update regression checks and validate the affected rendered tab with synthetic data before approval. Host tests alone do not verify UI or help.
 
-- No auto-merge.
-- No force-push to `main` or `dev`.
-- No production deploy from agent initiative.
+## OAuth and provider writes
 
-## Decisions (ADR)
+- Follow [docs/OAUTH.md](docs/OAUTH.md) and the [morrow-oauth skill](.agents/skills/morrow-oauth/SKILL.md). Keep Google Calendar consent separate. Existing Gmail OAuth IMAP accounts need reviewed migration before changing transport or credentials; never silently narrow scopes on IMAP/SMTP or assume a narrower request revoked existing grants.
+- Use at most two Microsoft consent dialogs: Outlook IMAP/SMTP and the single Graph feature bundle; never mix those resources in authorization, exchange, or refresh. Reuse adequate grants, request missing access incrementally, and preserve credentials and grants after partial consent. Bot bridge grants stay separate.
+- Out of Office is a reviewed provider write. Use the authorized provider or legacy grant without replacing a mailbox secret after partial consent. For IMAP, only install the `morrow-vacation` ManageSieve script (port 4190 after STARTTLS). Do not replace another active script or send local automatic replies.
 
-- Record **important** architecture / process decisions under `docs/adr/` (one short Markdown file per decision, numbered or dated).
-- Prefer an ADR over chat-only memory when the choice will affect future PRs, agents, or deploys.
-- Lightweight product UX backlog can stay in GitHub Issues; ADRs are for durable “why we chose X”.
+## Credentials, consent, and sender identities
 
-## Source of truth
-
-- Cross-repo bot habits: Grok Bot skill `leo-coding-prefs` + Graph `projects.yaml`.
-- This file + `docs/adr/` win for **this repo's** rules and decisions.
-
-## Security audit skill
-
-- Skill path: `.cursor/skills/security-audit/`
-- Use only when Leo explicitly asks for a security audit, pen-test, or full security review.
-- Not always-on. Do not run it on every PR or feature task.
-- Full audit mode is expensive (multi-agent). Prefer guidance mode unless Leo asks for a full audit or report artifacts.
-- Source: Cloudflare security-audit-skill (MIT) — https://github.com/cloudflare/security-audit-skill
-
----
-
-# Coding guide (restored from main)
-
-# Agent notes
-
-## UI
-
-The first-party shell in `renderer/` is still vanilla DOM. Use icons and motion anyway.
-
-- Prefer **react-icons-compatible SVGs** now: `viewBox="0 0 24 24"`, `currentColor`, and the same paths as `react-icons/fi` (Feather) or `react-icons/lu` (Lucide). Decorative icons are `aria-hidden="true"`. Keep the visible text or an `aria-label`.
-- When React lands in this shell, use **react-icons** and **motion.dev** (`motion/react`) heavily for icons, hover, and panel transitions.
-- Do not strip the existing Motion usage. `renderer/motion-ui.js` imports `motion`. `renderer/motion.bundle.js` exposes `window.morrowMotion`. `renderer/app.js` calls it for rows, panels, dialogs, and chrome press/hover. Keep `prefers-reduced-motion: reduce`.
-
-## Keep Features and help current
-
-- Every feature addition, change, or removal must update its corresponding **Features page/tab** in the same change. Update the hand-maintained catalog (`renderer/features-catalog.js`) and relevant tabs in `renderer/index.html` / `renderer/app.js`, including **CLI** for bot/API/command changes.
-- Keep capability/status descriptions, supported and unsupported operations, permissions/prerequisites, cancellation limits, command examples, and usage/help consistent with the implementation. Describe planned work as unavailable; do not present it as shipped.
-- Review those claims against the actual handlers/catalog/contract. Add or update consistency/regression checks and validate the affected rendered tab with synthetic data. Reviewers must check this synchronization before approving a feature change; passing host tests alone does not verify UI/help claims.
-
-## OAuth consent
-
-Google OAuth mail uses Gmail API with gmail.modify + gmail.settings.basic; Calendar is a separate grant. Existing Google OAuth IMAP accounts require the reviewed migration action before switching transport or mail credentials. Never silently narrow scopes while leaving Gmail on IMAP/SMTP; requested scopes do not prove old broad grants were revoked. Microsoft uses two dialogs maximum: Outlook IMAP/SMTP only, then one Graph bundle for all API features. Never mix Outlook and Graph on an authorize URL, code exchange, or refresh. Reuse saved grants, request missing permissions incrementally, and preserve existing tokens after partial consent. Bot bridge stays separate. See `docs/OAUTH.md`.
-
-## Out of Office
-
-Settings → Out of Office is a reviewed provider write. Gmail uses `gmail.settings.basic` and Microsoft uses `MailboxSettings.ReadWrite`, covered by the provider bundle or an existing legacy token. Do not replace the mailbox secret after partial consent. IMAP may install only the ManageSieve script `morrow-vacation` on port 4190 after STARTTLS. Do not send local automatic replies or replace another active script.
-
-## Mail credential reads
-
-Use the `secrets` facade for mutations so pending reads and opaque revisions are
-invalidated. Routine mail reads use `getPasswordAsync`; recheck account incarnation,
-login/transport, revision and Google client binding after awaits and before token
-use/storage. Share only in-flight reads, never completed credential values. Do not
-replace synchronous credential/SQLite commit-compensation blocks with awaits
-without a separate serialized mutation design and race tests. Compatibility macOS
-commands keep their explicit deadline. Tests must mock child processes and never
-access a real Keychain. See `docs/adr/2026-10-27-keychain-read-deadlines.md`.
-
-## AI data permission bridge
-
-Settings uses the first-party renderer preload; AI Setup has its own preload.
-Keep the three exact consent status/grant/revoke invokes aligned with the existing
-host handlers. Exercise the actual preload, Settings mount and host validation in
-synthetic tests; a mocked invoke callback alone cannot detect a missing channel.
-Preserve the explicit manual checkbox, separate background choice, saved-target
-token binding and rejection of unknown channels. Tests must not use live AI,
-credentials or actual user consent files.
-
-## Sender identities
-
-Sender display names are Morrow-only preferences keyed by account id and exact normalized From address. Gmail discovery supplies defaults; refresh must preserve local overrides and manual aliases. An empty override means address-only; absence means inherit the default. Freeze the selected name with draft/scheduled content and use Nodemailer structured addresses for MIME. Never turn a display name into address authorization, update Gmail settings, or add scopes for local names. Preserve alias/provider restrictions and bot idempotent receipts. See `docs/adr/2026-10-26-sender-display-names.md`.
-
-Draft hydration must use the separate bare `fromAddress`, never reparse recipient-visible preview text. Provider parsing persists that address independently of display names. Equivalent legacy sender metadata must not invalidate queued draft cleanup proofs; genuine name/content edits must still protect newer work.
-
-Historical provider caches contain decoded `name <address>` display text, including unquoted punctuation, rather than an RFC From header. Recognize equivalent metadata only by the full historical representation plus a validated separate address, or a valid parsed header. Test the production provider formatter/parser path; manually quoted fixture headers alone miss this compatibility case.
+- Follow the [Keychain ADR](docs/adr/2026-10-27-keychain-read-deadlines.md). Mutate through the `secrets` facade. After awaited credential reads, recheck account incarnation, login/transport, revision, and Google client binding before token use or storage. Share in-flight reads only, never completed credential values. Do not add awaits to synchronous credential/SQLite compensation without a serialized design and race tests. Keep compatibility command deadlines; mock child processes and never access a real Keychain in tests.
+- Keep AI consent channels aligned between the host and the actual first-party Settings and AI Setup preloads. Exercise the actual preload, Settings mount, and host validation with synthetic data. Preserve the explicit manual checkbox, separate background consent, saved-target token binding, and unknown-channel rejection. Do not use live AI, credentials, or user consent files in tests.
+- Follow the [sender identity ADR](docs/adr/2026-10-26-sender-display-names.md). Preserve local aliases and display-name overrides through refresh; distinguish an empty override from an unset value. Freeze the chosen name with drafts and scheduled mail; never turn a display name into authorization or change provider settings/scopes for local names.
+- Hydrate drafts using the separate validated `fromAddress`, not preview text. Preserve draft-cleanup and bot idempotency proofs for equivalent legacy metadata without weakening protection of newer edits. Check full historical display text against the separate address (or a valid parsed header); test the production provider formatter/parser, not just hand-quoted fixtures.
 
 ## Startup search repair
 
-Search rebuilds commit bounded batches and yield with no open SQL transaction.
-Keep mail data admission closed until index verification; never carry internal
-database admission across an await or invoke UI observers inside it. Progress and
-cursor updates must follow durable commits. Preserve the building/version marker,
-restart recovery and all three consistency tables. Do not drop tables, skip repair
-or weaken journal/fsync. Tests must cover abort/close, concurrent access, journal
-failure and process exit using synthetic stores. See
-`docs/adr/2026-10-27-cooperative-search-index.md`.
+- Follow the [cooperative search index ADR](docs/adr/2026-10-27-cooperative-search-index.md). Keep mail reads closed until index verification. Never carry a write transaction or internal database admission across an await, or call UI observers inside admission.
+- Preserve durable progress, resume markers, all three consistency tables, and journal/fsync. Use synthetic stores to prove restart, abort/close, concurrent access, and journal/process failure recovery.

@@ -9431,12 +9431,12 @@ function organizeButton(email) {
   button.appendChild(text);
   button.addEventListener("click", () => {
     const rect = button.getBoundingClientRect();
-    openOrganizeMenu(email, rect.left, rect.bottom + 4);
+    openOrganizeMenu(email, rect.left, rect.bottom + 4, button, true);
   });
   button.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    openOrganizeMenu(email, event.clientX, event.clientY);
+    openOrganizeMenu(email, event.clientX, event.clientY, button, true);
   });
   return button;
 }
@@ -9661,11 +9661,44 @@ function unsubscribeCurrent(key) {
   return !pendingOpenBody && unsubscribeKey(state.email) === key;
 }
 
+const googleGroupLeaveNotice = "Sending the reviewed email requests to leave the group, not just stop mail from this sender. Nothing is sent until you choose Send.";
+
+function isGoogleGroupLeaveOffer(offer) {
+  // Routing and copy only. The advertised address does not verify membership.
+  return offer?.kind === "mailto" && typeof offer.destination === "string" && offer.destination === offer.destination.trim() &&
+    /^[a-z0-9](?:[a-z0-9._-]{0,50}[a-z0-9])?(?:\+[0-9]+)?\+unsubscribe@googlegroups\.com$/i.test(offer.destination);
+}
+
+function appendGoogleGroupLeaveAction(menu, email) {
+  const key = unsubscribeKey(email);
+  if (!key || !unsubscribeCurrent(key) || !isGoogleGroupLeaveOffer(email.unsubscribe)) return;
+  const action = appendMenuAction(menu, "Leave Google Group…", () => {
+    if (unsubscribeCurrent(key) && unsubscribeKey(email) === key) requestUnsubscribe(email);
+  });
+  action.dataset.action = "leave-google-group";
+  action.dataset.unsubscribeKey = key;
+  action.setAttribute("aria-haspopup", "dialog");
+  action.setAttribute("aria-description", googleGroupLeaveNotice);
+  paintUnsubscribeStatus(key);
+}
+
 function paintUnsubscribeStatus(key) {
   if (!unsubscribeCurrent(key)) return;
+  const receipt = unsubscribeRequests.get(key);
+  const groupStatus = $("reader")?.querySelector(".google-group-leave-status");
+  if (groupStatus?.dataset.unsubscribeKey === key) {
+    groupStatus.classList.toggle("error", !!receipt?.error);
+    groupStatus.textContent = receipt?.pending ? googleGroupLeaveNotice + " Waiting for the review…" : receipt?.message || "";
+    const action = $("organize-menu")?.querySelector('[data-action="leave-google-group"]');
+    if (action?.dataset.unsubscribeKey === key) {
+      action.disabled = !!receipt?.pending || !!receipt?.retired;
+      action.setAttribute("aria-busy", String(!!receipt?.pending));
+      action.title = receipt?.pending ? "Review already in progress." : receipt?.retired ? "See the review result in the message." : "";
+    }
+    return;
+  }
   const banner = $("reader")?.querySelector(".unsubscribe-banner");
   if (!banner || banner.dataset.unsubscribeKey !== key) return;
-  const receipt = unsubscribeRequests.get(key);
   const button = banner.querySelector("button");
   const status = banner.querySelector('[role="status"]');
   const pending = !!receipt?.pending;
@@ -9681,7 +9714,8 @@ async function reviewUnsubscribeDraft(receipt) {
   await presentCompose({ title: "Review unsubscribe email", kind: "new", unsubscribeDraft: true,
     accountId: draft.accountId, sourceMessageId: draft.sourceMessageId,
     to: draft.to, cc: "", bcc: "", subject: draft.subject || "", body: draft.text || "",
-    status: "Review this unsubscribe email. Nothing is sent until you choose Send." });
+    status: receipt.googleGroup && isGoogleGroupLeaveOffer({ kind: "mailto", destination: draft.to })
+      ? googleGroupLeaveNotice : "Review this unsubscribe email. Nothing is sent until you choose Send." });
   receipt.draft = null;
   receipt.retired = true;
   receipt.message = "Unsubscribe email opened for review. Choose Send in that window to request removal; removal is not confirmed.";
@@ -9692,7 +9726,7 @@ async function requestUnsubscribe(email) {
   if (!key || !unsubscribeCurrent(key)) return;
   const previous = unsubscribeRequests.get(key);
   if (previous?.pending || previous?.retired) return;
-  const receipt = previous?.draft ? previous : { status: "pending", message: "" };
+  const receipt = previous?.draft ? previous : { status: "pending", message: "", googleGroup: isGoogleGroupLeaveOffer(email.unsubscribe) };
   receipt.pending = true;
   receipt.error = false;
   unsubscribeRequests.set(key, receipt);
@@ -9753,6 +9787,17 @@ function renderUnsubscribe(pane, email) {
   const key = unsubscribeKey(email);
   if (!key) return;
   const offer = email.unsubscribe;
+  if (isGoogleGroupLeaveOffer(offer)) {
+    const status = document.createElement("p");
+    status.className = "hint unsubscribe-status google-group-leave-status";
+    status.dataset.unsubscribeKey = key;
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.setAttribute("aria-atomic", "true");
+    pane.appendChild(status);
+    paintUnsubscribeStatus(key);
+    return;
+  }
   const banner = document.createElement("section");
   banner.className = "unsubscribe-banner";
   banner.dataset.unsubscribeKey = key;
@@ -13367,7 +13412,7 @@ async function contextRemoval(messages, kind, current) {
   queueBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", contextOwnedCalls(calls, messages), messages, kind);
 }
 
-function openOrganizeMenu(email, x, y, origin) {
+function openOrganizeMenu(email, x, y, origin, reader = false) {
   if (!email) return;
   if (isLocalMail(email)) { openLocalMessageMenu([email], x, y, origin); return; }
   const context = contextMessages([email]);
@@ -13386,6 +13431,7 @@ function openOrganizeMenu(email, x, y, origin) {
   appendMenuAction(menu, "Move to trash", context.run((rows, current) => contextRemoval(rows, "trash", current)), contextTrashReason(context.rows));
   appendMenuAction(menu, "Archive", context.run((rows, current) => contextRemoval(rows, "archive", current)));
   if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", context.run((rows, current) => openContextMove(rows, current, "outlook")));
+  if (reader) appendGoogleGroupLeaveAction(menu, email);
   if (model.note) {
     const note = document.createElement("p");
     note.className = "organize-note";
@@ -13926,7 +13972,7 @@ function onReaderContext(event) {
   if (target && target.closest && target.closest(".sender-address")) return;
   if (target && target.closest && target.closest("input, textarea, select, a")) return;
   event.preventDefault();
-  openOrganizeMenu(state.email, event.clientX, event.clientY);
+  openOrganizeMenu(state.email, event.clientX, event.clientY, undefined, true);
 }
 
 function onMessagePointerDown(event) {

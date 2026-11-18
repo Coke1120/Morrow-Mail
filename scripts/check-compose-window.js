@@ -1,6 +1,6 @@
 // Compose opens in its own window. The mail shell stays usable.
 // xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -19,8 +19,8 @@ const message = {
   threadId: "thread-engine",
   messageId: "<engine@analytical.example>",
   from: "Charles Babbage <charles.babbage@example.com>",
-  to: ["Ada Lovelace <ada.lovelace@example.com>"],
-  cc: [],
+  to: ["Ada Lovelace <ada.lovelace@example.com>", "Grace Hopper <grace@example.com>"],
+  cc: ["Mary Somerville <mary@example.com>"],
   subject: "Notes on the Analytical Engine",
   date: "2026-10-12T15:04:00.000Z",
   unread: false,
@@ -34,8 +34,8 @@ const message = {
 
 const earlierMessage = { ...message, id: "msg-earlier", date: "2026-10-11T15:04:00.000Z",
   from: "Mary Somerville <mary@example.com>",
-  textBody: "Earlier conversation: preserve the original table.",
-  htmlBody: "<p>Earlier conversation: preserve the original table.</p>" };
+  textBody: "Earlier conversation: preserve the original table.\n" + "Long synthetic history for scrolling.\n".repeat(100),
+  htmlBody: "<p>Earlier conversation: preserve the original table.</p>" + "<p>Long synthetic history for scrolling.</p>".repeat(100) };
 
 const account = {
   id: "acct-ada",
@@ -176,6 +176,43 @@ async function closeClean(win) {
   await closed;
 }
 
+function assertNativeFit(win, opener) {
+  const area = screen.getDisplayMatching(opener.getBounds()).workArea;
+  const bounds = win.getBounds();
+  assert.ok(bounds.width <= 1200 && bounds.height <= 900);
+  assert.ok(bounds.x >= area.x && bounds.y >= area.y, "compose starts on the opener's display");
+  assert.ok(bounds.x + bounds.width <= area.x + area.width + 1);
+  assert.ok(bounds.y + bounds.height <= area.y + area.height + 1);
+}
+
+async function assertComposeGeometry(win) {
+  const geometry = await win.webContents.executeJavaScript(`(() => {
+    const editor = document.getElementById("compose-editor");
+    const draft = document.querySelector(".compose-draft");
+    const split = document.getElementById("compose-split"), form = document.getElementById("compose-form"), formStyle = getComputedStyle(form);
+    const margins = node => { const s = getComputedStyle(node); return parseFloat(s.marginTop) + parseFloat(s.marginBottom); };
+    const fixed = [...form.children].filter(node => node !== split && getComputedStyle(node).display !== "none")
+      .reduce((height, node) => height + node.getBoundingClientRect().height + margins(node), 0);
+    return {
+      availableSplit: form.clientHeight - parseFloat(formStyle.paddingTop) - parseFloat(formStyle.paddingBottom) - fixed - margins(split),
+      height: innerHeight, width: innerWidth, editorHeight: editor.clientHeight,
+      editorScroll: editor.scrollHeight, draftHeight: draft.clientHeight,
+      splitHeight: document.getElementById("compose-split").clientHeight,
+      actions: ["compose-send", "compose-save", "compose-close"].map(id => {
+        const rect = document.getElementById(id).getBoundingClientRect();
+        return { id, top: rect.top, bottom: rect.bottom };
+      }),
+    };
+  })()`, true);
+  assert.ok(geometry.editorHeight >= 178, "Message retains its usable minimum");
+  assert.ok(geometry.editorScroll > geometry.editorHeight, "long Message scrolls internally");
+  assert.ok(Math.abs(geometry.splitHeight - geometry.availableSplit) <= 2, "split fills remaining height");
+  for (const action of geometry.actions) {
+    assert.ok(action.top >= 0 && action.bottom <= geometry.height + 1, action.id + " stays visible");
+  }
+  return geometry;
+}
+
 app.disableHardwareAcceleration();
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "morrow-compose-window-")));
 
@@ -239,6 +276,7 @@ app.whenReady().then(async () => {
     await sleep(50);
   }
   assert.equal(opened.length, 1, "new mail opens one compose window");
+  assertNativeFit(opened[0], shellWin);
   const shellShot = await shot(shellWin, "compose-window-shell");
   shellWin.focus();
   shellWin.webContents.focus();
@@ -296,7 +334,30 @@ app.whenReady().then(async () => {
   assert.equal(dirty.isDestroyed(), true);
   assert.equal(composeWindowsOpen().length, 0);
 
-  await shellWin.webContents.executeJavaScript(`presentCompose(composeSeed(${JSON.stringify(message)}, "reply", ${JSON.stringify(account.email)}))`, true);
+  await shellWin.webContents.executeJavaScript(`document.querySelector('[data-testid="mail-list-message-row"]').click()`, true);
+  await waitFor(shellWin, `!!document.querySelector('#reader [data-action="reply-all"]')`, "reader reply actions");
+  await shellWin.webContents.executeJavaScript(`document.querySelector('#reader [data-action="reply-all"]').click()`, true);
+  let all = null;
+  const allStart = Date.now();
+  while (Date.now() - allStart < 15000) {
+    for (const win of composeWindowsOpen()) {
+      const ready = await win.webContents.executeJavaScript(`state.composeInitializing === false && document.getElementById("compose").open && document.getElementById("compose-title").textContent === "Reply All"`, true).catch(() => false);
+      if (ready) all = win;
+    }
+    if (all) break;
+    await sleep(50);
+  }
+  assert.ok(all, "Reply All action opens its own compose window");
+  assertNativeFit(all, shellWin);
+  assert.equal(await all.webContents.executeJavaScript(`
+    document.getElementById("compose-to").value.includes("charles.babbage@example.com")
+    && document.getElementById("compose-cc").value.includes("grace@example.com")
+    && document.getElementById("compose-cc").value.includes("mary@example.com")
+    && !document.getElementById("compose-cc").value.includes("ada.lovelace@example.com")
+  `, true), true, "Reply All preserves participants and excludes self");
+  await assertComposeGeometry(all);
+  await closeClean(all);
+  await shellWin.webContents.executeJavaScript(`document.querySelector('#reader [data-action="reply"]').click()`, true);
   let reply = null;
   const replyStart = Date.now();
   while (Date.now() - replyStart < 15000) {
@@ -308,6 +369,8 @@ app.whenReady().then(async () => {
     await sleep(50);
   }
   assert.ok(reply, "reply opens a compose window with the quote");
+  assertNativeFit(reply, shellWin);
+  assert.equal(await reply.webContents.executeJavaScript(`document.getElementById("compose-cc").value`, true), "", "Reply does not inherit Reply All recipients");
   assert.equal(await reply.webContents.executeJavaScript(`
     document.getElementById("compose-quote-body").textContent.includes("Earlier conversation: preserve the original table.")
     && composePayload(composeAccount()).body.includes("Earlier conversation: preserve the original table.")
@@ -316,6 +379,25 @@ app.whenReady().then(async () => {
   assert.equal(shellStillClosed, true);
   await waitFor(reply, `document.title.includes("Reply")`, "reply title");
   assert.ok(reply.getTitle().includes("Reply"));
+  const baseline = await reply.webContents.executeJavaScript(`composeSnapshot()`, true);
+  const geometry = [];
+  for (const [width, height] of [[1200, 900], [800, 640], [720, 560], [1200, 900]]) {
+    reply.setContentSize(width, height);
+    await waitFor(reply, `innerWidth === ${width} && innerHeight === ${height} && document.getElementById("compose").dataset.layout === "${width >= 900 ? "wide" : "narrow"}"`, "compose resize");
+    geometry.push(await assertComposeGeometry(reply));
+    await reply.webContents.executeJavaScript(`
+      document.getElementById("compose-editing-help").open = true;
+      document.getElementById("compose-schedule-tools").open = true;
+      document.querySelector(".compose-draft").scrollTop = 10000;
+    `, true);
+    await assertComposeGeometry(reply);
+    assert.equal(await reply.webContents.executeJavaScript(`composeSnapshot()`, true), baseline, "resizing/help never alters draft content");
+    await reply.webContents.executeJavaScript(`
+      document.getElementById("compose-editing-help").open = false;
+      document.getElementById("compose-schedule-tools").open = false;
+      document.querySelector(".compose-draft").scrollTop = 0;
+    `, true);
+  }
   const replyShot = await shot(reply, "compose-window-reply");
   await reply.webContents.executeJavaScript(`
     const editor = document.getElementById("compose-editor");
@@ -340,7 +422,7 @@ app.whenReady().then(async () => {
   assert.equal(queued[0].payload.outbox, true);
   assert.equal(sentChannels.filter((channel) => channel === "mail:send").length, 0);
 
-  console.log(JSON.stringify({ ok: true, shots: [shellShot, discardShot, replyShot], consoleNotes }));
+  console.log(JSON.stringify({ ok: true, shots: [shellShot, discardShot, replyShot], geometry, consoleNotes }));
   app.exit(0);
 }).catch((error) => {
   console.error(error);

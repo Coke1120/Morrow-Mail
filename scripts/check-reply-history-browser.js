@@ -37,7 +37,8 @@ async function run() {
     await page.evaluate(async () => {
       const message = (id, text) => ({ id, accountId: "fixture", threadId: "thread", bodyEpoch: 0,
         bodyComplete: true, hasBody: true, from: id + " <" + id + "@fixture.invalid>",
-        to: ["owner@fixture.invalid"], subject: "Fictional delivery plan", textBody: text });
+        to: ["owner@fixture.invalid", "teammate@fixture.invalid"], cc: ["reviewer@fixture.invalid"],
+        subject: "Fictional delivery plan", textBody: text });
       globalThis.messages = [message("older", Array.from({ length: 45 }, (_, i) => "Earlier detail " + (i + 1) + ": retain the fictional proposal.").join("\n\n")),
         message("previous", "Previous answer: include the appendix."), message("source", "Please confirm the fictional plan."), message("later", "Later message must not be included.")];
       messages[1].htmlBody = '<p>Previous answer: <em>include the appendix.</em></p><ul><li>Earlier HTML item</li></ul>';
@@ -63,6 +64,9 @@ async function run() {
       await openCompose(composeSeed(messages[2], "reply", "owner@fixture.invalid"));
     });
     await page.waitForFunction(() => state.composeInitializing === false);
+    assert.equal(await page.locator("#compose-to").inputValue(), "source <source@fixture.invalid>");
+    assert.equal(await page.locator("#compose-cc").inputValue(), "");
+    assert.equal(await page.locator("#compose-editing-help").evaluate(node => node.open), false);
     assert.equal(await page.locator(".compose-quote-message").count(), 3);
     assert.match(await page.locator("#compose-quote-body").innerText(), /Earlier detail 45/);
     assert.match(await page.locator("#compose-editor").innerText(), /Please confirm.*Previous answer.*Earlier detail 45/s);
@@ -84,18 +88,50 @@ async function run() {
     assert.match(payload, /Earlier detail 45/);
     assert.match(payload, /Previous answer/);
     assert.doesNotMatch(payload, /Later message/);
-    for (const width of [1280, 800, 720]) for (const theme of ["light", "dark"]) {
-      await page.setViewportSize({ width, height: width === 720 ? 700 : 900 });
+    for (const [width, height] of [[1280, 900], [1000, 740], [800, 640], [720, 560]]) for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
       await page.evaluate(theme => { document.documentElement.dataset.theme = theme; syncComposeLayout(); }, theme);
       await page.waitForFunction(width => $("compose").dataset.layout === (width >= 900 ? "wide" : "narrow"), width);
       const layout = await page.evaluate(() => {
         const pane = $("compose-quote-body"), editor = $("compose-editor"), dialog = $("compose");
-        return { paneHeight: pane.clientHeight, paneScroll: pane.scrollHeight,
-          editorHeight: editor.getBoundingClientRect().height, dialogWidth: dialog.clientWidth, dialogScroll: dialog.scrollWidth };
+        const split = $("compose-split"), form = $("compose-form"), formStyle = getComputedStyle(form);
+        const margins = node => { const s = getComputedStyle(node); return parseFloat(s.marginTop) + parseFloat(s.marginBottom); };
+        const fixed = [...form.children].filter(node => node !== split && getComputedStyle(node).display !== "none")
+          .reduce((height, node) => height + node.getBoundingClientRect().height + margins(node), 0);
+        const availableSplit = form.clientHeight - parseFloat(formStyle.paddingTop) - parseFloat(formStyle.paddingBottom) - fixed - margins(split);
+        return { availableSplit, paneHeight: pane.clientHeight, paneScroll: pane.scrollHeight,
+          editorHeight: editor.getBoundingClientRect().height, editorScroll: editor.scrollHeight,
+          dialogWidth: dialog.clientWidth, dialogScroll: dialog.scrollWidth,
+          draftHeight: document.querySelector(".compose-draft").clientHeight,
+          splitHeight: $("compose-split").clientHeight,
+          quoteHeight: $("compose-quote").getBoundingClientRect().height };
       });
-      assert.ok(layout.paneHeight > 30 && layout.editorHeight > 30, "history and editor remain usable");
+      assert.ok(layout.paneHeight > 20 && layout.editorHeight >= 180, "history scrolls and editor keeps its usable minimum");
       assert.ok(layout.paneScroll > layout.paneHeight, "long history scrolls inside its pane");
+      assert.ok(layout.editorScroll > layout.editorHeight, "long editable quote scrolls inside Message");
+      assert.ok(Math.abs(layout.splitHeight - layout.availableSplit) <= 2, "split uses the available window height");
+      if (width < 900) {
+        assert.ok(layout.quoteHeight <= 181 && layout.quoteHeight <= layout.splitHeight * 0.25 + 1, "stacked preview leaves the draft most of the height");
+      } else {
+        assert.ok(layout.draftHeight >= layout.splitHeight - 1, "wide draft fills the split");
+      }
       assert.ok(layout.dialogScroll <= layout.dialogWidth + 2, "no horizontal compose overflow");
+      const assertActions = async () => {
+        for (const id of ["compose-send", "compose-save", "compose-close"]) {
+          const action = await page.locator("#" + id).boundingBox();
+          assert.ok(action.y >= 0 && action.y + action.height <= height + 1, id + " remains in the viewport");
+        }
+      };
+      await assertActions();
+      // Expanded optional controls use the draft's overflow, never the footer.
+      await page.locator("#compose-editing-help").evaluate(node => { node.open = true; });
+      await page.locator("#compose-schedule-tools").evaluate(node => { node.open = true; });
+      await page.locator("#compose-schedule").scrollIntoViewIfNeeded();
+      await assertActions();
+      assert.ok(await page.locator("#compose-editor").evaluate(node => node.getBoundingClientRect().height >= 180));
+      await page.locator("#compose-editing-help").evaluate(node => { node.open = false; });
+      await page.locator("#compose-schedule-tools").evaluate(node => { node.open = false; });
+      await page.locator(".compose-draft").evaluate(node => { node.scrollTop = 0; });
       const quoteLayout = await page.evaluate(() => {
         const editor = $("compose-editor"), quote = editor.querySelector("[data-compose-reply-html]");
         const readOnly = $("compose-quote-body").querySelector(".body.is-html");
@@ -154,6 +190,10 @@ async function run() {
     await page.locator("#draft-close-discard").click();
     assert.equal(await page.evaluate(() => closing), true);
     await page.evaluate(async () => { await openCompose(composeSeed(messages[2], "all", "owner@fixture.invalid")); });
+    assert.equal(await page.locator("#compose-to").inputValue(), "source <source@fixture.invalid>");
+    assert.match(await page.locator("#compose-cc").inputValue(), /teammate@fixture.invalid/);
+    assert.match(await page.locator("#compose-cc").inputValue(), /reviewer@fixture.invalid/);
+    assert.doesNotMatch(await page.locator("#compose-cc").inputValue(), /owner@fixture.invalid/);
     assert.equal(await page.locator(".compose-quote-message").count(), 3, "repeated open does not duplicate history");
     assert.equal(await page.locator("#compose-editor [data-compose-reply-quote]").count(), 1);
     assert.equal((await page.evaluate(() => composePayload(composeAccount()).body)).match(/Please confirm the fictional plan/g).length, 1);
@@ -168,6 +208,9 @@ async function run() {
     assert.match(await feature.innerText(), /safe HTML formatting/);
     assert.match(await feature.innerText(), /layout defaults for tables, images and spacing/);
     assert.match(await feature.innerText(), /Remote images and CSS resources stay blocked/);
+    const composeFeature = page.locator(".feature-card").filter({ has: page.locator("h4", { hasText: "Compose in its own window" }) });
+    assert.match(await composeFeature.innerText(), /1200 × 900/);
+    assert.match(await composeFeature.innerText(), /Editing and attachment help is a collapsed disclosure/);
     await feature.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(output, "reply-editable-features.png") });
     assert.deepEqual(errors, []);

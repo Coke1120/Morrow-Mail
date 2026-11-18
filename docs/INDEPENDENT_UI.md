@@ -1,3 +1,14 @@
+Compose windows open at up to 1200 × 900, fitted inside the work area of the
+window that opened them, including a separate reader on another display.
+The split fills the available height; Message grows with the window and scrolls
+long quotes internally. Send, Save draft and Close remain outside the scrolling
+draft controls. On narrow windows the stacked reference preview is height-limited;
+Collapse and Hide original preview remain available. The saved wide-layout divider
+width is unchanged. Editing and attachment help starts collapsed; file preparation
+and errors stay visible. Expanded help and compact layouts can scroll the draft
+controls without hiding the bottom actions. These changes do not alter recipients,
+quoted content, draft save/resume, send review or scheduling.
+
 Visible Date, Time, Recipient, Sender and Subject columns can be resized using their right-edge handles, or Left / Right on a focused handle (Shift for larger steps). Escape cancels; Delete / Backspace or double-clicking the handle restores its responsive default. Width overrides are saved in settings.json by column ID independently of ordering and visibility; untouched columns keep responsive defaults. Narrow layouts scroll horizontally without changing the reading-pane layout.
 
 The mail-list Date column shows Today or Yesterday for those local calendar days,
