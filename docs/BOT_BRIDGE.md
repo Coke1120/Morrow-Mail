@@ -272,7 +272,9 @@ The adapter calls existing single-message operations sequentially. All normal
 permission, account, rate and provider-journal checks still apply separately.
 The response contains one result per requested ID: check its `state` and
 `providerConfirmed`, not just the top-level `ok`. Pending is not confirmation;
-denied, uncertain, or interrupted batches may have partial effects.
+denied, uncertain, or interrupted batches may have partial effects. If the bridge cannot
+confirm an attempted item after an authentication error, the item is reported
+as `unknown` and the remaining items are not attempted.
 An uncertain reply, credential change or permission/rate refusal stops later
 items. Cancellation cannot undo an earlier submission and may suppress the
 batch response. To inspect an original action, use its original UUID and

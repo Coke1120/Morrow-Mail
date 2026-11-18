@@ -151,8 +151,9 @@ async function invokeBatch(config, operation, args, signal, invoke) {
       if (!result.ok && Object.hasOwn(ERRORS, result.error?.code)) {
         const errorCode = result.error.code;
         if (!ITEM_ERRORS.has(errorCode)) stopped = errorCode;
-        // An INTERNAL error can occur after the durable claim, not just before admission.
-        results.push({ ...item, state: errorCode === "INTERNAL" ? "unknown" : "failed", errorCode, providerConfirmed: false });
+        // Neither response proves the action was rejected before the durable claim.
+        const uncertain = errorCode === "INTERNAL" || errorCode === "UNAUTHENTICATED";
+        results.push({ ...item, state: uncertain ? "unknown" : "failed", errorCode, providerConfirmed: false });
         continue;
       }
       const row = result.data;
