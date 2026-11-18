@@ -199,6 +199,87 @@ test("mailto uses reviewed compose defaults once, without saving or sending", as
   assert.equal(f.calls.length, 1); assert.equal(f.opened.length, 1);
 });
 
+test("Google Groups mailto uses the reader menu, explains leaving, and never sends", async t => {
+  const destination = "googlegroups-manage+123456789012+unsubscribe@googlegroups.com";
+  for (const role of ["shell", "reader"]) {
+    const f = fixture(t, role), result = deferred();
+    f.show({ unsubscribe: { kind: "mailto", destination } });
+    assert.equal(f.get(".unsubscribe-banner"), null);
+    assert.equal(f.get('[data-action="unsubscribe"]'), null);
+    assert.equal(f.status(), "");
+    f.ui.run("openOrganizeMenu(state.email, 0, 0)");
+    assert.equal(f.get('[data-action="leave-google-group"]'), null, "list menu stays unchanged");
+    const open = () => {
+      f.get('[data-action="organize"]').click();
+      return f.get('#organize-menu [data-action="leave-google-group"]');
+    };
+    const action = open();
+    assert.equal(action.textContent, "Leave Google Group…");
+    assert.equal(action.getAttribute("role"), "menuitem");
+    assert.match(action.getAttribute("aria-description"), /requests to leave the group, not just stop mail from this sender/);
+    assert.deepEqual(f.calls, []);
+    f.answer(() => result.promise);
+    action.click();
+    assert.match(f.status(), /requests to leave the group.*Nothing is sent until you choose Send.*Waiting for the review/);
+    assert.equal(f.get("#organize-menu").hidden, true);
+    assert.equal(open().disabled, true);
+    result.resolve({ status: "draft", draft: { accountId: "alpha", sourceMessageId: "one", to: destination, subject: "Unsubscribe", text: "" } });
+    await settle();
+    assert.deepEqual(f.calls, [{ channel: "mail:unsubscribe", payload: { accountId: "alpha", emailId: "one" } }]);
+    assert.equal(f.opened.length, 1);
+    assert.equal(f.opened[0].to, destination);
+    assert.equal(f.opened[0].unsubscribeDraft, true);
+    assert.match(f.opened[0].status, /requests to leave the group.*Nothing is sent until you choose Send/);
+    assert.match(f.status(), /opened for review.*removal is not confirmed/);
+    assert.equal(open().disabled, true);
+  }
+  const f = fixture(t);
+  f.show({ unsubscribe: { kind: "mailto", destination: "synthetic-news+unsubscribe@googlegroups.com" } });
+  f.get('[data-action="organize"]').click();
+  assert.equal(f.get('[data-action="leave-google-group"]').textContent, "Leave Google Group…");
+  for (const unsubscribe of [
+    { kind: "mailto", destination: destination + ".fixture.invalid" },
+    { kind: "mailto", destination: destination + "\n" },
+    { kind: "mailto", destination: "person@googlegroups.com" },
+    { kind: "mailto", destination: "+unsubscribe@googlegroups.com" },
+    { kind: "web", destination },
+  ]) {
+    f.show({ unsubscribe });
+    assert.ok(f.get('[data-action="unsubscribe"]'), "non-matching offers retain the normal banner");
+    f.get('[data-action="organize"]').click();
+    assert.equal(f.get('[data-action="leave-google-group"]'), null);
+  }
+  assert.deepEqual(f.calls, []);
+});
+
+test("stale reader menu and late Google Groups draft stay pinned to the exact source", async t => {
+  const f = fixture(t), result = deferred();
+  const group = { unsubscribe: { kind: "mailto", destination: "synthetic-news+unsubscribe@googlegroups.com" } };
+  const open = () => {
+    f.get('[data-action="organize"]').click();
+    return f.get('[data-action="leave-google-group"]');
+  };
+  f.show(group);
+  const stale = open();
+  f.show({ ...group, accountId: "beta" });
+  stale.click();
+  assert.deepEqual(f.calls, []);
+  f.show(group);
+  f.answer(() => result.promise);
+  open().click();
+  f.show({ ...group, accountId: "beta" });
+  result.resolve({ status: "draft", draft: { accountId: "alpha", sourceMessageId: "one", to: group.unsubscribe.destination } });
+  await settle();
+  assert.deepEqual(f.opened, []);
+  assert.equal(f.status(), "");
+  f.show(group);
+  assert.match(f.status(), /ready to review.*Nothing has been sent/);
+  open().click();
+  await settle();
+  assert.equal(f.opened[0].accountId, "alpha");
+  assert.equal(f.calls.length, 1);
+});
+
 test("late mailto response waits for the source message and preserves its own mailbox", async t => {
   const f = fixture(t), result = deferred(); f.answer(() => result.promise);
   const mailto = { unsubscribe: { kind: 'mailto', destination: 'leave@fixture.invalid' } };
@@ -319,6 +400,7 @@ test("rendered Features tab describes actual providers, confirmation, and one-cl
   for (const text of [/Gmail API, Outlook, Yahoo and other IMAP/, /List-Unsubscribe/, /separate reader/, /native confirmation/,
     /Older cached mail keeps its available body/, /Reload message or Retry download/, /no automatic metadata download/,
     /does not confirm removal/, /nothing sends until you choose Send/, /without automatic Cc\/Bcc or a signature/,
+    /Google Groups \+unsubscribe@googlegroups\.com mailto addresses/, /Leave Google Group…/, /Organize menu/, /requests to leave the group/,
     /RFC 8058 one-click requests require/, /independently verified DKIM/, /No bulk unsubscribe, automatic unsubscribe/]) assert.match(feature.textContent, text);
   assert.deepEqual(f.calls, []);
 });
