@@ -7,6 +7,10 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.15": [
+      "Reply and Reply All open in a roomier compose window that fits the display. The editor uses more space, the stacked original preview stays compact, and Send, Save draft and Close remain visible.",
+      "Google Groups messages no longer show a mailing-list unsubscribe banner. Leave Google Group remains available in the message actions menu and opens a reviewed draft instead of sending automatically.",
+    ],
     "0.4.14": [
       "Batch mail actions distinguish an unknown result from a confirmed failure, and Agent Todos keeps Undo when an early confirmation verifies a reversible read change.",
       "Agent → Todos puts pending decisions first, with the mailbox, a reason and an explicit due date when available. Recognized this time applies only to that message in the current window; Not me keeps it pending.",
