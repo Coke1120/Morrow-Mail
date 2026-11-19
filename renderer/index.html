@@ -110,7 +110,7 @@
       </div>
       <div class="actions">
         <div id="page-refresh-slot"><div class="sync-slot" id="sync-control">
-        <button type="button" class="ghost icon-label" id="refresh" aria-label="Sync mail" aria-busy="false" aria-describedby="body-sync">
+        <button type="button" class="ghost icon-label" id="refresh" aria-label="Sync mail" aria-busy="false" aria-describedby="body-sync-label">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="23 4 23 10 17 10"></polyline>
             <polyline points="1 20 1 14 7 14"></polyline>
@@ -120,8 +120,8 @@
           <span id="sync-label">Sync</span>
         </button>
         <p id="sync-detail" class="sync-detail" role="status" hidden></p>
-        <div id="body-sync" class="body-sync" role="tooltip" hidden>
-          <div class="body-sync-scroll" tabindex="0" role="region" aria-label="Body download activity">
+        <div id="body-sync" class="body-sync" hidden>
+          <div id="body-sync-scroll" class="body-sync-scroll" tabindex="0" role="region" aria-label="Body download activity">
             <p id="sync-tip-line" class="sync-tip-line" aria-hidden="true"></p>
             <p id="body-sync-label" role="status" aria-live="polite">Bodies · Checking activity…</p>
             <p class="hint">All mailboxes · full message bodies, separate from list sync.</p>
