@@ -42,4 +42,33 @@ function compactQuotes(values) {
   return { rows, repeatedBytes, sharedQuotes, messages };
 }
 
-module.exports = { compactQuotes };
+// Fallback for a large local capture. Only use a complete, unchanged earlier
+// body in this thread as evidence; that body will still go through extraction.
+// Never send an unresolved token or remove a quote-only message's entire body.
+function reduceRepeatedQuotes(sources) {
+  const originals = new Map();
+  return sources.map(source => {
+    const { source_thread_id: thread, occurred_at: at, text } = source;
+    let canonical = originals.get(thread);
+    if (!canonical) originals.set(thread, canonical = new Map());
+    const timestamp = Date.parse(at);
+    let literal = "", quoted = "", decoded = "", count = 0;
+    const flush = () => {
+      if (!quoted) return;
+      const match = canonical.has(decoded) ? decoded : decoded.endsWith("\n") ? decoded.slice(0, -1) : decoded;
+      if (canonical.get(match) < timestamp && Buffer.byteLength(match) >= 128) count++;
+      else literal += quoted;
+      quoted = ""; decoded = "";
+    };
+    for (const line of text.match(/[^\n]*\n|[^\n]+$/g) || []) {
+      if (line.startsWith(">")) { quoted += line; decoded += line.replace(/^> ?/, ""); }
+      else { flush(); literal += line; }
+    }
+    flush();
+    if (count && literal.trim()) return { ...source, extractionText: literal, repeatedQuoteBlocks: count };
+    if (Number.isFinite(timestamp) && !canonical.has(text)) canonical.set(text, timestamp);
+    return source;
+  });
+}
+
+module.exports = { compactQuotes, reduceRepeatedQuotes };

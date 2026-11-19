@@ -1880,6 +1880,64 @@ test("edited, unmarked, short, cross-thread, incomplete and cross-batch quotes r
   assert.equal(plan.chunks.flat().filter(part => part.source_token.startsWith(sources[1].source_message_id)).map(part => part.text).join(""), sources[1].text);
 });
 
+test("oversized thread sends exact repeated quotations only in the earlier complete source", async context => {
+  const sample = Array.from({ length: 190 }, (_, i) => `Synthetic original fact ${i}. Review tomorrow with the owner.`).join("\n");
+  const quote = sample.split("\n").map(line => `> ${line}`).join("\n");
+  const rows = [row("mail-1", { text_body: sample }), ...Array.from({ length: 46 }, (_, i) => row(`reply-${i}`, {
+    text_body: `Synthetic newly written reply ${i}.\n\nOn the earlier date, Ada wrote:\n${quote}`,
+    date_iso: "2026-11-02T10:00:00Z",
+  }))];
+  const fixture = memory(context, { rows });
+  const originalFingerprints = [...fixture.rows.values()].map(fingerprint);
+  const prepared = await fixture.prepare();
+  assert.ok(prepared.processing.sourceBytes > LIMITS.sourceBytes);
+  assert.ok(prepared.processing.sourceBytes < LIMITS.captureBytes);
+  assert.equal(prepared.processing.omittedRepeatBlocks, 46);
+  assert.ok(prepared.estimatedInputBytes < LIMITS.inputBytes);
+  assert.equal(prepared.coverage.included_message_count, 47);
+  assert.equal(fixture.calls.length, 0);
+  const run = await generation(fixture, prepared);
+  assert.equal((await run.terminal).phase, "completed");
+  const payloads = fixture.calls.flatMap(call => JSON.parse(call.messages[1].content));
+  assert.equal(payloads.filter(part => part.repeated_quote_blocks_not_sent === 1).length, 46);
+  assert.equal(payloads.filter(part => part.text?.includes("Synthetic original fact 42.")).length, 1);
+  assert.ok(payloads.some(part => part.text?.includes("Synthetic newly written reply 45.")));
+  assert.ok(payloads.every(part => !part.text?.includes("> Synthetic original fact")));
+  assert.deepEqual([...fixture.rows.values()].map(fingerprint), originalFingerprints);
+  assert.equal([...fixture.artifacts.values()][0].document.events.length, 47);
+  const renderer = integratedTimeline(context, { rows });
+  await renderer.ui.mounted.open(renderer.ui.email);
+  assert.match(renderer.node("timeline-processing-counts").textContent, /46 exact repeated quote blocks will not be sent again/);
+  assert.equal(renderer.calls.length, 0, "opening and reviewing the sheet sends nothing");
+});
+
+test("oversized quote fallback preserves edits, ambiguous matches, and quote-only messages", () => {
+  const { reduceRepeatedQuotes } = require("../host/timeline/quotes");
+  const body = "Distinct fictional terms and evidence. ".repeat(8);
+  const source = (text, occurred_at = "2026-11-02T10:00:00Z", source_thread_id = "same") => ({ text, occurred_at, source_thread_id });
+  const quote = `> ${body}`;
+  const edited = quote.replace("terms", "conditions");
+  const rows = [
+    source(body, "2026-11-01T10:00:00Z"), source(`Reply\n${quote}`),
+    source(`Reply\n${edited}`), source(`Reply\n${body}`), source(quote),
+    source(`Reply\n${quote}`, "2026-11-02T10:00:00Z", "different"),
+    source(`Reply\n${quote}`, "2026-11-01T10:00:00Z"),
+  ];
+  const result = reduceRepeatedQuotes(rows);
+  assert.equal(result[1].extractionText, "Reply\n");
+  for (const i of [0, 2, 3, 4, 5, 6]) assert.equal(result[i], rows[i]);
+});
+
+test("local scan rejects unmatched mail past its hard cap without an AI call", async context => {
+  const fixture = memory(context, { rows: [row("too-large", { text_body: "x".repeat(LIMITS.captureBytes + 1) })] });
+  await assert.rejects(async () => fixture.prepare(), error => {
+    assert.equal(error.budget.kind, "capture-bytes");
+    assert.equal(error.budget.limit, LIMITS.captureBytes);
+    return true;
+  });
+  assert.equal(fixture.calls.length, 0);
+});
+
 test("body capture diagnostics count only supported included sources and report UTF-8 bytes", context => {
   const omitted = row("unsupported", { text_body: "x".repeat(LIMITS.sourceBytes), subject: "x".repeat(501) });
   const fixture = memory(context, { rows: [row(), omitted] });
@@ -1899,7 +1957,7 @@ test("processing help stays synchronized and stale counts disappear after edited
   await fixture.ui.mounted.open(fixture.ui.email);
   assert.equal(fixture.node("timeline-processing").hidden, false);
   assert.match(fixture.node("timeline-processing-counts").textContent, /serialized input bytes/);
-  assert.match(fixture.node("timeline-processing").textContent, /Edited, uncertain and cross-batch quotes stay intact/);
+  assert.match(fixture.node("timeline-processing").textContent, /Edited or uncertain quotes stay intact/);
   fixture.node("timeline-contacts").dispatchEvent(new fixture.ui.window.Event("input"));
   assert.equal(fixture.node("timeline-processing").hidden, true);
   assert.match(read("renderer/features-catalog.js"), /512,000 UTF-8 bytes/);
