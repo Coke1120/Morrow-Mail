@@ -8032,6 +8032,8 @@ function currentFolderSync() {
 let bodySyncEvents = 0;
 let bodySyncPaintTimer = null;
 let bodySyncRead = null;
+let bodySyncRowsKey = "";
+let bodySyncOpening = false;
 
 function rememberBodySync(snapshot) {
   if (!snapshot || typeof snapshot.session !== "string" || !Number.isFinite(snapshot.sequence) || !Array.isArray(snapshot.accounts)) return false;
@@ -8050,7 +8052,7 @@ function bodySyncCopy(row) {
     offline: "Network reports offline; existing requests may still finish",
     sleeping: "Waiting for the computer to wake",
     "source-limit": "Reached the 3 MiB source limit; available content is kept. No action needed",
-    incomplete: "Body remains incomplete; available content is kept",
+    incomplete: "A recent message download is incomplete; available text is kept",
     "message-changed": "Message changed; refresh the folder or reopen it",
     "download-failed": "Body download did not finish; normal mail activity can retry",
   };
@@ -8075,6 +8077,22 @@ function bodySyncView(snapshot, accounts, unavailable = false) {
   return { rows, state: active, label: "Bodies · " + label, help };
 }
 
+async function openIncompleteBody(accountId) {
+  if (bodySyncOpening || state.view !== "mail") return;
+  bodySyncOpening = true;
+  try {
+    const target = await call("mail:getIncompleteBodyTarget", { accountId });
+    if (state.view !== "mail" || !state.accounts.some(account => account.id === accountId)) return;
+    if (target?.accountId === accountId && typeof target.messageId === "string" && target.messageId) {
+      await openSenderReader({ id: target.messageId, accountId });
+    } else showStatus("That message is no longer reported as incomplete. No action needed.");
+  } catch {
+    if (state.view === "mail") showStatus("Could not open the incomplete message. Check body activity and try again.", true);
+  } finally {
+    bodySyncOpening = false;
+  }
+}
+
 function paintBodySyncStatus() {
   const root = $("body-sync"), label = $("body-sync-label"), list = $("body-sync-accounts");
   if (!root || !label || !list) return;
@@ -8082,7 +8100,7 @@ function paintBodySyncStatus() {
   root.hidden = !show;
   const button = $("refresh");
   if (button && typeof button.setAttribute === "function") {
-    if (show) button.setAttribute("aria-describedby", "body-sync");
+    if (show) button.setAttribute("aria-describedby", "body-sync-label");
     else if (typeof button.removeAttribute === "function") button.removeAttribute("aria-describedby");
   }
   if (!show) return;
@@ -8091,13 +8109,30 @@ function paintBodySyncStatus() {
   root.setAttribute?.("data-state", view.state);
   $("body-sync-help").textContent = view.help;
   if (!state.bodySync && !state.bodySyncUnavailable) return;
+  const rowsKey = JSON.stringify(view.rows.map(row => [row.account.id, accountLabel(row.account), row.copy, !!row.canOpenIncomplete]));
+  if (rowsKey === bodySyncRowsKey) return;
+  bodySyncRowsKey = rowsKey;
+  const focusedAccount = document.activeElement?.getAttribute?.("data-incomplete-account");
+  let replacementFocus;
   list.replaceChildren(...view.rows.map(row => {
     const item = document.createElement("li"), name = document.createElement("strong"), detail = document.createElement("span");
     name.textContent = accountLabel(row.account);
     detail.textContent = " · " + row.copy.label + " — " + row.copy.detail;
     item.append(name, detail);
+    if (row.canOpenIncomplete) {
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "ghost body-sync-open";
+      action.textContent = "View incomplete message";
+      action.setAttribute("aria-label", "View incomplete message for " + accountLabel(row.account));
+      action.setAttribute("data-incomplete-account", row.account.id);
+      action.addEventListener("click", () => { void openIncompleteBody(row.account.id); });
+      item.append(action);
+      if (focusedAccount === row.account.id) replacementFocus = action;
+    }
     return item;
   }));
+  if (focusedAccount) (replacementFocus || $("body-sync-scroll"))?.focus?.({ preventScroll: true });
 }
 
 function acceptBodySync(snapshot) {

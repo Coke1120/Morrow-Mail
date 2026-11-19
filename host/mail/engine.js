@@ -2687,9 +2687,16 @@ let fillKey = null;
 let fillRunning = false;
 let bodyOnline = true;
 let bodySleeping = false;
-const bodyProgress = createBodyProgress({ onChange() {
-  if (ready) broadcast("mail:bodySyncStatus", bodySyncSnapshot());
-} });
+const bodyProgress = createBodyProgress({
+  onChange() { if (ready) broadcast("mail:bodySyncStatus", bodySyncSnapshot()); },
+  validateIncomplete(accountId, generation, identity) {
+    if (!db.isReady() || generation !== (accountEpochs.get(accountId) || 0)) return false;
+    const row = db.messageById(identity.id, { headersOnly: true });
+    return !!(row && row.account_id === accountId && row.folder_path === identity.folderPath
+      && row.uid === identity.uid && row.uid_validity === identity.uidValidity && row.gmail_id === identity.gmailId
+      && Number(row.uid) > 0 && !row.is_draft && !row.draft_pending && row.body_complete !== 1 && !row.body_retry_blocked);
+  },
+});
 
 function bodySyncSnapshot() {
   return bodyProgress.snapshot({
@@ -2987,7 +2994,8 @@ async function ensureBody(row, options) {
       ...(account.mail_transport === "gmail_api" ? require("./reply-forward-state").patch(fetched) : {}),
     }, { disposition: fetched });
     bodyResult = metadataOnly || fetched.bodyComplete ? "done" : fetched.bodySourceLimited ? "source-limit" : "incomplete";
-    return db.messageById(row.id);
+    row = db.messageById(row.id);
+    return row;
     }, background ? { background: true } : undefined);
   } catch (error) {
     bodyResult = http.isRateLimit(error) ? "rate-limit"
@@ -3016,7 +3024,9 @@ async function ensureBody(row, options) {
     if (options?.reload && !background) throw Object.assign(new Error("The message could not be downloaded again. Cached content was retained."), { code: "body_download_failed" });
     return current;
   } finally {
-    bodyProgress.finish(bodyTask, bodyResult);
+    bodyProgress.finish(bodyTask, bodyResult, bodyResult === "incomplete" && row ? {
+      id: row.id, folderPath: row.folder_path, uid: row.uid, uidValidity: row.uid_validity, gmailId: row.gmail_id,
+    } : null);
   }
 }
 
@@ -4774,6 +4784,11 @@ function answer(channel, args, event) {
       return ok(publicSync(params));
     case "mail:getBodySyncStatus":
       return ok(bodySyncSnapshot());
+    case "mail:getIncompleteBodyTarget": {
+      const accountId = params?.accountId;
+      if (typeof accountId !== "string" || !accountId || accountId.length > 512 || !db.accountById(accountId)) return ok(null);
+      return ok(bodyProgress.incompleteTarget(accountId, accountEpochs.get(accountId) || 0));
+    }
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};

@@ -48,6 +48,23 @@ function trackerChecks() {
   restarted.start(privateTask); restarted.finish(privateTask, "Private provider error");
   const publicText = JSON.stringify(restarted.snapshot({ accounts: [{ id: "a", email: "private@example.test", subject: "Private subject" }] }));
   assert.doesNotMatch(publicText, /private@example|Private|token|percentage|remaining|total/);
+  let valid = true;
+  const affected = createBodyProgress({ validateIncomplete: (accountId, generation, identity) =>
+    valid && accountId === "a" && generation === 3 && identity.id === "private-local-id" });
+  const mailbox = { id: "a", generation: 3 };
+  const identity = { id: "private-local-id" };
+  affected.finish(affected.queue("a", "visible", 3), "incomplete", identity);
+  affected.finish(affected.queue("a", "visible", 3), "done", { id: "unrelated" });
+  const actionable = affected.snapshot({ accounts: [mailbox, { id: "b", generation: 3 }] });
+  assert.equal(actionable.accounts[0].canOpenIncomplete, true);
+  assert.equal(actionable.accounts[1].canOpenIncomplete, false);
+  assert.doesNotMatch(JSON.stringify(actionable), /private-local-id/);
+  assert.deepEqual(affected.incompleteTarget("a", 3), { accountId: "a", messageId: "private-local-id" });
+  valid = false;
+  assert.equal(affected.incompleteTarget("a", 3), null, "a repaired or deleted body cannot be reopened from stale activity");
+  valid = true;
+  affected.finish(affected.queue("a", "visible", 3), "incomplete", identity);
+  assert.equal(affected.incompleteTarget("a", 4), null, "a reconnect invalidates the old target");
   const brokenObserver = createBodyProgress({ onChange() { throw Error("Observer failed"); } });
   assert.doesNotThrow(() => brokenObserver.finish(brokenObserver.queue("a", "open"), "done"));
 }
@@ -57,6 +74,7 @@ function fixture() {
   const element = () => ({ textContent: "", children: [], hidden: false, open: false, attrs: {}, dataset: {},
     classList: { add() {}, remove() {}, toggle() {} },
     setAttribute(k,v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return this.attrs[k] ?? null; }, addEventListener(k, listener) { (this.handlers ||= {})[k] = listener; },
     replaceChildren(...items) { this.children = items; },
     append(...items) { this.children.push(...items); }, appendChild(item) { this.children.push(item); },
     querySelectorAll() { return []; }, closest() { return null; } });
@@ -91,7 +109,7 @@ async function rendererChecks() {
   assert.match(node("body-sync-help").textContent, /365 days/);
   assert.doesNotMatch(text(node("body-sync")), /100%|all bodies cached|remaining/i);
   assert.equal(node("body-sync").hidden, false);
-  assert.equal(node("refresh").attrs["aria-describedby"], "body-sync");
+  assert.equal(node("refresh").attrs["aria-describedby"], "body-sync-label");
   assert.equal(document.activeElement, node("refresh"), "painting the tooltip leaves focus on Sync");
   ui.run("state.view='calendar';paintBodySyncStatus()"); assert.equal(node("body-sync").hidden, true);
   assert.equal(node("refresh").attrs["aria-describedby"], undefined);
@@ -120,14 +138,28 @@ async function rendererChecks() {
   ui.run("state.view='mail';state.accountId='b';state.folderId='Inbox';rememberSyncStatus({accountId:'b',folderId:'Inbox',accountLabel:'Beta',folderLabel:'Inbox',state:'done',lastSuccessAt:1});paintSyncControl();paintBodySyncStatus()");
   assert.match(node("sync-tip-line").textContent, /Beta/);
   assert.match(node("refresh").title, /Beta/, "sync detail stays on the title until hover");
+  ui.context.snapshot = { ...payload, session: "restarted", startedAt: 2000, sequence: 7,
+    accounts: [{ accountId: "b", state: "error", reason: "incomplete", canOpenIncomplete: true }] };
+  ui.run("rememberBodySync(snapshot);paintBodySyncStatus()");
+  const action = node("body-sync-accounts").children[0].children[2];
+  assert.equal(action.textContent, "View incomplete message");
+  assert.equal(action.attrs["aria-label"], "View incomplete message for Beta");
+  ui.run("globalThis.requests=[];globalThis.opened=[];call=async(ch,args)=>{requests.push({ch,args});return {accountId:'b',messageId:'private-id'}};openSenderReader=async row=>opened.push(row)");
+  assert.equal(ui.run("requests.length"), 0, "painting does not resolve any message identifier");
+  action.handlers.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ui.run("JSON.stringify(requests)"), '[{"ch":"mail:getIncompleteBodyTarget","args":{"accountId":"b"}}]');
+  assert.equal(ui.run("JSON.stringify(opened)"), '[{"id":"private-id","accountId":"b"}]');
+  ui.run("call=()=>new Promise(resolve=>globalThis.resolveTarget=resolve);globalThis.pendingTarget=openIncompleteBody('b');state.view='settings';resolveTarget({accountId:'b',messageId:'late'})");
+  await ui.run("pendingTarget");
+  assert.equal(ui.run("opened.length"), 1, "a late result cannot open a reader after leaving Mail");
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root,"renderer/index.html"),"utf8");
   const head = html.slice(html.indexOf('id="list-head"'), html.indexOf('id="message-list"'));
   const sync = html.slice(html.indexOf('id="sync-control"'), html.indexOf('id="search-form"'));
   assert.doesNotMatch(head, /body-sync/, "list chrome has no Bodies disclosure");
   assert.doesNotMatch(html, /<details id="body-sync"/);
-  assert.match(sync, /id="refresh"[^>]*aria-describedby="body-sync"/);
-  assert.match(sync, /id="body-sync" class="body-sync" role="tooltip"/);
+  assert.match(sync, /id="refresh"[^>]*aria-describedby="body-sync-label"/);
+  assert.match(sync, /id="body-sync" class="body-sync" hidden/);
   assert.match(sync, /class="body-sync-scroll" tabindex="0" role="region"/);
   assert.match(sync, /id="sync-tip-line"[^>]*aria-hidden="true"/);
   assert.match(html, /id="body-sync-label" role="status" aria-live="polite"/);
@@ -138,7 +170,7 @@ async function rendererChecks() {
   assert.match(css, /\.body-sync:not\(\[hidden\]\):focus-within/);
   assert.match(css, /\.body-sync-scroll\s*\{[^}]*overflow: auto;[^}]*overscroll-behavior: contain;/);
   const preload = fs.readFileSync(path.join(root,"renderer/preload.js"),"utf8");
-  assert.match(preload, /"mail:getBodySyncStatus"/); assert.match(preload, /"mail:bodySyncStatus"/);
+  assert.match(preload, /"mail:getBodySyncStatus"/); assert.match(preload, /"mail:getIncompleteBodyTarget"/); assert.match(preload, /"mail:bodySyncStatus"/);
   const catalog = require("../renderer/features-catalog");
   ui.context.window.morrowFeaturesCatalog = catalog;
   ui.run("paintFeatureCatalog()");

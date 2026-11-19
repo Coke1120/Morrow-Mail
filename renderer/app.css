@@ -791,6 +791,7 @@ button.icon-label svg { display: block; flex: none; }
 .body-sync[data-state="running"] #body-sync-label { color: var(--accent-ink); }
 .body-sync ul { display: grid; gap: 5px; list-style: none; margin: 6px 0; padding: 0; }
 .body-sync li { overflow-wrap: anywhere; }
+.body-sync .body-sync-open { display: block; margin-top: 4px; }
 .body-sync strong { color: var(--ink); font-weight: 600; }
 .body-sync .hint { margin: 4px 0; font-size: inherit; }
 

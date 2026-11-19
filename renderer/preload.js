@@ -150,6 +150,7 @@ const INVOKE = [
   "mail:listFromCache",
   "mail:getSyncStatus",
   "mail:getBodySyncStatus",
+  "mail:getIncompleteBodyTarget",
   "mail:listFromNetwork",
   "host:getDebugLog",
   "mail:openEmail",

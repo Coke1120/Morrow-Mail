@@ -7,6 +7,10 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.16": [
+      "When a long Timeline contains repeated reply history, Morrow can avoid sending an exact quote twice. Review the excluded repeats before generating; the original mail and separate reply entries are kept.",
+      "Sync body activity can open a recently affected message directly. Review available text and choose Retry download in the reader.",
+    ],
     "0.4.15": [
       "Reply and Reply All open in a roomier compose window that fits the display. The editor uses more space, the stacked original preview stays compact, and Send, Save draft and Close remain visible.",
       "Google Groups messages no longer show a mailing-list unsubscribe banner. Leave Google Group remains available in the message actions menu and opens a reviewed draft instead of sending automatically.",
