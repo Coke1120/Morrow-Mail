@@ -183,9 +183,10 @@ the reserved output allowance. Providers must honor their output-limit contract.
 These are not precise monetary limits. Limits can stop a large selection after
 some calls; earlier provider charges cannot be refunded by cancellation.
 
-A separate 512,000-byte ceiling bounds included complete cached body text.
-Unsupported metadata is omitted before counting; a source-byte rejection reports
-the running total at the first crossing, not an exhaustive selection total. Fragments are
+A 1,024,000-byte ceiling bounds local scanning of supported complete cached bodies.
+The local-scan error shows the total at the first crossing. Above 512,000 raw bytes,
+Morrow tries exact quote deduplication before applying the 512,000-byte body limit
+to the remaining text. Fragments are
 at most 12,000 serialized bytes and eight fragments per extraction request. These
 budgets can reject selections smaller than the 1,000-message / 200-thread ceiling;
 headers, attachment names, repeated quoted history and UTF-8 text all consume space.
@@ -201,14 +202,19 @@ Matching removes only one quote prefix per line and permits a final newline; the
 matching body must be at least 128 UTF-8 bytes. No fuzzy, semantic or boilerplate
 matching is used. Referenced content is directly present, never only a prior AI
 summary or another reference. Edited, ambiguous, unmarked, short, split or
-cross-request quotes remain literal. One event per original message is still
+cross-request quotes remain literal in the ordinary path. For an oversized capture,
+a local prepass may leave an exact marked repeat out of a later message when a
+strictly earlier, unchanged complete body in the same selected thread contains
+all that evidence. The later AI request indicates an omission without a dangling
+cross-request token. Quote-only replies keep their body if nothing but whitespace
+would remain. One event per original message is still
 required, and case date checks use the unchanged original body. A reference proves
 text reuse, never authorship, agreement or completion.
 
 **Sources and text processing** previews included raw/literal body-byte totals,
-exact repeated-quote bytes shared, per-message author/date and counts, planned
+exact repeated-quote bytes shared, the count of repeats not resent, per-message author/date and counts, planned
 initial requests and serialized input bytes. Referenced quote evidence is still
-processed with its complete source, not omitted. Attachment file contents remain
+processed with its complete source rather than transmitted again. Attachment file contents remain
 excluded; attachment names count only in serialized requests. Focus edits hide the
 stale processing preview until preparation succeeds again. No exact price or
 model-tokenizer estimate is claimed.

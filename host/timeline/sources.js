@@ -5,6 +5,7 @@ const { htmlToPlain } = require("../mail/text-encoding");
 const { validateMetadata, failure } = require("./validate");
 const { LIMITS } = require("./extract");
 const { budget } = require("./budget");
+const { reduceRepeatedQuotes } = require("./quotes");
 
 const hash = value => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function fingerprint(row) {
@@ -59,7 +60,8 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
     if (collected.size > LIMITS.messages) throw failure("timeline-selection-limit");
   }
   const rows = dedupeRows([...collected.values()]);
-  const accounts = new Map(), sourceThreads = new Map(), records = [], sources = [], omitted = [];
+  const accounts = new Map(), sourceThreads = new Map(), records = [], omitted = [];
+  let sources = [];
   let missingBodies = 0, invalidMetadata = 0, bodyBytes = 0;
   for (const selected of rows) {
     const row = db.messageById(selected.id);
@@ -90,7 +92,12 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
       bodyBytes += Buffer.byteLength(text);
       sources.push({ ...metadata, ...(phase ? { phase } : {}), subject: row.subject || "", text });
     } catch { invalidMetadata++; }
-    if (bodyBytes > LIMITS.sourceBytes) throw budget("source-bytes", bodyBytes, LIMITS.sourceBytes);
+    if (bodyBytes > LIMITS.captureBytes) throw budget("capture-bytes", bodyBytes, LIMITS.captureBytes);
+  }
+  if (bodyBytes > LIMITS.sourceBytes) {
+    sources = reduceRepeatedQuotes(sources);
+    const literalBytes = sources.reduce((sum, source) => sum + Buffer.byteLength(source.extractionText ?? source.text), 0);
+    if (literalBytes > LIMITS.sourceBytes) throw budget("source-bytes", literalBytes, LIMITS.sourceBytes);
   }
   const coverage = { selected_message_count: rows.length, included_message_count: sources.length,
     omitted_message_count: rows.length - sources.length, selection_truncated: false };

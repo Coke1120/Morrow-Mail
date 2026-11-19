@@ -111,6 +111,7 @@ function createService(dependencies) {
       messages: snapshot.records.map(record => ({ ...messagePreview(db.timelineMessage(record.id)), phase: record.phase || "main" })), caseScope: snapshot.caseScope,
       chunks: plan?.chunks.length || 0, estimatedInputBytes: plan?.estimatedInputBytes || 0,
       processing: plan?.processing || { planned: false, sourceBytes: snapshot.bodyBytes,
+        omittedRepeatBlocks: snapshot.sources.reduce((sum, source) => sum + (source.repeatedQuoteBlocks || 0), 0),
         messages: snapshot.sources.map(source => ({ subject: source.subject, from: source.from,
           occurredAt: source.occurred_at, bodyBytes: Buffer.byteLength(source.text) })) },
       ...(blocked ? { budget: blocked } : {}),
