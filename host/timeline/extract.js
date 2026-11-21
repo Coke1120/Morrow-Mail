@@ -61,12 +61,14 @@ function planChunks(sources, options = {}) {
   const emptySize = requestSize([]);
   if (emptySize > LIMITS.requestBytes) throw budget("focus-bytes", emptySize, LIMITS.requestBytes);
   const fits = rows => bytes(compactQuotes(rows).rows) <= LIMITS.chunkBytes && requestSize(rows) <= LIMITS.requestBytes;
+  // A Case Timeline always needs at least one call after extraction.
+  const extractionLimit = options.caseMode ? LIMITS.calls - 1 : LIMITS.calls;
   const chunks = [];
   let chunk = [];
   const flush = () => {
     if (!chunk.length) return;
     chunks.push(chunk); chunk = [];
-    if (chunks.length > LIMITS.calls) throw budget("chunk-count", chunks.length, LIMITS.calls);
+    if (chunks.length > extractionLimit) throw budget("chunk-count", chunks.length, extractionLimit);
   };
   for (const source of sources) {
     const evidence = { from: source.from, mail_timestamp: source.occurred_at, date_source: source.date_source };
@@ -122,7 +124,7 @@ function mergeParts(sources, candidates) {
 }
 
 async function extract({ sources, envelope, language = "en", focus, complete, signal, check = () => {}, progress = () => {} }) {
-  const requestOptions = { language, focus };
+  const requestOptions = { language, focus, caseMode: !!envelope.case_scope };
   const { chunks } = preparePlan(sources, requestOptions);
   const usage = { calls: 0, inputBytes: 0, outputTokens: 0, reportedInputTokens: 0, reportedOutputTokens: 0 };
   const started = Date.now();

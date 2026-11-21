@@ -1413,6 +1413,34 @@ test("case synthesis uses only reviewed evidence, excludes independent recipient
   assert.equal(f.rows.get("mail-1").unread, 1);
 });
 
+test("case planning reserves one overview call without reducing the thread extraction limit", async context => {
+  const original = "Original fictional evidence. ".padEnd(8400, "x");
+  const rows = Array.from({ length: LIMITS.calls }, (_, i) => row(`mail-${i + 1}`, {
+    text_body: i === 0 ? original : `Fictional update ${i}. `.padEnd(8400, "x") + `\n> ${original}`,
+    date_iso: new Date(Date.UTC(2026, 10, 1, 10, i)).toISOString(),
+  }));
+  const fixture = memory(context, { rows, complete: messages => messages[0].content.startsWith("Prepare a case overview")
+    ? caseResponse(messages) : modelResponse(messages, { open_actions: [] }) });
+  const thread = await fixture.prepare();
+  assert.equal(thread.processing.sourceBytes, 529293);
+  assert.equal(thread.chunks, LIMITS.calls);
+  assert.equal(thread.budget, undefined);
+
+  const messages = rows.map(({ account_id, id }) => ({ accountId: account_id, messageId: id, phase: "main" }));
+  const oversized = await casePreparation(fixture, messages);
+  const budget = { kind: "chunk-count", actual: LIMITS.calls, limit: LIMITS.calls - 1 };
+  assert.deepEqual(oversized.budget, budget);
+  await assert.rejects(caseGeneration(fixture, oversized), { code: "timeline-budget", budget });
+  assert.equal(fixture.calls.length, 0);
+
+  const fitting = await casePreparation(fixture, messages.slice(0, -1));
+  assert.equal(fitting.chunks, LIMITS.calls - 1);
+  const { terminal } = await caseGeneration(fixture, fitting);
+  assert.equal((await terminal).phase, "completed");
+  assert.equal(fixture.calls.length, LIMITS.calls);
+  assert.ok(fixture.calls.at(-1).messages[0].content.startsWith("Prepare a case overview"));
+});
+
 test("forged case citations get one bounded retry, save no report and disclose call counts", async context => {
   const f = memory(context, { complete: messages => {
     const response = caseResponse(messages);
