@@ -79,7 +79,8 @@ test("one toolbar reads the exact multi-account selection and keeps a mixed rece
   const s = setup();
   assert.equal(s.control("agent-batch-toolbar").hidden, true);
   s.check("Newsletter"); s.check("Ordinary mail"); s.check("Another item");
-  assert.match(s.control("selection-scope").textContent, /3 selected · 2 mailboxes/);
+  s.check("Action required · deadline 2026-11-25");
+  assert.match(s.control("selection-scope").textContent, /4 selected · 2 mailboxes/);
   assert.equal(s.doc.querySelectorAll(".agent-archive-selected").length, 0);
   s.ui.run(`
     globalThis.undoRows = [];
@@ -88,7 +89,8 @@ test("one toolbar reads the exact multi-account selection and keeps a mixed rece
       calls.push({channel, params});
       if (channel !== "mail:markReadBatch") return null;
       return {
-        outcomes: [{ id: "a", generation: 1, actionId: "a1", kind: "read", status: "completed" }],
+        outcomes: [{ id: "a", generation: 1, actionId: "a1", kind: "read", status: "completed", readUndoable: true },
+          { id: "due", kind: "read", status: "not_attempted" }],
         pending: [{ id: "b", generation: 2, actionId: "b2", kind: "read" }],
       };
     };
@@ -98,11 +100,13 @@ test("one toolbar reads the exact multi-account selection and keeps a mixed rece
   const writes = s.calls.filter(x => x.channel === "mail:markReadBatch");
   assert.equal(writes.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(writes[0].params.items)),
-    [{ emailId: "a", accountId: "ada" }, { emailId: "b", accountId: "grace" }, { emailId: "c", accountId: "grace" }]);
+    [{ emailId: "a", accountId: "ada" }, { emailId: "b", accountId: "grace" }, { emailId: "c", accountId: "grace" },
+      { emailId: "due", accountId: "grace" }]);
   assert.equal(s.calls.filter(x => x.channel.endsWith("todoUpdate")).length, 0);
   assert.match(s.control("agent-batch-receipts").textContent, /Newsletter: Completed/);
   assert.match(s.control("agent-batch-receipts").textContent, /Ordinary mail: Awaiting confirmation/);
   assert.match(s.control("agent-batch-receipts").textContent, /Another item: Unknown/);
+  assert.match(s.control("agent-batch-receipts").textContent, /Action required · deadline 2026-11-25: Not attempted/);
   assert.deepEqual(Array.from(s.ui.run("undoRows"), x => x.emailId), ["a"]);
   s.ui.run(`agentUxReceipt.settle({id:"b", generation:1, actionId:"b2", kind:"read", status:"completed"});
     agentUxReceipt.settle({id:"b", generation:2, actionId:"b2", kind:"remove", status:"completed"});`);
@@ -208,7 +212,7 @@ test("late Agent receipts do not steal a newer unrelated Mail read Undo", async 
   s.ui.run(`
     showReadUndo("Unrelated Mail read", [{emailId:"newer",accountId:"ada",generation:1}]);
     applyActionSettlement({outcomes:[
-      {id:"a",actionId:"a37",generation:37,kind:"read",status:"completed",projection:{unread:false}},
+      {id:"a",actionId:"a37",generation:37,kind:"read",status:"completed",readUndoable:true,projection:{unread:false}},
       {id:"b",actionId:"b38",generation:38,kind:"read",status:"failed",projection:{unread:true}},
     ],opIds:[]});
   `);
@@ -221,7 +225,7 @@ test("late Agent receipts do not steal a newer unrelated Mail read Undo", async 
 
 test("early Agent read settlement supplies the batch receipt and only its verified Undo", async () => {
   for (const toolbar of [true, false]) {
-    for (const variant of ["completed", "failed", "wrong-action", "newer-undo"]) {
+    for (const variant of ["completed", "failed", "wrong-action", "newer-undo", "no-op"]) {
       const s = setup();
       try {
         s.ui.context.variant = variant;
@@ -233,14 +237,17 @@ test("early Agent read settlement supplies the batch receipt and only its verifi
           call = async (channel, params) => {
             calls.push({ channel, params });
             if (channel !== "mail:markReadBatch") return null;
+            if (variant === "no-op") return {outcomes:[{id:"a",kind:"read",actionId:"a31",generation:31,
+              status:"completed",readUndoable:false,projection:{unread:false}}],pending:[]};
             if (variant === "newer-undo") showReadUndo("Unrelated Mail read",
               [{emailId:"newer", accountId:"ada", generation:1}]);
             applyActionSettlement({opIds:[], outcomes:[{
               id:"a", kind:"read", actionId:variant === "wrong-action" ? "unrelated" : "a31",
               generation:31, status:variant === "failed" ? "failed" : "completed",
+              readUndoable:variant !== "failed",
               projection:{unread:variant === "failed"},
             }]});
-            return { outcomes:[], pending:[{id:"a", actionId:"a31", generation:31, kind:"read"}] };
+            return { outcomes:[], pending:[{id:"a", actionId:"a31", generation:31, kind:"read", readUndoable:true}] };
           };
         `);
         if (toolbar) {
@@ -264,6 +271,9 @@ test("early Agent read settlement supplies the batch receipt and only its verifi
           assert.equal(undo[0].emailId, "newer", context);
           assert.equal(s.ui.run("undoReceipt"), "Unrelated Mail read", context);
           if (toolbar) assert.match(receipt, /1 completed/i, context);
+        } else if (variant === "no-op") {
+          assert.equal(undo, null, context);
+          assert.match(receipt, /1 completed/i, context);
         } else {
           assert.equal(undo, null, context);
           assert.equal(s.ui.run("learnCount"), 0, context);

@@ -88,7 +88,8 @@ function createService(dependencies) {
     if (input.options.mode === "case") snapshot.caseScope = { local_only: true, account_count: 1,
       search_count: previous.searchStats.count, limited_search_count: previous.searchStats.limited, mailbox_complete: false, search_is_exhaustive: false };
     let plan, blocked;
-    try { plan = preparePlan(snapshot.sources, { language: input.options.language, focus: { keywords: input.options.keywords || "", contact_emails: input.options.contactEmails || [] } }); }
+    try { plan = preparePlan(snapshot.sources, { language: input.options.language, caseMode: !!snapshot.caseScope,
+      focus: { keywords: input.options.keywords || "", contact_emails: input.options.contactEmails || [] } }); }
     catch (error) {
       if (!budgetDetails(error)) throw error;
       blocked = budgetDetails(error);

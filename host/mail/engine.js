@@ -4153,6 +4153,12 @@ function editScheduled(params) {
   if (row.status === "sending") return fail("sending", "Delivery has started. Check Sent before retrying.");
   const needsReview = ["unknown", "sent", "partial"].includes(row.status);
   if (needsReview && params.acknowledgeDelivery !== true) return fail("delivery_review", "Check Sent first. Recovering this copy and sending it may duplicate an earlier delivery.");
+  const result = recoverScheduledDraft(row);
+  if (result.success) emitAccounts();
+  return result;
+}
+
+function recoverScheduledDraft(row) {
   const account = db.accountById(row.account_id);
   const drafts = account && db.folderByWellKnown(account.id, "drafts");
   if (!drafts) return fail("not-found", "This mailbox has no Drafts folder. The queued message is unchanged.");
@@ -4178,7 +4184,7 @@ function editScheduled(params) {
   const text = presented.textBody || plainFromHtml(html);
   const now = new Date();
   const emailId = db.newMessageId();
-  db.scheduledToDraft(id, {
+  db.scheduledToDraft(row.id, {
     id: emailId, accountId: account.id, folderPath: drafts.path,
     threadId: payload.threadId || emailId, inReplyTo: payload.inReplyTo || null,
     disposition: payload.disposition || null,
@@ -4192,11 +4198,10 @@ function editScheduled(params) {
     snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
     recipientHeaders: { replyTo: [] },
   });
-  emitAccounts();
   const agentTodo = agentTodoOf(payload);
   return ok({ emailId, accountId: account.id, sendAt: new Date(row.send_at).toISOString(),
     ...(agentTodo ? { agentTodo } : {}),
-    warning: partialWarning || (needsReview ? "This message may already have been delivered. Check Sent before explicitly sending or scheduling this recovered draft." : "") });
+    warning: partialWarning || (["unknown", "sent"].includes(row.status) ? "This message may already have been delivered. Check Sent before explicitly sending or scheduling this recovered draft." : "") });
 }
 
 const PRE_ACCEPT_CODES = new Set(["EENVELOPE", "ENOTFOUND", "ECONNREFUSED", "EAI_AGAIN"]);
@@ -4585,11 +4590,18 @@ async function pumpScheduledAdmitted() {
           extra = { outboxReceipt: { message: result?.data?.warning || "Partly sent. Review rejected recipients in Scheduled delivery review; accepted recipients will not be resent automatically.", seed } };
         } else if (outbox && db.scheduledById(row.id)?.status === "unknown") {
           extra = { outboxReceipt: { uncertain: true, message: "Delivery is uncertain. Check Sent, then review this message in Scheduled delivery review before recovering it. The durable record has been kept." } };
-        } else if (outbox && status !== "sent" && status !== "partial") {
-          // A failed undo-send becomes the draft again. Leaving the row would also offer Scheduled review.
-          try { db.deleteScheduled(row.id); } catch { /* the restore still opens the draft */ }
-          const detail = result?.error?.message || result?.data?.warning || "";
-          extra = { outboxRestore: { message: "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying." + (detail ? " " + detail : ""), seed } };
+        } else if (outbox) {
+          const failed = db.scheduledById(row.id);
+          if (failed?.status === "failed") {
+            let recovered;
+            try { recovered = recoverScheduledDraft(failed); } catch { /* The atomic conversion retains the failed row. */ }
+            const draft = recovered?.data;
+            const message = draft
+              ? "Message was not sent. A recovery copy is saved in Drafts."
+              : "Message was not sent. The failed message is saved in Scheduled mail for recovery.";
+            const detail = result?.error?.message || result?.data?.warning;
+            extra = { outboxRestore: { draft, message: detail ? message + " " + detail : message } };
+          }
         }
         if (extra) notices.push(extra);
       } finally {
