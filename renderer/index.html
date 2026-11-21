@@ -360,7 +360,7 @@
         <label for="calendar-end">End</label>
         <input id="calendar-end" type="datetime-local" />
         <p id="calendar-form-status" role="alert" tabindex="-1"></p>
-        <p id="calendar-save-note" class="hint">Cancel closes this editor, not a pending save or delete. Confirmed changes invalidate this mailbox's cached months. Retry unchanged creation in this editor to reuse the same provider operation; check the provider before starting another event after an uncertain result. Non-time edits preserve exact event instants. Ambiguous local time edits need an explicit offset in the provider editor. Switching All day keeps the dates; an all-day end is exclusive. Switching back without changing the all-day range restores the previous times; otherwise timed defaults are 09:00/10:00.</p>
+        <p id="calendar-save-note" class="hint">Cancel closes this editor, not a pending save or delete. Confirmed changes invalidate this mailbox's cached months. Retry unchanged creation in this editor to reuse the same provider operation; check the provider before starting another event after an uncertain result. Editing a timed event preserves each time you leave unchanged. Ambiguous local time edits need an explicit offset in the provider editor. Switching All day keeps the dates; an all-day end is exclusive. Switching back without changing the all-day range restores the previous times; otherwise timed defaults are 09:00/10:00.</p>
         <div class="row">
           <button type="submit" class="primary" id="calendar-save">Add event</button>
           <button type="button" class="ghost" id="calendar-delete" hidden>Delete</button>

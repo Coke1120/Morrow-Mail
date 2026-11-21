@@ -417,6 +417,45 @@ test("Calendar P2: title-only edits omit time fields for both providers during t
   } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
 });
 
+test("Calendar P2: editing one timed endpoint keeps the other for Google and Outlook", async () => {
+  const previous = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  const ordinary = { start: "2026-10-30T09:00:12Z", end: "2026-10-30T10:00:34Z" };
+  const repeatedHour = { start: "2026-11-01T01:30:12-05:00", end: "2026-11-01T02:00:34-05:00" };
+  const cases = [
+    { original: ordinary, field: "end", value: "2026-10-30T06:15",
+      expected: ["2026-10-30T09:00:12.000Z", "2026-10-30T10:15:00.000Z"] },
+    { original: ordinary, field: "start", value: "2026-10-30T04:45",
+      expected: ["2026-10-30T08:45:00.000Z", "2026-10-30T10:00:34.000Z"] },
+    { original: repeatedHour, field: "end", value: "2026-11-01T02:15",
+      expected: ["2026-11-01T06:30:12.000Z", "2026-11-01T07:15:00.000Z"] },
+  ];
+  try {
+    for (const { original, field, value, expected } of cases) {
+      const { ui, node } = calendarFixture();
+      ui.context.fixtureEvent = { id: "event", calendarId: "primary", title: "Original", ...original };
+      ui.run("openCalendarEditor(fixtureEvent);loadCalendar=async()=>{}");
+      node("calendar-" + field).value = value;
+      const saving = ui.run("submitCalendarForm(submit)");
+      const draft = ui.run("calls.find(item=>item.channel==='calendar:updateEvent')?.payload");
+      assert.ok(draft, node("calendar-form-status").textContent || "Expected a Calendar update");
+      ui.run("writes[0].resolve({})");
+      await saving;
+
+      for (const provider of ["google", "microsoft"]) {
+        let request;
+        await calendar.updateEvent(provider, "synthetic", "primary", "event", copy(draft), async (_url, options) => {
+          request = { method: options.method, body: JSON.parse(options.body) };
+          return reply({ ...request.body, id: "event" });
+        });
+        assert.equal(request.method, "PATCH");
+        assert.deepEqual([request.body.start.dateTime, request.body.end.dateTime], expected,
+          provider + " editing " + field);
+      }
+    }
+  } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
+});
+
 test("Calendar P2: literal descriptions survive Google HTML and Graph Text serializers; HTML projections retain links", async () => {
   const text = "Bring <laptop> and <adapter>. A & B";
   for (const provider of ["google", "microsoft"]) {
