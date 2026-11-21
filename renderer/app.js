@@ -26850,6 +26850,7 @@ function openCalendarEditor(event, dayStamp) {
   calendarEditingId = editing ? String(event.id) : "";
   calendarEditingIdentity = editing ? { accountId: account?.id, calendarId: event.calendarId || state.calendarId,
     id: calendarEditingId, title: String(event.title || ""), titleTruncated: !!event.titleTruncated,
+    start: event.start, end: event.end,
     description: String(event.description || ""), descriptionTruncated: !!event.descriptionTruncated, location: String(event.location || "") } : null;
   if (dialogTitle) dialogTitle.textContent = editing ? "Edit event" : "Add event";
   if (save) save.textContent = editing ? "Save" : "Add event";
@@ -27219,8 +27220,13 @@ async function submitCalendarEvent(event) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
   const title = $("calendar-event-title").value;
-  const unchangedTime = !!editing && JSON.stringify(identity.timeInputs) === JSON.stringify([
-    $("calendar-start").value, $("calendar-end").value, !!$("calendar-all-day").checked]);
+  const allDay = !!$("calendar-all-day")?.checked;
+  const start = $("calendar-start").value;
+  const end = $("calendar-end").value;
+  const originalInputs = editing ? identity.timeInputs : null;
+  const sameTimeType = originalInputs?.[2] === allDay;
+  const sameStart = sameTimeType && start === originalInputs[0];
+  const sameEnd = sameTimeType && end === originalInputs[1];
   if (editing && identity.titleTruncated && title !== identity.title) {
     throw new Error("This title is incomplete. Leave it unchanged or edit it with the calendar provider.");
   }
@@ -27230,11 +27236,12 @@ async function submitCalendarEvent(event) {
     title,
     location: $("calendar-location").value,
     description: $("calendar-description") ? $("calendar-description").value : "",
-    allDay: !!($("calendar-all-day") && $("calendar-all-day").checked),
-    start: $("calendar-start").value,
-    end: $("calendar-end").value,
+    allDay,
+    // The timed inputs show minutes, so reuse the provider instant for an unchanged endpoint.
+    start: !allDay && sameStart ? identity.start : start,
+    end: !allDay && sameEnd ? identity.end : end,
     eventId: editing,
-  }, !!editing && title === identity.title, unchangedTime);
+  }, !!editing && title === identity.title, sameStart && sameEnd);
   const status = $("calendar-form-status");
   if (draft.error) {
     if (status) {
