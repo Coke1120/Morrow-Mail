@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.17": [
+      "If an Outbox message fails before it is sent, you can recover it from Drafts even if the compose window cannot reopen. If the draft cannot be saved, the message stays in Scheduled mail.",
+      "Marking an already-read message as read in Agent leaves it read. Undo is available for messages that actually changed, and batch results identify messages the Agent did not attempt.",
+      "Editing only the start or end time of a calendar event preserves the other time, including its seconds.",
+      "Case Timeline reserves an AI call for the overview and flags selections that are too large before generation starts.",
+    ],
     "0.4.16": [
       "When a long Timeline contains repeated reply history, Morrow can avoid sending an exact quote twice. Review the excluded repeats before generating; the original mail and separate reply entries are kept.",
       "Sync body activity can open a recently affected message directly. Review available text and choose Retry download in the reader.",
