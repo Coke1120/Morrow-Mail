@@ -129,8 +129,21 @@ async function engineChecks() {
     db.setScheduledSendAt(failed.data.id, 0);
     const failedNotices = await engine.pumpScheduled();
     assert.equal(db.scheduledById(failed.data.id), null);
-    assert.match(failedNotices[0].outboxRestore.message, /Delivery was not confirmed/);
-    assert.match(failedNotices[0].outboxRestore.seed.body, /Failed note/);
+    const restoredDraft = failedNotices[0].outboxRestore.draft;
+    assert.equal(restoredDraft.accountId, "grace");
+    assert.match(failedNotices[0].outboxRestore.message, /saved in Drafts/);
+    assert.equal(db.messageById(restoredDraft.emailId).is_draft, 1);
+    assert.match(db.messageById(restoredDraft.emailId).html_body, /Failed note/);
+
+    const failedWithoutDrafts = queue(engine, "no-drafts", "Keep failed body", later);
+    db.setScheduledSendAt(failedWithoutDrafts.data.id, 0);
+    const retained = (await engine.pumpScheduled())[0].outboxRestore;
+    assert.equal(retained.draft, undefined);
+    assert.match(retained.message, /saved in Scheduled mail/);
+    assert.equal(db.scheduledById(failedWithoutDrafts.data.id).status, "failed");
+    assert.match(db.scheduledById(failedWithoutDrafts.data.id).payload_json, /Keep failed body/);
+    const scheduled = engine.answer("mail:listScheduled", [{ summary: true, includeRows: true }]).data.rows;
+    assert.ok(scheduled.some(row => row.id === failedWithoutDrafts.data.id && row.status === "failed"));
 
     const uncertain = queue(engine, "grace", "Uncertain note", later);
     let uncertainAttempts = 0;
@@ -149,6 +162,8 @@ async function engineChecks() {
     await db.close();
     await engine.init();
     assert.equal(db.messageById(recovered.data.emailId).is_draft, 1);
+    assert.match(db.messageById(restoredDraft.emailId).html_body, /Failed note/);
+    assert.equal(db.scheduledById(failedWithoutDrafts.data.id).status, "failed");
     assert.equal(db.scheduledById(uncertain.data.id).message_id, recovery.message_id);
     assert.equal(db.scheduledById(uncertain.data.id).status, "unknown");
     await engine.pumpScheduled();
@@ -323,11 +338,19 @@ function rendererChecks() {
     assert.equal(opened.body, "Hello Ada");
     assert.equal(document.getElementById("message-list").textContent.includes("Ada note"), false);
     return ui.run("undoOutboxItem(state.emails.find(row => row.id === 's2'))");
-  }).then(() => {
+  }).then(async () => {
     assert.match(ui.run("statuses.at(-1)[0]"), /can no longer be canceled/);
     assert.equal(ui.run("calls.filter(item => item.channel === 'mail:cancelScheduled').length"), 1);
     ui.run("state.outboxRows = []; state.emails = []; renderList()");
     assert.match(document.getElementById("message-list").textContent, /Nothing is waiting to send/);
+    await ui.run(`
+      scheduleReload = () => {};
+      presentCompose = async (seed) => { opened = seed; throw Error("Compose failed"); };
+      onAccountsUpdated({outboxRestore: {draft: {emailId:"recovered-ada",accountId:"ada"},message:"Message was not sent."}});
+      new Promise(resolve => setTimeout(resolve, 0));
+    `);
+    assert.equal(ui.run("opened.draftId"), "recovered-ada");
+    assert.match(ui.run("statuses.at(-1)[0]"), /Resume the saved copy from Drafts/);
   });
 }
 

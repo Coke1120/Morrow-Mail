@@ -38,7 +38,8 @@
     function terminal(row, result) {
       row.status = ["completed", "failed", "not_attempted", "unknown"].includes(result.status) ? result.status : "unknown";
       if (kind === "read" && row.status === "completed" && result.projection?.unread === true) row.status = "unknown";
-      row.undo = row.status === "completed" && (kind === "remove" ? !!result.opId : Number.isFinite(result.generation));
+      row.undo = row.status === "completed" && (kind === "remove" ? !!result.opId
+        : result.readUndoable === true && Number.isFinite(result.generation));
     }
     function accept(packet) {
       for (const result of packet || []) {
