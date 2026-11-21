@@ -160,7 +160,7 @@ async function hostChecks() {
     db.setScheduledSendAt(failed.data.id, 0);
     const notices = await engine.pumpScheduled();
     assert.equal(todoStatus(dir, "m-fail"), "open");
-    assert.equal(notices[0].outboxRestore.seed.agentTodo.messageId, "m-fail");
+    assert.equal(notices[0].outboxRestore.draft.agentTodo.messageId, "m-fail");
 
     db.insertMessage({
       id: "m-read", accountId: "ada", folderPath: "INBOX", subject: "Read me", from: "Ada <ada@example.test>",
@@ -190,10 +190,21 @@ async function hostChecks() {
       items: [{ emailId: "m-read", accountId: "grace", generation: 99 }],
     }]);
     assert.equal(db.messageById("m-read").unread, 0);
-    const latest = engine.answer("mail:markRead", [{ emailId: "m-read", isRead: true }]).data.outcomes[0].generation;
+    const noChange = engine.answer("mail:markRead", [{ emailId: "m-read", isRead: true }]).data.outcomes[0];
+    assert.equal(noChange.readUndoable, false);
+    const skipped = engine.answer("mail:markReadBatch", [{
+      isRead: false, restoreRead: true,
+      items: [{ emailId: "m-read", accountId: "ada", generation: noChange.generation }],
+    }]).data;
+    assert.deepEqual(skipped.outcomes, []);
+    assert.deepEqual(skipped.pending, []);
+    assert.equal(db.messageById("m-read").unread, 0);
+    engine.answer("mail:markRead", [{ emailId: "m-read", isRead: false }]);
+    const changed = engine.answer("mail:markRead", [{ emailId: "m-read", isRead: true }]).data.outcomes[0];
+    assert.equal(changed.readUndoable, true);
     engine.answer("mail:markReadBatch", [{
       isRead: false, restoreRead: true,
-      items: [{ emailId: "m-read", accountId: "ada", generation: latest }],
+      items: [{ emailId: "m-read", accountId: "ada", generation: changed.generation }],
     }]);
     assert.equal(db.messageById("m-read").unread, 1);
   } finally {
@@ -226,7 +237,7 @@ async function rendererChecks() {
       calls.push({ channel, payload });
       if (channel === "mail:markReadBatch") {
         const items = payload.items || [];
-        return { success: true, data: { pending: [], outcomes: items.map((item, index) => ({ id: item.emailId, status: "completed", generation: 7 + index })) } };
+        return { success: true, data: { pending: [], outcomes: items.map((item, index) => ({ id: item.emailId, status: "completed", generation: 7 + index, readUndoable: true })) } };
       }
       if (channel === "nativeAgent:home:todoUpdate") return { success: true, data: { sections: [] } };
       return { success: true, data: {} };
@@ -464,10 +475,10 @@ async function rendererChecks() {
     call = async (channel, params) => {
       mixedCalls.push({channel, params});
       return { outcomes: [
-        { id: "a", status: "completed", generation: 2 },
-        { id: "b", status: "failed", generation: 2 },
-        { id: "d", status: "not_attempted", generation: 2 }
-      ], pending: [{ id: "c", generation: 2 }] };
+        { id: "a", status: "completed", generation: 2, readUndoable: true },
+        { id: "b", status: "failed" },
+        { id: "d", status: "not_attempted" }
+      ], pending: [{ id: "c", generation: 2, readUndoable: true }] };
     };
     learnAgent = async () => {};
     paintAgentReadProjection = () => {};

@@ -14863,30 +14863,12 @@ function onAccountsUpdated(payload) {
     else separatePartialReceipt(notice.seed || {}, notice.message || "").catch(() => {});
   }
   if (payload && payload.outboxRestore) {
-    const notice = payload.outboxRestore;
-    const seed = notice.seed || {};
-    const html = typeof seed.htmlBody === "string" ? seed.htmlBody : (typeof seed.body === "string" ? seed.body : "");
-    const message = notice.message || "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying.";
-    presentCompose({
-      title: seed.subject || "Message",
-      accountId: seed.accountId,
-      fromAddress: seed.fromAddress,
-      fromDisplayName: seed.fromDisplayName || "",
-      to: people(seed.to),
-      cc: people(seed.cc),
-      bcc: people(seed.bcc),
-      subject: seed.subject || "",
-      body: plainFromMailHtml(html),
-      htmlBody: html,
-      attachments: seed.attachments,
-      draftId: seed.draftId,
-      draftRevision: seed.draftRevision,
-      inReplyTo: seed.inReplyTo || "",
-      threadId: seed.threadId || "",
-      status: message,
-      ...(explicitAgentTodo(seed.agentTodo) ? { agentTodo: explicitAgentTodo(seed.agentTodo) } : {}),
-    }).catch(() => {});
+    const { draft, message } = payload.outboxRestore;
     showStatus(message, true);
+    if (draft) resumeDraft({ id: draft.emailId, accountId: draft.accountId }, {
+      status: message,
+      ...(explicitAgentTodo(draft.agentTodo) ? { agentTodo: explicitAgentTodo(draft.agentTodo) } : {}),
+    }).catch(() => showStatus("Message was not sent. Compose could not open. Resume the saved copy from Drafts.", true));
   }
   scheduleReload(preferred, true, accounts);
   if (payload?.scheduledUpdated) loadScheduled({ invalidate: true }).catch(() => {});
@@ -23457,6 +23439,7 @@ function readUndoRows(snapshot, data) {
   const take = (entry, requireCompleted) => {
     if (!entry || !entry.id || seen.has(entry.id)) return;
     if (requireCompleted && entry.status !== "completed") return;
+    if (entry.readUndoable !== true) return;
     if (typeof entry.generation !== "number" || !Number.isFinite(entry.generation)) return;
     if (!accounts.has(entry.id)) return;
     seen.add(entry.id);
@@ -25559,15 +25542,21 @@ async function acceptAgentRead(entry, data) {
   if (agentPendingReads.get(messageId) !== entry) return "superseded";
   const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [];
   const pending = data && Array.isArray(data.pending) ? data.pending : [];
-  const receipt = outcomes.find((row) => row.id === messageId) || pending.find((row) => row.id === messageId);
+  const result = outcomes.find((row) => row.id === messageId);
+  const receipt = result || pending.find((row) => row.id === messageId);
   if (!receipt || !Number.isFinite(receipt.generation)) {
     agentPendingReads.delete(messageId);
-    paintAgentReadProjection(messageId, true, entry.item);
-    return "not_attempted";
+    paintAgentReadProjection(messageId, entry.item.unread !== false && !agentMarkedRead.has(messageId), entry.item);
+    // A synchronous refusal has no journal identity and needs no later settlement.
+    if (result && ["failed", "not_attempted"].includes(result.status)) {
+      entry.settlement = result;
+      return result.status;
+    }
+    return "unknown";
   }
   entry.receipt = receipt;
   const early = entry.early.filter((row) => Number.isFinite(row.generation) && row.generation >= receipt.generation).sort((first, second) => second.generation - first.generation)[0];
-  const outcome = early || outcomes.find((row) => row.id === messageId);
+  const outcome = early || result;
   if (outcome) {
     return await settleAgentReadOutcome(outcome);
   }
@@ -25700,7 +25689,7 @@ async function markAgentCategoryRead(items, complete = false, capturedMessages =
       && (actionGeneration.get(row.emailId) || 0) === row.generation);
     const ownsUndo = !undoBusy && begunUndoEpoch === undoEpoch && begunReadUndoSerial === readUndoSerial;
     if (reversible.length && ownsUndo) showReadUndo(copy, reversible);
-    else if (!reversible.length) showStatus(copy, true);
+    else if (!reversible.length) showStatus(copy, outcomes.some(outcome => outcome.status !== "completed"));
   }
 }
 

@@ -93,13 +93,18 @@ function outcomeOf(action, status, error, opId) {
     actionId: action.id,
     generation: action.generation,
     status,
-    kind: parse(action.intent_json, {}).kind || "",
+    kind: intent.kind || "",
+    ...(intent.kind === "read" ? { readUndoable: status === "completed" && changesUnreadToRead(action, intent) } : {}),
     error: error || undefined,
     opId: opId || undefined,
     retryOpId: intent.kind === "undo" && (status === "failed" || status === "not_attempted")
       && db.readOp(intent.opId)?.moves?.length ? intent.opId : undefined,
     projection: displayOf(row),
   };
+}
+
+function changesUnreadToRead(action, intent = parse(action.intent_json, {})) {
+  return intent.kind === "read" && intent.unread === 0 && parse(action.prior_json, {}).unread === 1;
 }
 
 function matches(prior, intent) {
@@ -534,6 +539,7 @@ function pendingOf(action) {
     id: action.message_id,
     actionId: action.id,
     generation: action.generation,
+    ...(changesUnreadToRead(action) ? { readUndoable: true } : {}),
     projection: displayOf(row),
   };
 }
@@ -657,13 +663,12 @@ function undoCommands(opIds) {
   return commands;
 }
 
-function laterRead(messageId, generation) {
-  const cap = Number(generation);
-  if (!Number.isFinite(cap)) return true;
-  return db.mailActionsForMessage(messageId).some((row) => {
-    if (!(row.generation > cap)) return false;
-    return parse(row.intent_json, {}).kind === "read";
-  });
+function canRestoreRead(message, generation) {
+  if (!Number.isSafeInteger(generation)) return false;
+  const action = db.mailActionsForMessage(message.id).find((row) => parse(row.intent_json, {}).kind === "read");
+  return action?.generation === generation && action.account_id === message.account_id
+    && (action.phase === "accepted" || action.phase === "publishing" || action.receipt === "completed")
+    && changesUnreadToRead(action);
 }
 
 function handle(channel, params) {
@@ -676,7 +681,7 @@ function handle(channel, params) {
         const row = messageId && db.messageById(messageId);
         if (!row) continue;
         if (item.accountId && row.account_id !== item.accountId) continue;
-        if (laterRead(messageId, item.generation)) continue;
+        if (!canRestoreRead(row, item.generation)) continue;
         commands.push({
           messageId,
           single: false,
