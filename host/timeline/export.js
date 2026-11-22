@@ -98,24 +98,46 @@ function printHtml(document) {
 }
 
 async function pdf(document, { electron = require("electron"), check = () => {} } = {}) {
+  let html = printHtml(document);
+  const scheme = "morrow-timeline-print";
+  const url = `${scheme}://document/index.html`;
   const partition = electron.session.fromPartition(`timeline-print-${crypto.randomUUID()}`);
-  const url = `data:text/html;charset=utf-8,${encodeURIComponent(printHtml(document))}`;
-  partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  partition.setPermissionCheckHandler(() => false);
-  partition.webRequest.onBeforeRequest((details, callback) => callback({ cancel: details.url !== url || details.resourceType !== "mainFrame" }));
-  const window = new electron.BrowserWindow({ show: false, webPreferences: { session: partition, sandbox: true, contextIsolation: true,
-    nodeIntegration: false, javascript: false, webSecurity: true, webviewTag: false, spellcheck: false } });
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", event => event.preventDefault());
-  window.webContents.on("will-attach-webview", event => event.preventDefault());
+  let window;
+  partition.protocol.handle(scheme, request => {
+    if (request.method !== "GET" || request.url !== url || html === null) return new Response(null, { status: 404 });
+    const response = new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+    // Chromium prints the loaded page after this one navigation.
+    html = null;
+    return response;
+  });
   try {
+    partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    partition.setPermissionCheckHandler(() => false);
+    partition.webRequest.onBeforeRequest((details, callback) => callback({
+      cancel: details.method !== "GET" || details.url !== url || details.resourceType !== "mainFrame",
+    }));
+    window = new electron.BrowserWindow({ show: false, webPreferences: { session: partition, sandbox: true, contextIsolation: true,
+      nodeIntegration: false, javascript: false, webSecurity: true, webviewTag: false, spellcheck: false } });
+    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    window.webContents.on("will-navigate", event => event.preventDefault());
+    window.webContents.on("will-attach-webview", event => event.preventDefault());
     check();
     await window.loadURL(url);
     check();
     const output = await window.webContents.printToPDF({ printBackground: false, pageSize: "A4", preferCSSPageSize: true });
     check();
     return output;
-  } finally { if (!window.isDestroyed()) window.destroy(); }
+  } finally {
+    html = null;
+    try {
+      if (window && !window.isDestroyed()) window.destroy();
+    } finally {
+      partition.protocol.unhandle(scheme);
+      partition.webRequest.onBeforeRequest(null);
+      partition.setPermissionRequestHandler(null);
+      partition.setPermissionCheckHandler(null);
+    }
+  }
 }
 
 async function exportFile(document, format, { owner, check, electron = require("electron") }) {

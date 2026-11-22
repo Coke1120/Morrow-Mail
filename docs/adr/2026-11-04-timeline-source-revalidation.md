@@ -22,6 +22,11 @@ Escape every dynamic value; emit no links, scripts, forms, remote fonts or image
 and retain a restrictive CSP. Include coverage, timezone, provenance and uncertainty
 so a portable report does not imply a complete mailbox or verified event dates.
 
+PDF loads the print HTML from memory at a fixed, short URL to avoid Chromium's
+data URL length limit. Each export handles that URL in its own nonpersistent
+session and serves it once to a main-frame GET. The hidden scriptless window and its
+session handlers are cleaned up when the export completes, fails or is cancelled.
+
 Sender names/addresses, mail timestamps/date provenance and optional keyword/contact
 focus are explicitly included in all host Timeline disclosures. Consent version 3
 invalidates earlier grants through the existing version-bound fingerprint; reading
