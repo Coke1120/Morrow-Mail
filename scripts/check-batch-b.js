@@ -36,6 +36,7 @@ function functionSource(source, name) {
 
 function checkWindowState() {
   const windowState = require("../host/window-state");
+  const readerState = require("../host/reader-window-state");
   const display = { workArea: { x: 0, y: 0, width: 1440, height: 900 } };
   const first = windowState.place(null, [display], { width: 1200, height: 800 });
   assert.deepStrictEqual(first.bounds, { width: 1200, height: 800 });
@@ -73,12 +74,28 @@ function checkWindowState() {
   const headless = windowState.place({ x: 10, y: 10, width: 900, height: 700, zoomLevel: 1 }, [], { width: 1200, height: 800 });
   assert.strictEqual(headless.bounds.x, undefined);
   assert.strictEqual(headless.bounds.width, 900);
+  const left = { workArea: { x: -1280, y: 0, width: 1280, height: 900 } };
+  const leftFrame = { x: -1100, y: 0, width: 1000, height: 700 };
+  assert.deepStrictEqual(windowState.place(leftFrame, [display, left]).bounds, leftFrame);
+  const zero = { ...leftFrame, x: 0 };
+  assert.deepStrictEqual(windowState.place(zero, [display]).bounds, zero);
+  const spanning = { ...zero, x: -500 };
+  assert.deepStrictEqual(windowState.place(spanning, [display, left]).bounds, spanning);
+  assert.deepStrictEqual(windowState.place({ ...leftFrame, y: -652, x: 80 }, [display]).bounds,
+    { width: 1000, height: 700 }, "a visible bottom strip cannot be used to drag the window");
+  assert.deepStrictEqual(windowState.place({ x: 1320, y: 810, width: 1800, height: 800 }, [display]).bounds,
+    { x: 0, y: 100, width: 1440, height: 800 }, "fit a restored frame to the smaller work area");
 
   const prev = process.env.MORROW_USER_DATA;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-window-state-"));
   process.env.MORROW_USER_DATA = dir;
   try {
     assert.strictEqual(windowState.read().zoomLevel, 0);
+    assert.deepStrictEqual(windowState.place(windowState.read(), [display]).bounds, first.bounds);
+    const partial = windowState.update({ width: "1100", y: 50, zoomLevel: 0.5 });
+    assert.equal(partial.x, null);
+    assert.deepStrictEqual(windowState.place(windowState.read(), [display]).bounds, { width: 1100, height: 800 });
+    assert.deepStrictEqual(readerState.update({ x: 0, width: 1000 }), { x: 0, y: null, width: 1000, height: null });
     const saved = windowState.update({ x: 80, y: 90, width: 1280, height: 800, zoomLevel: 1.5, maximized: true });
     assert.strictEqual(saved.zoomLevel, 1.5);
     const again = windowState.read();

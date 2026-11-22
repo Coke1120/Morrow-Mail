@@ -13,21 +13,9 @@ function statePath() {
   return path.join(userDataDir(), "reader-window-state.json");
 }
 
-// Null coordinates must not go through sanitize(): Number(null) is 0, which
-// would pin the next reader to the origin.
-function defined(value) {
-  return value == null || value === "" ? undefined : value;
-}
-
 function boundsFrom(parsed) {
-  const source = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  const clean = sanitize({
-    x: defined(source.x),
-    y: defined(source.y),
-    width: defined(source.width),
-    height: defined(source.height),
-  });
-  return { x: clean.x, y: clean.y, width: clean.width, height: clean.height };
+  const { x, y, width, height } = sanitize(parsed);
+  return { x, y, width, height };
 }
 
 function read() {
