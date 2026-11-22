@@ -1270,7 +1270,45 @@ async function run() {
     assert.strictEqual(firstBudget.status, 200);
     assert.strictEqual(secondBudget.status, 200);
     assert.strictEqual(thirdBudget.status, 429);
+    // Rejected search/body calls must not consume the shared call quota.
+    budget.setLimitsForTest({ callsPerMinute: 2, searchesPerMinute: 1, bodiesPerMinute: 1, burst: 5, globalPerMinute: 100 });
+    assert.strictEqual((await callBridge({ ...base, operation: "mail.search_cached", params: { accountId: "acct-a", query: "prism", limit: 5 } })).status, 200);
+    assert.strictEqual((await callBridge({ ...base, operation: "mail.search_cached", params: { accountId: "acct-a", query: "prism", limit: 5 } })).status, 429);
+    assert.strictEqual((await callBridge({ ...base, operation: "bridge.describe" })).status, 200);
+    budget.setLimitsForTest({ callsPerMinute: 2, searchesPerMinute: 1, bodiesPerMinute: 1, burst: 5, globalPerMinute: 100 });
+    assert.strictEqual((await callBridge({ ...base, operation: "mail.get_cached", params: { accountId: "acct-a", messageId: "msg-a-text" } })).status, 200);
+    assert.strictEqual((await callBridge({ ...base, operation: "mail.get_cached", params: { accountId: "acct-a", messageId: "msg-a-text" } })).status, 429);
+    assert.strictEqual((await callBridge({ ...base, operation: "bridge.describe" })).status, 200);
     budget.resetLimitsForTest();
+
+    // Response-fit body halving must keep valid UTF-8 codepoint boundaries.
+    const emojiBody = "\u0001".repeat(10999) + "😀" + "\u0001".repeat(10997);
+    db.insertMessage({
+      id: "msg-a-utf8-fit",
+      accountId: "acct-a",
+      folderPath: "INBOX",
+      uid: 4,
+      uidValidity: 4,
+      threadId: "thr-utf8-fit",
+      subject: "UTF-8 fit",
+      snippet: "fit",
+      from: "Ada <ada@example.test>",
+      to: ["a@example.test"],
+      date: new Date(now - 3000).toISOString(),
+      listSortTs: now - 3000,
+      unread: false,
+      bodyComplete: true,
+      textBody: emojiBody,
+    });
+    const fitBody = await callBridge({
+      ...base,
+      operation: "mail.get_cached",
+      params: { accountId: "acct-a", messageId: "msg-a-utf8-fit", maxBodyBytes: 32768 },
+    });
+    assert.strictEqual(fitBody.status, 200);
+    assert.strictEqual(fitBody.json.data.body.truncated, true);
+    assert.strictEqual(fitBody.json.data.body.text.includes("\uFFFD"), false);
+    assert.strictEqual(emojiBody.startsWith(fitBody.json.data.body.text), true);
 
     server.setBeforeRelease(() => new Promise((resolve) => { releaseHold = resolve; }));
     const held = callBridge({
@@ -1370,6 +1408,20 @@ async function run() {
     const afterRevoke = await callBridge({ ...base, operation: "bridge.describe" });
     assert.strictEqual(afterRevoke.status, 401);
     await server.stop();
+    // Concurrent start() awaits the in-flight bind; immediate stop() settles it cleanly.
+    const [concurrentA, concurrentB] = await Promise.all([server.start(), server.start()]);
+    assert.strictEqual(concurrentA.listening, true);
+    assert.strictEqual(concurrentB.listening, true);
+    await server.stop();
+    const startBeforeStop = server.start();
+    const stopDuringStart = server.stop();
+    const [cancelledStart, stoppedNow] = await Promise.race([
+      Promise.all([startBeforeStop, stopDuringStart]),
+      delay(1500).then(() => { throw new Error("server.start() hung after immediate stop()"); }),
+    ]);
+    assert.strictEqual(cancelledStart.listening, false);
+    assert.strictEqual(stoppedNow.listening, false);
+    assert.strictEqual(server.status().listening, false);
     const revived = await server.startIfEnabled();
     assert.strictEqual(revived.listening, true);
     const stillRevoked = await callBridge({ ...base, operation: "bridge.describe" });
@@ -1378,6 +1430,34 @@ async function run() {
     server.setBeforeRelease(async () => {});
     const stopped = await manage.setEnabled(false);
     assert.strictEqual(stopped.listen.listening, false);
+
+    // Guard bot-access.json against exceeding load()'s 1 MiB cap.
+    const accessFilePath = path.join(dir, "bot-access.json");
+    const savedAccessRaw = fs.readFileSync(accessFilePath, "utf8");
+    try {
+      const nearCap = JSON.parse(savedAccessRaw);
+      const sample = nearCap.grants[0];
+      while (Buffer.byteLength(`${JSON.stringify(nearCap, null, 2)}\n`, "utf8") < 1024 * 1024 - 1100) {
+        nearCap.grants.push({
+          ...sample,
+          clientId: crypto.randomUUID(),
+          keyId: crypto.randomBytes(9).toString("base64url"),
+          label: `pad-${nearCap.grants.length}-${"x".repeat(40)}`,
+        });
+      }
+      const paddedRaw = `${JSON.stringify(nearCap, null, 2)}\n`;
+      fs.writeFileSync(accessFilePath, paddedRaw, { mode: 0o600 });
+      assert.strictEqual(auth.load().ok, true);
+      assert.throws(() => auth.mint({
+        label: "Overflow grant",
+        accountIds: ["acct-a"],
+        capabilities: catalog.DEFAULT_CAPABILITIES,
+      }), /storage is full/);
+      assert.strictEqual(fs.readFileSync(accessFilePath, "utf8"), paddedRaw);
+      assert.strictEqual(auth.load().ok, true);
+    } finally {
+      fs.writeFileSync(accessFilePath, savedAccessRaw, { mode: 0o600 });
+    }
 
     await checkGrantExpiry(auth);
 
