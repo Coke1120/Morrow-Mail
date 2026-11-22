@@ -155,17 +155,20 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
   }
   // Failed outcome storage can never authorize a second provider attempt.
   // An uncommitted 'running' row becomes uncertain on the next startup.
-  function settleFailure(operation) {
+  function settleFailure(operation, deletionRejected = false) {
     try {
       const current = store()?.read(operation.id);
       if (current?.phase === "pending") store().update(operation.id, "pending", { phase: "paused", reason: "connection_or_folder_changed", updatedAt: now() });
-      if (current?.phase === "running") store().update(operation.id, "running", { phase: "uncertain", reason: "unconfirmed", updatedAt: now() });
+      if (current?.phase === "running") store().update(operation.id, "running", {
+        phase: deletionRejected ? "paused" : "uncertain", reason: deletionRejected ? "provider_rejected" : "unconfirmed", updatedAt: now(),
+      });
     } catch { /* Preserve durable intent; never replay an uncertain write. */ }
   }
   function storeSafePhase(id) { try { return store()?.read(id)?.phase; } catch { return "unavailable"; } }
   function arm(operation, ticket) {
     const runtime = { deadline: monotonic() + GRACE_MS, timer: null, paused: false };
     const run = async () => {
+      let deletionRejected = false;
       try {
         if (runtime.paused || pending.get(operation.id) !== runtime || store()?.read(operation.id)?.phase !== "pending") return;
         const delay = runtime.deadline - monotonic();
@@ -175,12 +178,18 @@ function createManager({ journal, owner, withAccount, notify = () => {}, gate = 
           if (runtime.paused || pending.get(operation.id) !== runtime) throw conflict();
           // Undo races with this compare-and-set, including while LIST awaits.
           store().update(operation.id, "pending", { phase: "running", updatedAt: now() });
-          requireOwner(ticket, client);
-          await client.deleteLabel(ticket.source.id, ticket.source.name); client.check();
+          try {
+            requireOwner(ticket, client);
+            await client.deleteLabel(ticket.source.id, ticket.source.name);
+          } catch (error) {
+            deletionRejected = error.operationIssued === false;
+            throw error;
+          }
+          client.check();
           store().update(operation.id, "running", { phase: "deleted", updatedAt: now() });
           await client.refreshCache(); client.check();
         }, ticket));
-      } catch { settleFailure(operation); }
+      } catch { settleFailure(operation, deletionRejected); }
       finally {
         if (monotonic() >= runtime.deadline || runtime.paused || storeSafePhase(operation.id) !== "pending") pending.delete(operation.id);
         publish(operation.accountId);
