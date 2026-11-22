@@ -97,7 +97,8 @@ function createAccess({ accountById, bindAccount, assertAccountCurrent, generati
           async deleteLabel(id, expectedName) {
             check();
             if (!gmail) throw Object.assign(new Error("Safe folder deletion is unavailable for this transport."), { code: "unsupported", operationIssued: false });
-            await gmail.api.deleteLabel(id, { expectedName }); check();
+            // The manager checks ownership after this acknowledgement, outside its provider-rejection handler.
+            await gmail.api.deleteLabel(id, { expectedName });
           },
           async refreshCache() { check(); await refreshCache(account, transport, check); check(); },
         };

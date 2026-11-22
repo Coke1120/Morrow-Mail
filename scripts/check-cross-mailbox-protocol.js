@@ -14,7 +14,7 @@ function fixture(t,options={}){
   t.after(()=>{ledger.close();fs.rmSync(dir,{recursive:true,force:true})});
   const accounts=new Map(["source","destination"].map(id=>[id,{id,email:id+"@fixture.invalid",username:id+"@fixture.invalid",created_at:1,
     profile:options[id+"Gmail"]||options[id+"LegacyGmail"]?"gmail":"custom",auth_kind:options[id+"Gmail"]||options[id+"LegacyGmail"]?"oauth2":"password",mail_transport:options[id+"Gmail"]?"gmail_api":"imap",
-    imap_host:"imap.fixture.invalid",imap_port:993,imap_tls:1,gmail_generation:1,epoch:1,revision:1}]));
+    imap_host:"imap.fixture.invalid",imap_port:993,imap_tls:1,gmail_generation:11,epoch:1,revision:1}]));
   const row={id:"source-message",account_id:"source",folder_path:"INBOX",uid:4,uid_validity:11,gmail_id:options.sourceGmail?"original-provider-id":null,
     rfc_message_id:"<duplicate@fixture.invalid>",draft_pending:0,is_draft:0,unread:1,starred:1,date_iso:new Date(DATE).toISOString(),date_source:"header"};
   const rows=new Map([[row.id,row]]);
@@ -25,7 +25,7 @@ function fixture(t,options={}){
   const publicAccount=account=>({id:account.id,email:account.email,imapUsername:account.username,authKind:account.auth_kind,imapSmtpProfile:account.profile,
     mailTransport:account.mail_transport,bodyEpoch:account.epoch,...(account.profile==="custom"?{imapSmtpCustom:{imap:{host:account.imap_host,port:account.imap_port,tls:!!account.imap_tls}}}:{})});
   const owner=id=>{const account=accounts.get(id);return account&&{binding:digest(JSON.stringify([account.id,account.created_at,account.username,account.imap_host,account.imap_port,account.imap_tls,account.mail_transport,account.mail_transport==='gmail_api'?googleClient:null])),generation:account.epoch,revision:account.revision}};
-  const db={accountById:id=>accounts.get(id),messageById:id=>rows.get(id),folderByPath:(id,folder)=>folder==="INBOX"?(id==="source"?cacheFolder:{...cacheFolder,uid_validity:state.uidValidity}):null};
+  const db={accountById:id=>accounts.get(id),messageById:id=>rows.get(id),gmailMap:(id,providerId)=>id==="source"&&providerId==="original-provider-id"?{local_uid:4}:null,folderByPath:(id,folder)=>folder==="INBOX"?(id==="source"?cacheFolder:{...cacheFolder,uid_validity:state.uidValidity}):null};
   const queues=new Map();
   const exclusive=async(id,work)=>{const prior=queues.get(id)||Promise.resolve();let release;const held=new Promise(resolve=>{release=resolve});queues.set(id,held);await prior;try{return await work()}finally{release();if(queues.get(id)===held)queues.delete(id)}};
   const clients={};
@@ -57,7 +57,7 @@ function fixture(t,options={}){
           return {id,source:saved.raw,internalDate:String(saved.date),labelIds:role==="source"?["INBOX","UNREAD","STARRED"]:saved.labels}},
         async getMessage(id){await hook("full:"+role);return {id,labelIds:["INBOX","UNREAD","STARRED"],payload:{mimeType:"text/plain",body:{size:14,data:Buffer.from("Synthetic body").toString("base64url")}}}},
         async attachment(){throw new Error("Unexpected synthetic attachment read")},
-        async importMessage(raw,labels,{beforeSubmit}){await hook("token:"+role);beforeSubmit();state.uploads++;const id="imported-"+state.uploads;
+        async importMessage(raw,labels,{beforeSubmit}){await hook("token:"+role);if(state.importOverride)return state.importOverride(raw,labels,{beforeSubmit});beforeSubmit();state.uploads++;const id="imported-"+state.uploads;
           uploaded.set(id,{raw:state.wrongRaw?Buffer.from(raw.toString().replace("Synthetic body","Different body")):Buffer.from(raw),labels,date:DATE});await hook("import:"+role);return {id}},
         async send(){throw new Error("Copy must never send")},async saveDraft(){throw new Error("Copy must never upload a draft")},
       }};
@@ -122,6 +122,38 @@ for(const kind of ["missing APPENDUID","changed APPENDUID UIDVALIDITY","mismatch
     assert.equal((await f.copy(await f.review())).status,"unknown");assert.equal((await f.copy(await f.review())).status,"unknown");assert.equal(f.state.uploads,1);
   });
 }
+test("Copy requires a current, mapped Gmail source before admitting a review", async t => {
+  const f = fixture(t, { sourceGmail: true });
+  for (const source of [
+    { uid_validity: 10, gmail_id: null },
+    { uid_validity: 10, gmail_id: "original-provider-id" },
+    { uid_validity: 11, gmail_id: "unmapped-provider-id" },
+  ]) {
+    Object.assign(f.row, source);
+    await assert.rejects(f.review(), /sync/i);
+    assert.deepEqual(f.events, []);
+    assert.equal(f.ledger.list().length, 0);
+  }
+});
+test("An explicit Gmail Import rejection permits only a new review; readback failure stays uncertain", async t => {
+  const f = fixture(t, { destinationGmail: true });
+  const rejected = createGmailMailApi({
+    accessToken: async () => "synthetic",
+    fetchImpl: async () => new Response("{}", { status: 429 }),
+  });
+  f.state.importOverride = rejected.importMessage;
+  const review = await f.review();
+  await assert.rejects(f.copy(review), /HTTP 429/);
+  assert.equal(f.ledger.list()[0].phase, "not_uploaded");
+  await assert.rejects(f.copy(review), /review/i);
+  f.state.importOverride = null;
+  f.setHook(async stage => {
+    if (stage === "raw:destination") await rejected.raw("destination-readback");
+  });
+  assert.equal((await f.copy(await f.review())).status, "unknown");
+  assert.equal(f.ledger.list()[0].phase, "unknown");
+  assert.equal(f.state.uploads, 1);
+});
 test("Google client change during source read retires both-account ticket before destination import",async t=>{
   const f=fixture(t,{sourceGmail:true,destinationGmail:true}),review=await f.review();f.setHook(at=>{if(at==="full:source")f.clientChange()});
   await assert.rejects(f.copy(review),/changed/);assert.equal(f.state.uploads,0);
