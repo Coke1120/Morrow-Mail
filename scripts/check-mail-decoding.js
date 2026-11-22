@@ -295,13 +295,86 @@ async function run() {
     const pane = render(loadedHtml); assert.equal(pane.querySelector(".body").textContent, goodPlain.toString()); assert.match(pane.textContent, /losing characters/);
     const several = await gmail({mimeType:"multipart/mixed",headers:[],parts:[part(goodPlain),part(badHtml,"utf-8","text/html"),part(Buffer.from("<p>Another HTML section</p>"),"utf-8","text/html")]});
     assert.equal(several.decoding.ambiguousAlternatives,true); assert.ok(presented(several).htmlBody,"multiple body sections need an explicit view choice");
+    const { parseArchive, createLocalStore, ARCHIVE_ID } = require("../host/mail/local-folders");
+    const container = (subtype, ...parts) => ({ mimeType: `multipart/${subtype}`, headers: [], body: { size: 0 }, parts });
+    function providerPart(value, id = "") {
+      const headers = [...value.headers];
+      if (!headers.some(row => row.name === "Content-Type")) {
+        headers.push({ name: "Content-Type", value: value.parts ? `${value.mimeType}; boundary="fixture-${id || "root"}"` : value.mimeType });
+      }
+      const result = { ...value, partId: id, headers };
+      if (value.parts) result.parts = value.parts.map((child, index) => providerPart(child, id ? `${id}.${index + 1}` : String(index + 1)));
+      return result;
+    }
+    const plainPart = part(goodPlain), htmlPart = part(badHtml, "utf-8", "text/html");
+    const literalPlain = "Sender literal � 49 15";
+    const fixtureFile = part(Buffer.from("synthetic attachment"), "", "application/octet-stream");
+    fixtureFile.filename = "fixture.bin";
+    fixtureFile.headers.push({ name: "Content-Disposition", value: 'attachment; filename="fixture.bin"' });
+    const readerCases = [
+      ["independent-mixed", container("mixed", plainPart, htmlPart), false],
+      ["related-alternative", container("mixed", container("alternative",
+        part(Buffer.from(literalPlain)), container("related", htmlPart, inline)), fixtureFile), true],
+      ["same-related-branch", container("alternative", container("related", htmlPart, plainPart, inline), fixtureFile), false],
+      ["different-alternative-groups", container("mixed", container("alternative", plainPart, fixtureFile),
+        container("alternative", htmlPart, fixtureFile)), false],
+    ];
+    const archivePath = path.join(directory, "decoding-archive.sqlite");
+    const savedCases = [];
+    const archiveStore = createLocalStore(archivePath);
+    try {
+      for (const [name, tree, fallback] of readerCases) {
+        const payload = providerPart(tree), raw = originalMime(payload);
+        const archive = await parseArchive(raw);
+        assert.ok(archive.body.htmlBody, name);
+        assert.equal(archive.info.decoding.provenAlternatives, fallback, name + " raw MIME proof");
+        const localId = archiveStore.save(name, ARCHIVE_ID, archive).message_id;
+        const gmailValue = await gmail(payload, name);
+        assert.equal(gmailValue.decoding.provenAlternatives, fallback, name + " Gmail full MIME proof");
+        const gmailRow = db.gmailCopies("gmail", name)[0];
+        assert.ok(gmailRow.html_body, name + " cached HTML");
+        savedCases.push({ name, fallback, raw, localId, gmailId: gmailRow.id });
+      }
+    } finally { archiveStore.close(); }
+    const reopened = createLocalStore(archivePath);
+    try {
+      for (const { name, fallback, raw, localId, gmailId } of savedCases) {
+        assert.deepEqual(reopened.raw(localId), raw, name + " original EML");
+        for (const loaded of [reopened.message(localId), await read(gmailId)]) {
+          const reader = render(loaded), manual = reader.querySelector('[data-action="plain-body"]');
+          assert.match(loaded.encodingWarning, /losing characters/, name);
+          if (fallback) {
+            assert.equal(loaded.htmlBody, null, name);
+            assert.equal(manual, null, name);
+            assert.equal(reader.querySelector(".body").textContent.trim(), literalPlain, name);
+          } else {
+            assert.ok(loaded.htmlBody, name);
+            assert.ok(manual, name);
+            manual.click();
+            const shown = reader.querySelector(".body.is-plain");
+            assert.ok(shown, name);
+            if (name === "independent-mixed") assert.ok(shown.textContent.includes(goodPlain.toString()), name);
+          }
+        }
+      }
+    } finally { reopened.close(); }
     const manualPane = render({ id: "legacy-alternative", accountId: "gmail", htmlBody: '<p>�49�15</p><script>window.leaked=true</script><img src="https://fixture.invalid/track">', textBody: goodPlain.toString() });
     const toggle = manualPane.querySelector('[data-action="plain-body"]');
     assert.ok(toggle); assert.equal(toggle.getAttribute("aria-pressed"), "false");
     toggle.click(); assert.equal(manualPane.querySelector(".body").textContent, goodPlain.toString()); assert.equal(toggle.getAttribute("aria-pressed"), "true");
     toggle.click(); assert.match(manualPane.querySelector(".body").textContent, /�49�15/); assert.equal(manualPane.querySelector("script, img"), null);
-    // Legacy cache rows get an honest uncertainty notice, without a mailbox scan.
+    // Keep stored warnings and manual view for old rows without MIME proof.
     const legacy = db.gmailCopies("gmail", htmlValue.providerId)[0];
+    const legacyFlags = JSON.parse(legacy.decoding_json);
+    delete legacyFlags.provenAlternatives;
+    db.updateMessage(legacy.id, { decoding_json: JSON.stringify(legacyFlags) });
+    const beforeLegacy = fetches.length, unproven = await read(legacy.id);
+    assert.equal(unproven.htmlBody, legacy.html_body);
+    assert.match(unproven.encodingWarning, /losing characters/);
+    assert.doesNotMatch(unproven.encodingWarning, /plain-text version is shown/);
+    assert.ok(render(unproven).querySelector('[data-action="plain-body"]'));
+    assert.equal(fetches.length, beforeLegacy);
+    // Older rows without diagnostics still disclose uncertainty.
     db.updateMessage(legacy.id, { text_body: "�49�15", html_body: null, from_addr:"� <sender@fixture.invalid>", from_display_name:"�", subject:"�", decoding_json: null, body_complete: 1, body_warning: null });
     const before = fetches.length, old = await read(legacy.id);
     assert.match(old.encodingWarning, /may already be/); assert.equal(old.bodyWarning, ""); assert.equal(fetches.length, before);

@@ -16,11 +16,12 @@ again. Raw IMAP MIME retains MailParser's transfer/charset decoding.
 
 `messages.decoding_json` is nullable. Version 1 stores fixed booleans only: loss,
 unsupported charset, uncertainty in already-decoded headers, loss in HTML/plain
-parts, the presence of a checked readable plain part, and ambiguous multiple body
-alternatives. It stores no text,
-charset labels, addresses, raw bytes or telemetry. Existing caches are not
-scanned or invalidated at startup. No credential, provider-write or OAuth path is
-added. A future version must treat unknown diagnostic versions as unverified.
+parts, the presence of a checked readable plain part, ambiguous multiple body
+parts, and proof of a MIME alternative pair. Group and branch identities exist
+only during parsing. Diagnostics store no text, charset labels, addresses, raw
+bytes or telemetry. Existing caches are not scanned or invalidated at startup.
+No credential, provider-write or OAuth path is added. A future version must
+treat unknown diagnostic versions as unverified.
 
 Gmail checks charset conversion while decoding part bytes. IMAP makes a bounded
 diagnostic pass with mailsplit's public transfer-decoded leaf streams over the
@@ -45,13 +46,15 @@ download or block hydration of a complete draft. Provider-decoded text bypasses
 the old whole-string mojibake repair, preserving literal `Ã©` when its declared
 charset produces that text; the byte-decoding path does not guess a second charset.
 
-If HTML decoding provably lost characters and an independently checked plain
-alternative is intact, the host presents plain text. Multiple body sections keep
-the existing presentation and require an explicit view choice. Original HTML stays in the
-cache. When both versions are available, a per-reading-surface button switches
-between sanitized HTML and text nodes. Switching never changes the cached mail
-or permits remote images. Unverified old content is not automatically switched
-based on a literal replacement character alone.
+The host automatically presents plain text when HTML decoding lost characters
+and the only contributing plain and HTML parts are in different branches of the
+same multipart/alternative group. A multipart/related HTML bundle occupies one
+branch. The plain part must be readable and nonblank. A byte-verified literal
+U+FFFD can be part of healthy text. Independent or ambiguous body sections and
+older rows without MIME proof keep available HTML, the manual view switch, and
+existing warnings. Missing proof triggers neither migration nor refetch.
+Original HTML stays in the cache. The view switch uses sanitized HTML or text
+nodes and keeps the existing remote-image policy.
 
 ## Existing caches and explicit retry
 
@@ -89,8 +92,9 @@ persistence, host reads/retry and the renderer using generated fixtures only.
 It covers quoted/RFC2231 parameters; UTF-8, Big5, GB18030, CP932, EUC-JP,
 ISO-2022-JP, UTF-7 and Windows-1252; B headers; base64/QP/raw input and split UTF-8
 streams; malformed bytes and base64url; valid literal U+FFFD; complete/partial and
-reopened caches; safe plain-text alternatives and image/script controls; explicit
-retry and failure; emoji snippets and source caps; and the rendered Features tab.
+reopened caches; independent MIME sections, related and conflicting alternative
+branches, legacy flags and image/script controls; explicit retry and failure;
+emoji snippets and source caps; and the rendered Features tab.
 Outgoing Unicode MIME is round-tripped without sending anything. CI runs the
 fixture through the ordinary boot-path check. Live provider behavior and native
 font coverage remain outside synthetic validation.

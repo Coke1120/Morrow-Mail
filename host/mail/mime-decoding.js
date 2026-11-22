@@ -7,7 +7,7 @@ const { Readable } = require("node:stream");
 
 function quality() {
   return { version: 1, lossy: false, unsupported: false, uncertain: false, htmlLossy: false, textLossy: false,
-    textGood: false, hasText: false, hasHtml: false, ambiguousAlternatives: false };
+    textGood: false, hasText: false, hasHtml: false, ambiguousAlternatives: false, provenAlternatives: false };
 }
 
 function charsetOf(contentType) {
@@ -63,7 +63,26 @@ function note(target, decoded, type) {
   target.uncertain ||= decoded.uncertain;
   if (decoded.lossy && type === "text/html") target.htmlLossy = true;
   if (decoded.lossy && type === "text/plain") target.textLossy = true;
-  if (type === "text/plain" && decoded.text.trim() && !decoded.lossy && !decoded.unsupported && !decoded.text.includes("\uFFFD")) target.textGood = true;
+  if (type === "text/plain" && decoded.text.trim() && !decoded.lossy && !decoded.unsupported && !decoded.uncertain) target.textGood = true;
+}
+
+function proveAlternatives(bodyParts, parentOf, typeOf, isAttachment) {
+  function branchOf(leaf) {
+    if (!leaf || isAttachment(leaf)) return null;
+    let group, branch = leaf;
+    for (let part = parentOf(leaf); part; part = parentOf(part)) {
+      if (isAttachment(part)) return null;
+      const type = typeOf(part);
+      // The nearest alternative owns the leaf. A related bundle occupies one branch.
+      if (type === "multipart/alternative" && !group) group = part;
+      else if (!["multipart/mixed", "multipart/related", "multipart/alternative"].includes(type)) return null;
+      if (!group) branch = part;
+    }
+    return group && { group, branch };
+  }
+  const plain = branchOf(bodyParts["text/plain"]);
+  const html = branchOf(bodyParts["text/html"]);
+  return !!(plain && html && plain.group === html.group && plain.branch !== html.branch);
 }
 
 function noteHeaders(target, parsed) {
@@ -76,10 +95,21 @@ function noteHeaders(target, parsed) {
 async function inspectSource(source) {
   const result = quality();
   const splitter = new Splitter();
+  const bodyParts = {};
+  const isAttachment = part => part.filename || part.disposition === "attachment" || part.contentType === "message/rfc822";
   const streamer = new Streamer(node => {
+    if (node.disposition && node.disposition !== "inline") return false;
+    // MailParser can include a delivery report or forwarded message in the
+    // displayed body alongside the alternatives we check below.
+    if (node.contentType === "message/delivery-status" || node.messageNode) result.ambiguousAlternatives = true;
     if (!["text/plain", "text/html"].includes(node.contentType)) return false;
     for (let part = node; part; part = part.parentNode) {
-      if (part.filename || part.disposition === "attachment" || part.contentType === "message/rfc822") return false;
+      if (isAttachment(part)) {
+        // A named inline text section is displayed even though it is excluded
+        // from charset diagnostics. Keep that section available in the reader.
+        result.ambiguousAlternatives = true;
+        return false;
+      }
     }
     return true;
   });
@@ -90,6 +120,7 @@ async function inspectSource(source) {
       try {
         for await (const chunk of decoder) chunks.push(Buffer.from(chunk));
         note(result, decode(Buffer.concat(chunks), node.charset || "utf-8"), node.contentType);
+        bodyParts[node.contentType] = node;
       } catch { result.uncertain = true; }
       finally { done(); }
     })();
@@ -101,6 +132,8 @@ async function inspectSource(source) {
   try { await pipeline(Readable.from([source]), splitter, streamer); }
   catch { result.uncertain = true; }
   await Promise.all(reads);
+  result.provenAlternatives = !result.uncertain && !result.ambiguousAlternatives
+    && proveAlternatives(bodyParts, part => part.parentNode, part => part.contentType, isAttachment);
   return result;
 }
 
@@ -110,7 +143,7 @@ function parse(value) {
     const item = typeof value === "string" ? JSON.parse(value) : value;
     if (item?.version !== 1) return null;
     const result = quality();
-    for (const key of ["lossy", "unsupported", "uncertain", "htmlLossy", "textLossy", "textGood", "hasText", "hasHtml", "ambiguousAlternatives"]) result[key] = item[key] === true;
+    for (const key of Object.keys(result)) if (key !== "version") result[key] = item[key] === true;
     return result;
   } catch { return null; }
 }
@@ -121,7 +154,8 @@ function presentation(row, presented) {
   if (row.draft_pending || row.uid === 0) return { ...presented, warning: "" };
   const info = parse(row.decoding_json);
   let warning = "";
-  const plainFallback = info?.htmlLossy && !info.textLossy && info.textGood && !info.ambiguousAlternatives;
+  const plainFallback = info?.provenAlternatives && info.htmlLossy && !info.textLossy && info.textGood
+    && !info.ambiguousAlternatives && presented.htmlBody && presented.textBody?.trim();
   if (info?.lossy) warning = "Some message text could not be decoded without losing characters. The available text is shown; missing characters cannot be recovered from this cached copy.";
   else if (info?.unsupported) warning = "This message uses an unrecognized text encoding. The available text may differ from the original.";
   else if (info?.uncertain) {
@@ -140,4 +174,4 @@ function snippet(text, limit = 180) {
   return cut;
 }
 
-module.exports = { quality, charsetOf, decode, note, noteHeaders, inspectSource, serialize, parse, presentation, snippet };
+module.exports = { quality, charsetOf, decode, note, proveAlternatives, noteHeaders, inspectSource, serialize, parse, presentation, snippet };
