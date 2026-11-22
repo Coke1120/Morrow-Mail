@@ -5,8 +5,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { verifyManifest, validateArtifact } = require('./update-manifest');
-const { extractZip, verifyBundle, waitForExit, replaceAndLaunch, preserveQuarantine, requireQuarantine, assessBundleTrust } = require('./update-installer');
-const { childEnvironment, assertDirectoryIdentity, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay, privilegedRename } = require('./update-launcher');
+const { extractZip, verifyBundle, replaceAndLaunch, preserveQuarantine, requireQuarantine, assessBundleTrust } = require('./update-installer');
+const { childEnvironment, assertDirectoryIdentity, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay, privilegedRename, QUIT_TIMEOUT_MS } = require('./update-launcher');
 async function journal(staging, state, extra = {}) {
   const temp = path.join(staging, 'journal.next');
   await writeExclusive(temp, JSON.stringify({ state, at: new Date().toISOString(), ...extra }));
@@ -17,6 +17,20 @@ async function cancelled(staging) {
 }
 function definitelyExited(pid) {
   try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; }
+}
+async function waitApprovedExit({ staging, nonce, pid, deadline, now = Date.now, sleep = delay, exited = definitelyExited }) {
+  while (now() < deadline) {
+    if (await cancelled(staging)) return false;
+    if (exited(pid)) {
+      let approval;
+      try { approval = await readPrivateJSON(path.join(staging, 'approved.json')); }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+      if (approval.nonce !== nonce || approval.pid !== pid) throw new Error('Invalid update exit approval.');
+      return !(await cancelled(staging));
+    }
+    await sleep(100);
+  }
+  return false;
 }
 async function waitReady({ receipt, nonce, version, launchState, timeout = 60000, healthyMs = 2000, sleep = delay, now = Date.now, exited = definitelyExited }) {
   const deadline = now() + timeout;
@@ -72,9 +86,9 @@ async function run(staging) {
   const check = () => verifyManifest(manifestBytes, signature, { publicKey, currentVersion, arch, platform: 'darwin', expectedVersion: version });
   check();
   await journal(staging, 'waiting-for-exit');
-  await writeExclusive(path.join(staging, 'ready.json'), JSON.stringify({ nonce, pid: process.pid }));
-  await waitForExit([pid]);
-  if (await cancelled(staging)) { await journal(staging, 'cancelled'); return; }
+  const deadline = Date.now() + QUIT_TIMEOUT_MS;
+  await writeExclusive(path.join(staging, 'ready.json'), JSON.stringify({ nonce, pid: process.pid, deadline }));
+  if (!await waitApprovedExit({ staging, nonce, pid, deadline })) { await journal(staging, 'cancelled'); return; }
   let replacementAttempted = false;
   try {
   // Verify signed bytes and archive again after the installed app has stopped.
@@ -91,7 +105,7 @@ async function run(staging) {
   const staged = path.join(staging, 'candidate.app');
   await fs.rename(extracted, staged);
   const backup = path.join(staging, 'previous.app');
-  await journal(staging, 'installing', { target, backup, version });
+  await journal(staging, 'installing', { target, backup, version, helperPid: process.pid });
   const launchState = { exited: false, code: null };
   const appEnvironment = childEnvironment();
   await verifyBundle(target, { version: currentVersion, arch });
@@ -136,4 +150,4 @@ if (require.main === module) {
     process.exitCode = 1;
   });
 }
-module.exports = { launchTrusted, run, waitReady, journal };
+module.exports = { launchTrusted, run, waitReady, waitApprovedExit, journal };

@@ -12,7 +12,7 @@ if (process.argv.includes('--windows-paths')) {
   // Exercise Windows path semantics even when the development machine is POSIX.
   const filename = require.resolve('../host/update-macos');
   const localRequire = require('node:module').createRequire(filename);
-  const context = { module: { exports: {} }, process, Buffer, TextDecoder, setTimeout,
+  const context = { module: { exports: {} }, process, Buffer, TextDecoder, setTimeout, clearTimeout, AbortController,
     require: name => name === 'node:path' ? path : localRequire(name) };
   require('node:vm').runInNewContext(require('node:fs').readFileSync(filename, 'utf8'), context, { filename });
   createMacUpdater = context.module.exports.createMacUpdater;
@@ -80,6 +80,40 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
   assert.equal(cached.snapshot().downloaded, true);
   assert.equal(cached.snapshot().version, '0.2.7', 'Failed replacement downloads cannot relabel the older retained archive');
   assert.match(cached.snapshot().error, /newer download interrupted/);
+  let current = { data: bytes, signature: sig }, shown, releaseValidation;
+  let pauseValidation = false, networkFailure = false, discarded = 0;
+  const overlap = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey,
+    fetchBytes: async url => {
+      if (networkFailure) throw Error('Fixture offline');
+      return url.endsWith('.sig') ? Buffer.from(current.signature) : current.data;
+    },
+    downloadManagedArtifact: async manifest => ({ archive: manifest.version, discard: async () => { discarded++; } }),
+    validateArtifact: async () => {
+      if (pauseValidation) await new Promise(resolve => { releaseValidation = resolve; });
+    },
+    requireQuarantine: async () => {},
+    shell: { showItemInFolder: file => { shown = file; } },
+  });
+  await overlap.check();
+  networkFailure = true;
+  assert.equal((await overlap.check()).manualAvailable, true);
+  networkFailure = false;
+  pauseValidation = true;
+  const handoffFlight = overlap.manual();
+  current = nextRelease;
+  assert.equal(overlap.check(), handoffFlight, 'Discovery must wait for the Finder handoff');
+  releaseValidation();
+  await handoffFlight;
+  assert.equal(shown, '0.2.6');
+  assert.equal(discarded, 0);
+  pauseValidation = false;
+  assert.equal((await overlap.check()).version, '0.2.7');
+  assert.equal(discarded, 1, 'Only the replaced candidate is discarded');
+  let recovery = { message: 'Recovery fixture' };
+  const recovering = createMacUpdater({ app, state: {}, resourcesPath, recoveryStatus: async () => recovery });
+  assert.equal((await recovering.refreshStatus()).error, 'Recovery fixture');
+  recovery = null;
+  assert.equal((await recovering.refreshStatus()).error, null, 'Normal status clears only the earlier recovery message');
   const tampered = createMacUpdater({ app, state: {}, arch: 'arm64', publicKey,
     fetchBytes: async url => url.endsWith('.sig') ? Buffer.from(nextRelease.signature) : bytes,
     downloadArtifact: () => assert.fail('Mismatched pinned signature must still reject before download') });
@@ -91,9 +125,14 @@ const app = { isPackaged: true, getVersion: () => "0.2.5", getPath: () => fixtur
   const updater = createMacUpdater({ app, state, arch: "arm64", publicKey, resourcesPath,
     fetchBytes: async url => { fetches++; return Buffer.from(url.endsWith(".sig") ? sig : bytes); },
     downloadArtifact: async (_manifest, options) => { downloads++; options.onProgress({ percent: 50 }); return archive; },
-    startInstaller: async options => { starts++; assert.equal(options.currentVersion, "0.2.5"); assert.equal(options.target, target); return { cancel: async () => {} }; },
+    startInstaller: async options => {
+      starts++;
+      assert.equal(options.currentVersion, "0.2.5");
+      assert.equal(options.target, target);
+      return { deadline: Date.now() + 120000, approve: async () => {}, cancel: async () => {} };
+    },
   });
-  updater.configure({ prepare: async () => () => { resumes++; }, quit: () => { quits++; } });
+  updater.configure({ prepare: async () => () => { resumes++; }, quit: async ({ beforeExit }) => { await beforeExit(); quits++; return true; } });
   assert.equal(updater.init().enabled, true);
   await Promise.all([updater.check(), updater.check()]);
   assert.equal(fetches, 2); assert.equal(downloads, 1); assert.equal(state.downloaded, true); assert.equal(state.progress, 100);

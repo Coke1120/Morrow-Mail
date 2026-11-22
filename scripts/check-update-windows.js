@@ -8,15 +8,17 @@ const { createGate } = require('../host/update-quiescence');
 (async () => {
   const handlers = {}, listeners = {}, timers = new Map();
   let installs = 0, preparations = 0, resumes = 0, refuse = true, emitError = false, quits = 0;
-  let quitBehavior = () => {};
+  let quitBehavior = async ({ beforeExit }) => { await beforeExit(); return true; };
   const app = new EventEmitter();
   app.isPackaged = true;
   const gate = createGate();
   const contents = { mainFrame: {} }, win = { isDestroyed: () => false, webContents: contents };
   const event = { sender: contents, senderFrame: contents.mainFrame };
+  let finishDiscovery;
   const provider = { on: (name, fn) => { listeners[name] = fn; }, setFeedURL() {},
+    checkForUpdates: () => new Promise(resolve => { finishDiscovery = resolve; }),
     quitAndInstall() { installs++; assert.equal(gate.closed, true); assert.equal(gate.pending, 0); if (emitError) listeners.error(Error('installer failed')); } };
-  const sandbox = { module: { exports: {} }, Date,
+  const sandbox = { module: { exports: {} }, Date, AbortController,
     setTimeout(fn, ms) { const id = { unref() {} }; timers.set(id, { fn, ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
     require(name) {
@@ -28,7 +30,7 @@ const { createGate } = require('../host/update-quiescence');
     } };
   vm.runInNewContext(fs.readFileSync(require.resolve('../host/updater'), 'utf8'), sandbox);
   const updater = sandbox.module.exports;
-  updater.configureInstall({ getWindow: () => win, quit: () => { quits++; quitBehavior(); }, prepare: async () => {
+  updater.configureInstall({ getWindow: () => win, quit: options => { quits++; return quitBehavior(options); }, prepare: async () => {
     preparations++;
     if (refuse) throw Error('Unsaved draft');
     await gate.prepare();
@@ -38,6 +40,11 @@ const { createGate } = require('../host/update-quiescence');
   assert.equal(provider.autoInstallOnAppQuit, false, 'Normal quit must never start installation without preparation');
   assert.equal(updater.state.requiresExplicitInstall, true);
   assert.throws(() => handlers['host:updateInstall']({ ...event, senderFrame: {} }), /main application window/);
+  const discovery = updater.requestCheck();
+  await handlers['host:updateInstall'](event);
+  assert.equal(preparations, 0, 'An older download cannot start installation while discovery is in flight');
+  finishDiscovery();
+  await discovery;
   await handlers['host:updateInstall'](event);
   assert.equal(installs, 0); assert.match(updater.state.error, /Unsaved draft/);
   refuse = false;
@@ -68,29 +75,32 @@ const { createGate } = require('../host/update-quiescence');
     platform: 'win32', listRows: () => [{ subject: 'fixture scheduled mail', sendAt: '2099-01-01T00:00:00Z' }],
     requestChoice: () => new Promise(resolve => { choose = resolve; }),
     cleanup: () => { cleanups++; return new Promise(resolve => { finishCleanup = resolve; }); },
-    quitApp: () => quitBehavior(),
+    quitApp: () => {
+      const decision = controller.onBeforeQuit({ preventDefault() {} });
+      if (decision === 'allow') app.emit('quit', {}, 0);
+    },
   });
-  quitBehavior = () => {
-    const decision = controller.onBeforeQuit({ preventDefault() {} });
-    if (decision === 'allow') app.emit('quit', {}, 0);
-  };
+  quitBehavior = options => controller.requestUpdateQuit(options);
   const before = installs;
-  await handlers['host:updateInstall'](event);
+  const cancelled = handlers['host:updateInstall'](event);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(installs, before);
   choose('stay');
-  await new Promise(resolve => setImmediate(resolve));
+  await cancelled;
   assert.equal(installs, before, 'Stay open must not have started any installer');
-  [...timers.values()].find(t => t.ms === 120000).fn();
-  assert.equal(app.listenerCount('quit'), 0);
-  await handlers['host:updateInstall'](event);
+  assert.equal(app.listenerCount('quit'), 0, 'Stay open immediately disarms the installer');
+  assert.equal(gate.closed, false, 'Stay open immediately reopens the write gate');
+  app.emit('quit', {}, 0);
+  assert.equal(installs, before, 'A subsequent ordinary quit must not install');
+  const accepted = handlers['host:updateInstall'](event);
   await new Promise(resolve => setImmediate(resolve));
   choose('quit');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cleanups, 1);
   assert.equal(installs, before, 'Installer waits for asynchronous cleanup too');
+  assert.equal(controller.onBeforeQuit({ preventDefault() {} }), 'blocked', 'Repeat quit cannot skip cleanup');
   finishCleanup();
-  await new Promise(resolve => setImmediate(resolve));
+  await accepted;
   assert.equal(installs, before + 1);
   assert.equal(app.listenerCount('quit'), 0);
   console.log('Windows update controller: draft refusal, draining, final-quit installation, scheduled quit refusal, cleanup, duplicates and failure recovery passed (mock installer).');

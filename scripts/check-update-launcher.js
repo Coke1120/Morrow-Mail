@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { cleanupUnstarted, trustedParent, validateParent, createSiblingStaging, openStaging, adminStagingScript, allowedPrivilegedPath, privilegedMoveScript, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, acknowledge, registerStartup, validateStaging, writeExclusive, start } = require('../host/update-launcher');
-const { launchTrusted, waitReady } = require('../host/update-helper');
+const { launchTrusted, waitReady, waitApprovedExit } = require('../host/update-helper');
 (async () => {
   let launches = 0;
   await assert.rejects(launchTrusted('/fixture.app', () => { launches++; }, async () => { throw new Error('Gatekeeper denied fixture'); }), /Gatekeeper denied/);
@@ -66,10 +66,30 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     await writeExclusive(path.join(staging, 'config.json'), JSON.stringify({ target, nonce, version }));
     assert.equal(await acknowledge({ argv: [], target, version }), false);
     assert.equal(await recoveryStatus(target), null);
-    await writeExclusive(path.join(staging, 'journal.json'), JSON.stringify({ state: 'recovery-required' }));
+    const journal = path.join(staging, 'journal.json');
+    await writeExclusive(journal, JSON.stringify({ state: 'installing', helperPid: process.pid }));
+    assert.equal(await recoveryStatus(target), null, 'An active installer is not a failed recovery');
+    await fs.writeFile(journal, JSON.stringify({ state: 'failed' }));
+    assert.doesNotMatch((await recoveryStatus(target)).message, /restoring a verified backup/);
+    await fs.mkdir(path.join(staging, 'previous.app'));
+    await fs.writeFile(journal, JSON.stringify({ state: 'recovery-required' }));
     assert.match((await recoveryStatus(target)).message, /Recovery files are retained/);
-    await fs.writeFile(path.join(staging, 'journal.json'), JSON.stringify({ state: 'installed' }));
+    assert.match((await recoveryStatus(target)).message, /restoring a verified backup/);
+    await fs.writeFile(journal, JSON.stringify({ state: 'installed' }));
     assert.equal(await recoveryStatus(target), null);
+    const approval = path.join(staging, 'approved.json'), pid = process.pid + 100000;
+    let quitClock = 0;
+    const exit = { staging, nonce, pid, deadline: 500, now: () => quitClock, sleep: async ms => { quitClock += ms; } };
+    assert.equal(await waitApprovedExit({ ...exit, exited: () => true }), false, 'An ordinary exit without approval cannot install');
+    await writeExclusive(approval, JSON.stringify({ nonce, pid }));
+    await assert.rejects(writeExclusive(approval, '{}'), /EEXIST/);
+    assert.equal((await fs.stat(approval)).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(await fs.readFile(approval, 'utf8')), { nonce, pid });
+    assert.equal(await waitApprovedExit({ ...exit, exited: () => false }), false, 'Approval alone cannot install while the app is alive');
+    quitClock = 0;
+    assert.equal(await waitApprovedExit({ ...exit, exited: () => true }), true);
+    await writeExclusive(path.join(staging, 'cancel'), 'cancel');
+    assert.equal(await waitApprovedExit({ ...exit, exited: () => true }), false, 'Cancellation wins over an approval');
 
     await assert.rejects(acknowledge({ argv: [...argv, argv[0]], target, version }), /arguments/);
     await assert.rejects(acknowledge({ argv, target, version: '0.2.5' }), /identity/);
@@ -232,13 +252,14 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     await denyAcl.validateParent(path.join(aclParent, 'Morrow Mail.app'));
     const vm = require('node:vm'), localRequire = require('node:module').createRequire(require.resolve('../host/update-launcher'));
     const denied = Object.assign(Error('fixture Gatekeeper denial'), { code: 'UPDATE_MANUAL_TRUST' });
+    let assessmentError = denied;
     let attempts = 0;
     const context = { module: { exports: {} }, __dirname: path.dirname(require.resolve('../host/update-launcher')), setTimeout,
       process: { platform: 'darwin', pid: process.pid, execPath: process.execPath, getuid: () => process.getuid(), env: {} },
       require(name) {
         if (name === './update-manifest') return { verifyManifest: () => ({ version }), validateArtifact: async () => {} };
         if (name === './update-installer') return { preserveQuarantine: async () => {}, requireQuarantine: async () => {}, verifyBundle: async () => {},
-          extractZip: async (_file, destination) => { await fs.mkdir(destination); return destination; }, assessBundleTrust: async () => { throw denied; },
+          extractZip: async (_file, destination) => { await fs.mkdir(destination); return destination; }, assessBundleTrust: async () => { throw assessmentError; },
           removeTree: async target => fs.rm(target, { recursive: true, force: true }) };
         if (name === 'node:util') return { promisify: () => async () => ({ stdout: '' }) };
         if (name === 'node:child_process') return { spawn: () => { attempts++; assert.fail('Denied candidate must not spawn'); } };
@@ -247,7 +268,10 @@ const { launchTrusted, waitReady } = require('../host/update-helper');
     vm.runInNewContext(await fs.readFile(require.resolve('../host/update-launcher'), 'utf8'), context);
     const artifact = path.join(root, 'source.zip'); await fs.writeFile(artifact, 'fixture');
     const before = (await fs.readdir(root)).sort();
-    await assert.rejects(context.module.exports.start({ target, archive: artifact, manifestBytes: 'fixture', signature: 'fixture', publicKey: 'fixture', currentVersion: '0.2.5', arch: 'arm64', pid: process.pid, execPath: process.execPath }), e => e === denied);
+    const request = { target, archive: artifact, manifestBytes: 'fixture', signature: 'fixture', publicKey: 'fixture', currentVersion: '0.2.5', arch: 'arm64', pid: process.pid, execPath: process.execPath };
+    await assert.rejects(context.module.exports.start(request), e => e === denied);
+    assessmentError = Object.assign(Error('fixture assessment tool unavailable'), { code: 'ENOENT' });
+    await assert.rejects(context.module.exports.start(request), e => e.code === 'UPDATE_MANUAL_TRUST' && e.cause === assessmentError);
     assert.equal(attempts, 0); assert.deepEqual((await fs.readdir(root)).sort(), before, 'Denied preflight must not leave staging copies');
     console.log('Update launcher: private handoff, startup identity, duplicate receipt and uncertain-exit recovery checks passed.');
   } finally { await fs.rm(root, { recursive: true, force: true }); }
