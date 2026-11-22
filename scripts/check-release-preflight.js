@@ -151,7 +151,7 @@ const { verifyManifest } = require('../host/update-manifest');
   for (const checkout of [source, source.replace(/\n/g, '\r\n')]) {
   const workflow = checkout.replace(/\r\n/g, '\n');
   const windows = workflow.split('\n  windows:\n')[1].split('\n  macos:\n')[0];
-  const macos = workflow.split('\n  macos:\n')[1];
+  const macos = workflow.split('\n  macos:\n')[1].split('\n  publish:\n')[0];
   const macosSetuptools = 'python3 -m pip install --upgrade setuptools --break-system-packages';
   assert.ok(!windows.includes('MORROW_UPDATE_SIGNING_KEY:'));
   assert.ok(windows.includes("SIGNING_KEY_AVAILABLE: ${{ secrets.MORROW_UPDATE_SIGNING_KEY != '' }}"));
@@ -166,8 +166,6 @@ const { verifyManifest } = require('../host/update-manifest');
   assert.ok(macos.indexOf(macosSetuptools) < macos.indexOf('npm ci'));
   assert.ok(workflow.indexOf('release-preflight.js') < workflow.indexOf('npm ci'));
   assert.ok(!workflow.includes('--publish always'));
-  assert.equal((workflow.match(/runs-on:/g) || []).length, 2);
-  assert.ok(workflow.includes('needs: windows'));
   assert.ok(workflow.includes('dist:win -- --publish never'));
   assert.ok(workflow.includes('dist:mac -- --arm64 --publish never'));
   assert.ok(workflow.indexOf('verify-release-macos.js') < workflow.indexOf('sign-release-manifest.js'));
@@ -176,6 +174,48 @@ const { verifyManifest } = require('../host/update-manifest');
   }
   const nativeCheck = yaml.load(await fs.readFile(path.join(__dirname, '..', '.github/workflows/macos-release-check.yml'), 'utf8'), { schema: yaml.JSON_SCHEMA });
   const releaseWorkflow = yaml.load(source, { schema: yaml.JSON_SCHEMA });
+  assert.deepEqual(releaseWorkflow.on, { workflow_dispatch: null, push: { tags: ['v*'] } });
+  assert.deepEqual(releaseWorkflow.concurrency, { group: 'morrow-release', 'cancel-in-progress': false });
+  assert.deepEqual(releaseWorkflow.permissions, { contents: 'read' });
+  const { jobs } = releaseWorkflow;
+  assert.deepEqual(Object.keys(jobs).sort(), ['macos', 'publish', 'windows']);
+  const publisher = jobs.publish;
+  assert.deepEqual(publisher.needs.slice().sort(), ['macos', 'windows']);
+  assert.equal(publisher.if, undefined, 'Publishing requires successful dependencies');
+  assert.deepEqual(publisher.permissions, { contents: 'write' });
+  assert.equal(publisher['runs-on'], 'ubuntu-latest');
+  assert.equal(jobs.windows['runs-on'], 'windows-2022');
+  assert.ok(publisher.steps.some(step => step.run === 'npm ci --ignore-scripts'));
+  assert.ok(!JSON.stringify(publisher).includes('secrets.'));
+  const actionSteps = (job, action) => job.steps.filter(step => step.uses?.startsWith(`actions/${action}@`));
+  for (const job of Object.values(jobs)) {
+    assert.deepEqual(actionSteps(job, 'checkout').map(step => step.with), [
+      { ref: '${{ github.sha }}', 'persist-credentials': false },
+    ]);
+  }
+  const downloads = actionSteps(publisher, 'download-artifact');
+  assert.equal(downloads.length, 2);
+  const publishSteps = actionSteps(publisher, 'github-script');
+  assert.equal(publishSteps.length, 1);
+  const [publishStep] = publishSteps;
+  assert.match(publishStep.with.script, /await publish\(\{ github, context, artifactDirectory: 'staging' \}\)/);
+  assert.equal(publishStep.if, undefined);
+  for (const platform of ['windows', 'macos']) {
+    const job = jobs[platform];
+    assert.equal(job.needs, undefined, `${platform} must build independently`);
+    assert.equal(job.permissions, undefined, `${platform} must inherit read-only permissions`);
+    assert.equal(job['continue-on-error'], undefined, `${platform} failure must block publication`);
+    assert.ok(job.steps.every(step => !Object.hasOwn(step, 'continue-on-error')));
+    assert.equal(actionSteps(job, 'github-script').length, 0);
+    const name = `release-${platform}-\${{ github.run_attempt }}`;
+    const directory = `staging/release-${platform}`;
+    assert.deepEqual(actionSteps(job, 'upload-artifact').map(step => step.with), [
+      { name, path: `${directory}/`, 'if-no-files-found': 'error', 'retention-days': 7 },
+    ]);
+    const download = downloads.find(step => step.with.name === name);
+    assert.deepEqual(download.with, { name, path: directory });
+    assert.ok(publisher.steps.indexOf(download) < publisher.steps.indexOf(publishStep));
+  }
   assert.deepEqual(Object.keys(nativeCheck.on), ['pull_request']);
   assert.deepEqual(nativeCheck.on.pull_request.paths, ['.github/workflows/release.yml', '.github/workflows/macos-release-check.yml']);
   assert.deepEqual(nativeCheck.permissions, { contents: 'read' });

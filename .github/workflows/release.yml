@@ -20,6 +20,9 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -49,20 +52,20 @@ jobs:
         run: node scripts/prepare-release-assets.js --platform windows --output staging/release-windows
       - uses: actions/upload-artifact@v4
         with:
-          name: release-windows
+          name: release-windows-${{ github.run_attempt }}
           path: staging/release-windows/
           if-no-files-found: error
           retention-days: 7
 
   macos:
-    needs: windows
     # Standard GitHub-hosted ARM64 runner; public-repository compute is free.
     # Pin the OS label so macos-latest cannot silently move this build.
     runs-on: macos-15
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -103,14 +106,33 @@ jobs:
         run: node scripts/prepare-release-assets.js --platform macos --output staging/release-macos
       - uses: actions/upload-artifact@v4
         with:
-          name: release-macos
+          name: release-macos-${{ github.run_attempt }}
           path: staging/release-macos/
           if-no-files-found: error
           retention-days: 7
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: release-windows
+          name: release-windows-${{ github.run_attempt }}
           path: staging/release-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos-${{ github.run_attempt }}
+          path: staging/release-macos
       # Publication begins only after both builds and manifest authentication.
       # Publisher verifies provenance and paired assets before promoting a draft.
       - name: Publish and verify paired release
