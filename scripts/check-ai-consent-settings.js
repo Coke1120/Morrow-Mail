@@ -158,6 +158,42 @@ function setupLifecycle(t, f) {
     edit(id, value) { document.getElementById(id).value = value; document.getElementById(id).dispatchEvent(new dom.window.Event("input")); } };
 }
 
+test("Settings and Setup: saving ChatGPT keeps the API connection saved by the other window", async t => {
+  for (const older of ["settings", "setup"]) {
+    const f = await settingsLifecycle(t, { config: { chatgptModel: "fixture-chat" } });
+    const setup = setupLifecycle(t, f);
+    await tick();
+    const nextBase = "https://new.synthetic.invalid/v1", nextModel = "new-api-model";
+    if (older === "settings") {
+      setup.edit("baseUrl", nextBase);
+      setup.edit("model", nextModel);
+      await setup.get("save").onclick();
+    } else {
+      f.get("ai-base").value = nextBase;
+      f.get("ai-model").value = nextModel;
+      await f.ui.run("saveAiSettings()");
+    }
+    const get = older === "settings" ? f.get : setup.get;
+    const mode = get("ai-auth-mode");
+    mode.value = "chatgpt";
+    mode.dispatchEvent(new mode.ownerDocument.defaultView.Event("change"));
+    assert.equal(f.config.publicConfig().authMode, "api_key", "selecting a mode does not save");
+    if (older === "settings") await f.ui.run("saveAiSettings()");
+    else await get("save").onclick();
+    const saved = f.config.publicConfig();
+    assert.equal(saved.authMode, "chatgpt");
+    assert.equal(saved.chatgptModel, "fixture-chat");
+    assert.equal(saved.baseUrl, nextBase);
+    assert.equal(saved.model, nextModel);
+    assert.equal(get(older === "settings" ? "ai-base" : "baseUrl").value, nextBase);
+    assert.equal(get(older === "settings" ? "ai-model" : "model").value, nextModel);
+    assert.equal(get(older === "settings" ? "ai-status" : "status").textContent, "Saved.");
+    const payload = f.calls.filter(row => row.channel === "host:aiSaveConfig").at(-1).input;
+    for (const field of ["baseUrl", "model", "apiKey"]) assert.equal(Object.hasOwn(payload, field), false);
+    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
+  }
+});
+
 test("Setup: a late initial account read cannot overwrite a successful save baseline or newer edits", async t => {
   for (const editAgain of [false, true]) {
     const f = fixture(), gate = deferred();
@@ -167,14 +203,14 @@ test("Setup: a late initial account read cannot overwrite a successful save base
     assert.equal(setup.get("save").disabled, false);
     setup.edit("model", "saved-during-initial-load");
     await setup.get("save").onclick();
-    assert.equal(setup.run("formState(draft()) !== savedBaseline"), false);
+    assert.equal(setup.run("formState(draft()) !== formState(savedBaseline)"), false);
     if (editAgain) setup.edit("model", "newer-unsaved-model");
     gate.resolve(); await tick();
     assert.equal(f.config.loadConfig().model, "saved-during-initial-load");
-    assert.equal(setup.run("formState(draft()) !== savedBaseline"), editAgain);
+    assert.equal(setup.run("formState(draft()) !== formState(savedBaseline)"), editAgain);
     assert.equal(setup.get("model").value, editAgain ? "newer-unsaved-model" : "saved-during-initial-load");
     if (editAgain) { setup.get("ai-consent-connection").click(); await tick(); }
-    assert.equal(setup.run("formState(draft()) !== savedBaseline"), false);
+    assert.equal(setup.run("formState(draft()) !== formState(savedBaseline)"), false);
     assert.match(setup.get("ai-consent-destination").textContent, new RegExp(setup.get("model").value));
     assert.equal(setup.get("ai-consent-manual").checked, false);
     assert.equal(setup.get("ai-consent-allow").disabled, true);

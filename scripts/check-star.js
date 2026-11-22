@@ -108,7 +108,9 @@ async function run() {
     assert.deepStrictEqual(readHeld.data.emails.map((row) => row.id).sort(), ["inbox-unread", "notes-unread"]);
     assert.strictEqual(readHeld.data.emails.find((row) => row.id === "inbox-unread").unread, false);
     const offPage = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderId: "__morrow_unread__", limit: 1, retainIds: ["inbox-unread"] }]);
-    assert.deepStrictEqual(offPage.data.emails.map((row) => row.id).sort(), ["inbox-unread", "notes-unread"]);
+    assert.deepStrictEqual(offPage.data.emails.map((row) => row.id), ["notes-unread", "inbox-unread"]);
+    assert.strictEqual(offPage.data.geometry.pageSize, 1);
+    assert.strictEqual(offPage.data.hasMoreInCache, true);
     const trashHeld = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderId: "__morrow_unread__", limit: 20, retainIds: ["trash-unread"] }]);
     assert.deepStrictEqual(trashHeld.data.emails.map((row) => row.id), ["notes-unread"]);
     const missingHeld = engine.answer("mail:listFromCache", [{ accountId: "star-acct", folderId: "__morrow_unread__", limit: 20, retainIds: ["no-such-row"] }]);

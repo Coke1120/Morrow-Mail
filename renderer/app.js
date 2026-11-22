@@ -1572,16 +1572,17 @@ async function loadMailColumnWidths() {
 }
 function saveMailColumnWidths(key) {
   const value = normalizedMailColumnWidths();
-  const revision = ++mailColumnWidthRevision;
+  ++mailColumnWidthRevision;
   const message = mailColumnLabels[key] + " column: " + (Object.hasOwn(value, key) ? value[key] + " pixels." : "automatic width.");
   if ($("mail-columns-status")) $("mail-columns-status").textContent = message;
-  mailColumnWidthSave = mailColumnWidthSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnWidths", value));
-  mailColumnWidthSave.catch(() => {
-    if (revision !== mailColumnWidthRevision) return;
+  const save = mailColumnWidthSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnWidths", value));
+  mailColumnWidthSave = save;
+  save.catch(() => {
+    if (save !== mailColumnWidthSave) return;
     if ($("mail-columns-status")) $("mail-columns-status").textContent = "Could not save column widths. This window keeps your layout; resize again to save it.";
     showStatus("Could not save column widths. Resize again to keep them after restart.", true);
   });
-  return mailColumnWidthSave;
+  return save;
 }
 function changeMailColumnWidth(key, value) {
   if (!Object.hasOwn(mailColumnLabels, key)) return Promise.resolve();
@@ -1628,7 +1629,12 @@ function wireMailColumnResize(cell, key) {
     }
     if (!["ArrowLeft", "ArrowRight", "Home", "End", "Delete", "Backspace"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
     event.preventDefault(); event.stopPropagation();
-    const current = normalizedMailColumnWidths()[key] ?? (cell.getBoundingClientRect().width || mailColumnDefaultMinimum[key]);
+    const saved = normalizedMailColumnWidths()[key];
+    const current = saved ?? (cell.getBoundingClientRect().width || mailColumnDefaultMinimum[key]);
+    if (event.key === "ArrowRight" && saved == null && current >= max) {
+      cancelMailColumnResize();
+      return;
+    }
     const next = event.key === "Home" ? min : event.key === "End" ? max
       : ["Delete", "Backspace"].includes(event.key) ? null
       : current + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 50 : 10);
@@ -1647,9 +1653,11 @@ function wireMailColumnResize(cell, key) {
       if (mailColumnResize !== session || next.pointerId !== session.pointerId) return;
       if (!handle.isConnected || cell.hidden) { cancelMailColumnResize(); return; }
       next.preventDefault(); next.stopPropagation();
-      const width = Math.max(min, Math.min(max, Math.round(startWidth + next.clientX - session.x + list.scrollLeft - session.scroll)));
-      session.changed = width !== Math.round(startWidth);
-      state.mailColumnWidths = { ...before, [key]: width };
+      const targetWidth = startWidth + next.clientX - session.x + list.scrollLeft - session.scroll;
+      const width = Math.max(min, Math.min(max, Math.round(targetWidth)));
+      const keepAutomatic = before[key] == null && startWidth >= max && targetWidth >= startWidth;
+      session.changed = !keepAutomatic && width !== Math.round(startWidth);
+      state.mailColumnWidths = session.changed ? { ...before, [key]: width } : before;
       applyMailColumnWidths(list);
     };
     const finish = next => {
@@ -12409,11 +12417,14 @@ async function loadList(fromNetwork, requestedOffset) {
       state.listCursors.push({ offset: data.nextCursor.offset, cursor: data.nextCursor });
       if (state.listCursors.length > 32) state.listCursors.shift();
     }
-    state.emails = takeEmails((data && data.emails) || []);
+    const rows = data?.emails || [];
+    const pageSize = data?.geometry?.pageSize ?? rows.length;
+    // A trailing held row can confirm membership from outside this page.
+    state.emails = takeEmails(rows.slice(0, pageSize));
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
       state.unreadHold = applyUnreadHold(state.unreadHold, {
         kind: "refresh",
-        ids: state.emails.map((row) => row && row.id),
+        ids: rows.map((row) => row && row.id),
       });
     }
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
@@ -14801,7 +14812,7 @@ function onEmailsUpdated(payload) {
   if (payload?.accountId) {
     if (params.accountId && params.accountId !== payload.accountId) return;
     const paths = payload.folderIds || (payload.folderId ? [payload.folderId] : []);
-    if (paths.length && params.folderId && !paths.includes(params.folderId)) return;
+    if (paths.length && params.folderId && !paths.includes(params.folderId) && !isVirtualMailbox(selectedFolderNode())) return;
     if (params.mailboxes?.length && !params.mailboxes.some(box => box.accountId === payload.accountId && (!paths.length || paths.includes(box.path)))) return;
   }
   if (!payload?.folderId && !payload?.folderIds?.length) snoozeDirty = true;
@@ -20520,11 +20531,12 @@ function aiKeyPlaceholder(cfg) {
   return "sk-…";
 }
 
-let aiBaseline = "";
+let aiBaseline = null;
 let chatgptSettings = null;
 let aiOperation = 0;
 let aiViewRevision = 0;
 let aiSaveBusy = false;
+let aiModelChoicesRevision = 0;
 function aiAuthDraft() { return chatgptSettings ? chatgptSettings.draft() : {}; }
 function mountChatgptSettings() {
   const container = $("ai-account-settings");
@@ -20558,7 +20570,7 @@ function aiRequestCurrent(operation, view, input, context) {
     && context === chatgptSettings?.context?.();
 }
 function aiDirty() {
-  return !!aiBaseline && aiFormState() !== aiBaseline;
+  return !!aiBaseline && aiFormState() !== aiFormState(aiBaseline);
 }
 function paintAiDirty(preserveStatus = false) {
   const note = $("ai-dirty");
@@ -20591,6 +20603,7 @@ async function resumeAiSettings() {
 }
 
 function clearAiModelChoices() {
+  aiModelChoicesRevision++;
   const chooser = $("ai-model-chooser");
   const select = $("ai-model-select");
   if (select) {
@@ -20598,6 +20611,12 @@ function clearAiModelChoices() {
     select.value = "";
   }
   if (chooser) chooser.hidden = true;
+  if (aiAuthDraft().authMode !== "chatgpt" && /^Fetch(?:ing|ed) /.test($("ai-status").textContent)) setAiStatus("", false);
+}
+
+function aiFieldEdited(event) {
+  if (event.target.id !== "ai-model") clearAiModelChoices();
+  paintAiDirty();
 }
 
 function applyFetchedModels(ids) {
@@ -20638,7 +20657,7 @@ function applyFetchedModels(ids) {
 function chooseFetchedModel() {
   const select = $("ai-model-select");
   const input = $("ai-model");
-  if (!select || !input) return;
+  if (!select || !input || $("ai-model-chooser").hidden) return;
   const id = String(select.value || "").trim();
   if (!id || input.value === id) return;
   input.value = id;
@@ -20662,7 +20681,7 @@ async function loadAiSettings() {
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
     // A later account/permission reply must not replace a newer Save baseline.
     updateAiBaseline = JSON.stringify([cfg?.baseUrl || "", cfg?.model || ""]);
-    aiBaseline = aiFormState(cfg || {});
+    aiBaseline = cfg || {};
     const accountSettings = mountChatgptSettings();
     if (accountSettings) await accountSettings.load(cfg || {});
     if (view !== aiViewRevision) return;
@@ -20675,6 +20694,7 @@ async function loadAiSettings() {
 async function saveAiSettings() {
   if (aiSaveBusy) return;
   const input = aiSettingsDraft();
+  const payload = window.morrowChatgptSettings?.connectionSaveInput(input, aiBaseline) ?? input;
   const operation = ++aiOperation;
   const view = aiViewRevision;
   aiSaveBusy = true;
@@ -20682,16 +20702,26 @@ async function saveAiSettings() {
   $("ai-save").disabled = true;
   setAiStatus("Saving…", false);
   try {
-    const saved = await api.invoke("host:aiSaveConfig", input);
+    const saved = await api.invoke("host:aiSaveConfig", payload);
     if (window.morrowAiIndicator) window.morrowAiIndicator.paint(saved);
     if (view !== aiViewRevision) return;
     // Only reconcile fields still owned by this save. New edits stay in the form.
-    if ($("ai-key").value === input.apiKey) $("ai-key").value = "";
-    if ($("ai-base").value === input.baseUrl) $("ai-base").value = saved.baseUrl;
-    if ($("ai-model").value === input.model) $("ai-model").value = saved.model;
-    $("ai-key").placeholder = aiKeyPlaceholder(saved);
+    const endpointChanged = saved.baseUrl !== input.baseUrl.trim();
+    const modelUnchanged = $("ai-model").value === input.model;
+    const keyUnchanged = $("ai-key").value === input.apiKey;
+    const savedKeyPlaceholder = aiKeyPlaceholder(saved);
+    if (!payload.baseUrl || endpointChanged || input.apiKey || $("ai-key").placeholder !== savedKeyPlaceholder) {
+      clearAiModelChoices();
+    }
+    // Keep a newer model or key edit with the endpoint it was entered for.
+    if ($("ai-base").value === input.baseUrl && (!endpointChanged || (modelUnchanged && keyUnchanged))) {
+      $("ai-base").value = saved.baseUrl;
+      if (modelUnchanged) $("ai-model").value = saved.model;
+    }
+    if (keyUnchanged) $("ai-key").value = "";
+    $("ai-key").placeholder = savedKeyPlaceholder;
     updateAiBaseline = JSON.stringify([saved.baseUrl, saved.model]);
-    aiBaseline = aiFormState(saved);
+    aiBaseline = saved;
     chatgptSettings?.refreshConsent();
     paintAiDirty(true);
     if (operation === aiOperation) setAiStatus(aiDirty() ? "Earlier settings saved. Your newer changes are not saved." : "Saved.", false);
@@ -20709,6 +20739,7 @@ async function fetchAiModels() {
   const view = aiViewRevision;
   const input = aiSettingsDraft();
   const context = chatgptSettings?.context?.();
+  const choicesRevision = aiModelChoicesRevision;
   setAiStatus(aiDirty() ? "Fetching models with the unsaved values in this form…" : "Fetching models…", false);
   try {
     if (aiAuthDraft().authMode === "chatgpt") {
@@ -20723,7 +20754,7 @@ async function fetchAiModels() {
       apiKey: $("ai-key").value,
       authMode: "api_key",
     });
-    if (!aiRequestCurrent(operation, view, input, context)) return;
+    if (choicesRevision !== aiModelChoicesRevision || !aiRequestCurrent(operation, view, input, context)) return;
     if (!result || result.ok !== true) {
       setAiStatus((result && result.message) || "Could not list models.", true);
       return;
@@ -20732,6 +20763,7 @@ async function fetchAiModels() {
     const count = applyFetchedModels(ids);
     setAiStatus(count ? "Fetched " + count + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
   } catch (error) {
+    if (input.authMode !== "chatgpt" && choicesRevision !== aiModelChoicesRevision) return;
     if (aiRequestCurrent(operation, view, input, context)) setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
@@ -26515,16 +26547,16 @@ function calendarBuckets(events, year, month) {
   for (const event of events) {
     const start = eventDay(event);
     if (!start) continue;
-    const at = new Date(Math.max(first.getTime(), new Date(start + "T00:00:00").getTime()));
+    let dayStart = new Date(Math.max(first.getTime(), new Date(start + "T00:00:00").getTime()));
     const end = event.allDay ? new Date(String(event.end || start).slice(0, 10) + "T00:00:00").getTime() : Date.parse(event.end);
-    const until = Number.isFinite(end) ? Math.min(after.getTime(), Math.max(end, at.getTime())) : at.getTime();
-    while (at < after && at.getTime() <= until) {
-      const key = dayKey(year, month, at.getDate());
+    const until = Number.isFinite(end) ? Math.min(after.getTime(), Math.max(end, dayStart.getTime())) : dayStart.getTime();
+    while (dayStart < after && dayStart.getTime() <= until) {
+      const key = dayKey(year, month, dayStart.getDate());
       if (eventCoversDay(event, key)) {
         if (!buckets.has(key)) buckets.set(key, []);
         buckets.get(key).push(event);
       }
-      at.setDate(at.getDate() + 1);
+      dayStart = new Date(year, month, dayStart.getDate() + 1);
     }
   }
   for (const rows of buckets.values()) rows.sort((left, right) => {
@@ -28618,13 +28650,13 @@ function wireSenderHistory() {
   }
 }
 
-let recipientSuggestGen = 0;
 let recipientSuggestTimer = 0;
 let recipientSuggestIndex = -1;
 let recipientSuggestRows = [];
 let recipientSuggestInput = null;
 let recipientSuggestEscape = false;
 let recipientSuggestSnapshot = null;
+let recipientSuggestChoiceEvent = null;
 
 function recipientSuggestApi() {
   return typeof window !== "undefined" ? window.morrowRecipientSuggest : null;
@@ -28649,48 +28681,62 @@ function hideRecipientSuggest() {
   }
   if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
   recipientSuggestTimer = 0;
-  recipientSuggestGen += 1;
   return open;
 }
 
+function recipientSuggestRange(input) {
+  return recipientSuggestApi()?.recipientAt(input.value, input.selectionStart, input.selectionEnd);
+}
+
+function recipientSuggestIsCurrent(input) {
+  const snapshot = recipientSuggestSnapshot;
+  if (!snapshot || recipientSuggestInput !== input || input.disabled || input.readOnly || input.value !== snapshot.value) return false;
+  if (document.activeElement !== input) return false;
+  const range = recipientSuggestRange(input);
+  return !!range && range.start === snapshot.range?.start && range.end === snapshot.range?.end;
+}
+
 function scheduleRecipientSuggest(input) {
-  const api = recipientSuggestApi();
-  const query = api && input ? api.activeQuery(input.value) : "";
-  if (!api || !input || input.disabled || input.readOnly || !query) {
-    hideRecipientSuggest();
-    return;
-  }
   hideRecipientSuggest();
-  const gen = ++recipientSuggestGen;
-  if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
+  const api = recipientSuggestApi();
+  if (!api || !input || input.disabled || input.readOnly) return;
+  const range = recipientSuggestRange(input);
+  const query = api.activeQuery(input.value, range);
+  if (!query) return;
+  const snapshot = { value: input.value, range };
+  recipientSuggestInput = input;
+  recipientSuggestSnapshot = snapshot;
   recipientSuggestTimer = setTimeout(() => {
     recipientSuggestTimer = 0;
-    loadRecipientSuggest(input, gen);
+    loadRecipientSuggest(input, snapshot, query);
   }, 80);
 }
 
-async function loadRecipientSuggest(input, gen) {
-  const api = recipientSuggestApi();
-  if (!api) return;
-  const query = api.activeQuery(input.value);
+async function loadRecipientSuggest(input, snapshot, query) {
+  if (snapshot !== recipientSuggestSnapshot) return;
+  if (!recipientSuggestIsCurrent(input)) {
+    hideRecipientSuggest();
+    return;
+  }
   let result;
   try {
     result = await call("mail:suggestRecipients", { query });
   } catch {
-    if (gen === recipientSuggestGen) hideRecipientSuggest();
+    if (snapshot === recipientSuggestSnapshot) hideRecipientSuggest();
     return;
   }
-  if (gen !== recipientSuggestGen) return;
-  const active = document.activeElement;
-  if (active && active !== input && active !== document.body && active !== document.documentElement) return;
-  if (api.activeQuery(input.value) !== query) return;
-  const used = api.usedAddresses(input.value);
+  if (snapshot !== recipientSuggestSnapshot) return;
+  if (!recipientSuggestIsCurrent(input)) {
+    hideRecipientSuggest();
+    return;
+  }
+  const used = recipientSuggestApi().usedAddresses(snapshot.value, snapshot.range);
   const rows = ((result && result.suggestions) || []).filter((row) => row && row.email && !used.has(row.email));
   if (!rows.length) {
     hideRecipientSuggest();
     return;
   }
-  paintRecipientSuggest(input, rows);
+  paintRecipientSuggest(input, rows, snapshot);
 }
 
 function recipientSuggestIcon() {
@@ -28704,7 +28750,7 @@ function recipientSuggestIcon() {
   return svg;
 }
 
-function paintRecipientSuggest(input, rows) {
+function paintRecipientSuggest(input, rows, snapshot = { value: input.value, range: recipientSuggestRange(input) }) {
   const box = document.getElementById("recipient-suggest");
   if (!box || typeof box.replaceChildren !== "function") return;
   const host = input.closest ? input.closest(".field-row") : input.parentElement;
@@ -28712,7 +28758,7 @@ function paintRecipientSuggest(input, rows) {
   box.replaceChildren();
   recipientSuggestRows = rows;
   recipientSuggestInput = input;
-  recipientSuggestSnapshot = { value: input.value, gen: recipientSuggestGen };
+  recipientSuggestSnapshot = snapshot;
   recipientSuggestIndex = -1;
   for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
     const node = document.getElementById(id);
@@ -28723,6 +28769,7 @@ function paintRecipientSuggest(input, rows) {
   rows.forEach((item, index) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.tabIndex = -1;
     button.id = "recipient-suggest-" + index;
     button.className = "recipient-suggest-option";
     button.setAttribute("role", "option");
@@ -28775,25 +28822,37 @@ function chooseRecipientSuggest(email) {
   const input = recipientSuggestInput;
   const choice = recipientSuggestRows.find((row) => row.email === email);
   if (!api || !input || !choice) return;
-  if (!recipientSuggestSnapshot || recipientSuggestSnapshot.value !== input.value || recipientSuggestSnapshot.gen !== recipientSuggestGen) {
+  if (!recipientSuggestIsCurrent(input)) {
     hideRecipientSuggest();
     return;
   }
-  input.value = api.applyChoice(input.value, choice);
+  const { value, range } = recipientSuggestSnapshot;
+  const next = api.applyChoice(value, choice, range);
+  const end = range.end === value.length
+    ? next.length
+    : next.slice(0, range.end + next.length - value.length).trimEnd().length;
+  input.value = next;
   hideRecipientSuggest();
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  if (typeof input.focus === "function") input.focus();
   if (typeof input.setSelectionRange === "function") {
-    const end = input.value.length;
     try { input.setSelectionRange(end, end); } catch { /* some fields reject a range while hidden */ }
   }
+  const event = new Event("input", { bubbles: true });
+  recipientSuggestChoiceEvent = event;
+  try { input.dispatchEvent(event); } finally { recipientSuggestChoiceEvent = null; }
 }
 
 function onRecipientSuggestKey(event) {
   const api = recipientSuggestApi();
-  if (!api || !event) return;
+  if (!api || !event || event.isComposing || event.keyCode === 229) return;
+  const input = event.currentTarget;
+  if (recipientSuggestInput !== input) return;
+  if (event.key === "Tab" || !recipientSuggestIsCurrent(input)) {
+    hideRecipientSuggest();
+    return;
+  }
+  if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
   const box = document.getElementById("recipient-suggest");
-  const open = !!(box && box.hidden === false && recipientSuggestInput === event.currentTarget);
+  const open = !!(box && box.hidden === false);
   const action = api.keyAction(event.key, open, recipientSuggestIndex);
   if (!action) return;
   event.preventDefault();
@@ -28828,17 +28887,17 @@ function wireRecipientSuggest() {
   for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
     const input = $(id);
     if (!input || typeof input.addEventListener !== "function") continue;
-    input.addEventListener("input", () => scheduleRecipientSuggest(input));
+    input.addEventListener("input", (event) => {
+      if (event !== recipientSuggestChoiceEvent && !event.isComposing) scheduleRecipientSuggest(input);
+    });
     input.addEventListener("keydown", onRecipientSuggestKey);
+    input.addEventListener("compositionstart", hideRecipientSuggest);
+    input.addEventListener("compositionend", () => scheduleRecipientSuggest(input));
+    input.addEventListener("selectionchange", () => {
+      if (recipientSuggestInput === input && !recipientSuggestIsCurrent(input)) hideRecipientSuggest();
+    });
     input.addEventListener("blur", () => {
-      const gen = recipientSuggestGen;
-      setTimeout(() => {
-        if (gen !== recipientSuggestGen || recipientSuggestInput !== input) return;
-        if (document.activeElement === input) return;
-        const box = document.getElementById("recipient-suggest");
-        if (box && typeof box.contains === "function" && box.contains(document.activeElement)) return;
-        hideRecipientSuggest();
-      }, 0);
+      if (recipientSuggestInput === input) hideRecipientSuggest();
     });
   }
   const box = $("recipient-suggest");
@@ -29286,8 +29345,8 @@ function wire() {
     testAiConnection().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });
   for (const id of ["ai-base", "ai-model", "ai-key"]) {
-    $(id).addEventListener("input", paintAiDirty);
-    $(id).addEventListener("change", paintAiDirty);
+    $(id).addEventListener("input", aiFieldEdited);
+    $(id).addEventListener("change", aiFieldEdited);
   }
   $("ai-model-select").addEventListener("change", chooseFetchedModel);
   for (const id of ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"]) {

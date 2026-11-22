@@ -6,7 +6,7 @@ const bridge = window.aiSetup;
 let operation = 0;
 let viewRevision = 0;
 let saveBusy = false;
-let savedBaseline = "";
+let savedBaseline = null;
 const changed = () => {
   statusNode.textContent = "Unsaved changes. Save to apply them.";
   syncConnectionState();
@@ -33,7 +33,7 @@ const draft = () => ({ baseUrl: baseUrl.value, model: model.value, apiKey: apiKe
 const formState = input => JSON.stringify([String(input.baseUrl || "").trim(), String(input.model || "").trim(), !!input.apiKey,
   input.authMode || "api_key", String(input.chatgptModel || "").trim()]);
 function syncConnectionState() {
-  accountSettings.setConnectionState({ dirty: !!savedBaseline && formState(draft()) !== savedBaseline, saving: saveBusy });
+  accountSettings.setConnectionState({ dirty: !!savedBaseline && formState(draft()) !== formState(savedBaseline), saving: saveBusy });
 }
 const current = (owner, view, input, context) => owner === operation && view === viewRevision
   && JSON.stringify(input) === JSON.stringify(draft()) && context === accountSettings.context();
@@ -47,7 +47,7 @@ async function load() {
     model.value = config.model || "";
     keyHint(config);
     // Establish the saved snapshot before reads that can outlive a newer Save.
-    savedBaseline = formState(config);
+    savedBaseline = config;
     await accountSettings.load(config);
     if (view !== viewRevision) return;
     syncConnectionState();
@@ -63,18 +63,23 @@ for (const field of [baseUrl, model, apiKey]) {
 async function saveConnection() {
   if (saveBusy) return;
   const input = draft(), owner = ++operation, view = viewRevision;
+  const payload = window.morrowChatgptSettings.connectionSaveInput(input, savedBaseline);
   saveBusy = true;
   syncConnectionState();
   document.getElementById("save").disabled = true;
   statusNode.textContent = "Saving…";
   try {
-    const saved = await bridge.save(input);
+    const saved = await bridge.save(payload);
     if (view !== viewRevision) return;
-    if (apiKey.value === input.apiKey) apiKey.value = "";
-    if (baseUrl.value === input.baseUrl) baseUrl.value = saved.baseUrl;
-    if (model.value === input.model) model.value = saved.model;
+    const modelUnchanged = model.value === input.model;
+    const keyUnchanged = apiKey.value === input.apiKey;
+    if (baseUrl.value === input.baseUrl && (saved.baseUrl === input.baseUrl.trim() || (modelUnchanged && keyUnchanged))) {
+      baseUrl.value = saved.baseUrl;
+      if (modelUnchanged) model.value = saved.model;
+    }
+    if (keyUnchanged) apiKey.value = "";
     keyHint(saved);
-    savedBaseline = formState(saved);
+    savedBaseline = saved;
     accountSettings.refreshConsent();
     if (owner === operation) statusNode.textContent = formState(draft()) === formState(saved)
       ? "Saved." : "Earlier settings saved. Your newer changes are not saved.";

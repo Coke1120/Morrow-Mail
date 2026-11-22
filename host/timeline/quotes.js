@@ -1,3 +1,5 @@
+const { htmlQuoteRanges } = require("./html-quotes");
+
 // Share only exact quoted bodies with an earlier complete source in this request.
 // Original sources/fingerprints remain untouched. No fuzzy matching, boilerplate
 // removal, cross-request references or dependence on an AI-generated summary.
@@ -71,4 +73,56 @@ function reduceRepeatedQuotes(sources) {
   });
 }
 
-module.exports = { compactQuotes, reduceRepeatedQuotes };
+function hasUnquotedText(text, ranges) {
+  let covered = 0;
+  for (const { outerStart, end } of ranges) {
+    if (outerStart > covered && text.slice(covered, outerStart).trim()) return true;
+    covered = Math.max(covered, end);
+  }
+  return !!text.slice(covered).trim();
+}
+
+function reduceHtmlBody(source, html, canonical, timestamp) {
+  const { text } = source;
+  const ranges = htmlQuoteRanges(html, text);
+  if (!ranges.length || !hasUnquotedText(text, ranges)) return source;
+  let literal = "", copied = 0, count = 0, remaining = text.length * 4;
+  for (const { start, end, quote } of ranges) {
+    if (!quote || start < copied) continue;
+    // Outer quotes come first. Cap comparisons of overlapping ranges that miss.
+    remaining -= end - start;
+    if (remaining < 0) return source;
+    const projected = text.slice(start, end);
+    const match = projected.trim();
+    if (!(canonical.get(match) < timestamp) || Buffer.byteLength(match) < 128) continue;
+    // Keep the original whitespace at each boundary and avoid joining words.
+    const from = start + projected.length - projected.trimStart().length;
+    const to = from + match.length;
+    if (/\S/.test(text[from - 1] || "") && /\S/.test(text[to] || "")) continue;
+    literal += text.slice(copied, from);
+    copied = to;
+    count++;
+  }
+  return count ? { ...source, extractionText: literal + text.slice(copied), repeatedQuoteBlocks: count } : source;
+}
+
+// Index complete original bodies, including a reduced reply. Any text removed
+// from that reply already has an exact match at a strictly earlier timestamp.
+// The chain ends in literal evidence and requires no cross-request provider token.
+function reduceHtmlQuotes(sources, htmlForQuotes) {
+  const originals = new Map();
+  return sources.map(source => {
+    const timestamp = Date.parse(source.occurred_at);
+    if (!Number.isFinite(timestamp)) return source;
+    const thread = source.source_thread_id;
+    let canonical = originals.get(thread);
+    if (!canonical) originals.set(thread, canonical = new Map());
+    const html = htmlForQuotes.get(source.source_message_id);
+    const result = html && canonical.size && source.extractionText === undefined ? reduceHtmlBody(source, html, canonical, timestamp) : source;
+    const first = canonical.get(source.text);
+    if (first === undefined || timestamp < first) canonical.set(source.text, timestamp);
+    return result;
+  });
+}
+
+module.exports = { compactQuotes, reduceRepeatedQuotes, reduceHtmlQuotes };

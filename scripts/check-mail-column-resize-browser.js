@@ -134,8 +134,41 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('node:os').tmpd
     assert.equal(Object.hasOwn(await widths(), 'sender'), false, 'keyboard reset restores responsive width');
     await beginDrag('sender', 35); await page.mouse.up(); await settled();
     await handle('sender').dblclick(); await settled(); assert.equal(Object.hasOwn(await widths(), 'sender'), false);
+
+    // A wide automatic Subject stays responsive on outward input and on drag reversal.
+    await page.setViewportSize({ width: 2240, height: 1000 });
+    await page.evaluate(() => {
+      state.prefs.mailView = { layout: 'window' };
+      state.mailHiddenColumns = ['date', 'time', 'recipient', 'sender'];
+      renderList();
+    });
+    const [wide] = await alignment();
+    assert.equal(wide.key, 'subject'); assert.ok(wide.head.width > 1200);
+    const writeCount = await page.evaluate(() => fixtureWrites.length);
+    await handle('subject').press('ArrowRight');
+    assert.deepEqual(await widths(), {});
+    await beginDrag('subject', 5);
+    assert.deepEqual(await widths(), {});
+    await page.mouse.up();
+
+    await beginDrag('subject', -30);
+    assert.equal((await widths()).subject, 1200, 'inward drag can narrow a wide automatic track');
+    const startX = await page.evaluate(() => mailColumnResize.x);
+    const preview = await handle('subject').boundingBox(); assert.ok(preview);
+    await page.mouse.move(startX, preview.y + preview.height / 2);
+    assert.deepEqual(await widths(), {}, 'reversing to the starting point restores automatic preview');
+    await page.mouse.up(); await page.evaluate(() => mailColumnWidthSave);
+    assert.deepEqual(await saved(), {});
+    assert.equal(await page.evaluate(() => fixtureWrites.length), writeCount);
+    assert.equal((await alignment())[0].head.width, wide.head.width);
+
     // Narrow layout keeps matching header/cell tracks and intentional scrolling.
-    await handle('subject').focus(); await page.keyboard.press('End'); await settled();
+    await handle('subject').press('End'); await settled(); assert.equal((await saved()).subject, 1200);
+    await page.evaluate(() => {
+      state.prefs.mailView = { layout: 'right' };
+      state.mailHiddenColumns = [];
+      renderList();
+    });
     await page.setViewportSize({ width: 900, height: 900 });
     await page.evaluate(() => document.documentElement.style.setProperty('--list', '360px'));
     await alignment();

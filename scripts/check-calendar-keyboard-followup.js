@@ -211,6 +211,10 @@ function dayBoundaries() {
   if (process.env.TZ === "America/Sao_Paulo") {
     covers("2018-11-04T01:00:00-02:00", "2018-11-05T00:00:00-02:00", "2018-11-04", true);
     covers("2018-11-05T00:10:00-02:00", "2018-11-05T00:20:00-02:00", "2018-11-04", false);
+    ui.context.event = { start: "2018-11-04T23:30:00-02:00", end: "2018-11-05T00:30:00-02:00" };
+    assert.deepEqual(Array.from(ui.run("calendarBuckets([event], 2018, 10).keys()")), ["2018-11-04", "2018-11-05"]);
+    ui.context.event.end = "2018-11-05T00:00:00-02:00";
+    assert.deepEqual(Array.from(ui.run("calendarBuckets([event], 2018, 10).keys()")), ["2018-11-04"]);
   }
 }
 
