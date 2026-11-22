@@ -25,6 +25,7 @@ const {
 } = require("./constants");
 
 let httpServer = null;
+let starting = null;
 let boundPort = PORT;
 let beforeRelease = async () => {};
 
@@ -366,6 +367,7 @@ async function handleAdmitted(req, res) {
 
 function start() {
   if (httpServer && state.listening) return Promise.resolve(status());
+  if (starting) return starting.promise;
   if (httpServer) return Promise.resolve(status());
   const server = http.createServer((req, res) => {
     handle(req, res).catch(() => {
@@ -379,45 +381,77 @@ function start() {
   server.keepAliveTimeout = 5000;
   server.maxHeadersCount = 40;
   httpServer = server;
-  return new Promise((resolve) => {
-    const fail = (error) => {
+  let resolveStart;
+  const promise = new Promise((resolve) => { resolveStart = resolve; });
+  const pending = {
+    server,
+    promise,
+    settle(value) {
+      if (starting === pending) starting = null;
+      resolveStart(value);
+    },
+  };
+  starting = pending;
+  const fail = (error) => {
+    if (httpServer === server) {
       state.listening = false;
       state.error = error && error.code === "EADDRINUSE" ? "port_in_use" : "listen_failed";
       state.port = PORT;
       httpServer = null;
+    }
+    try { server.close(() => {}); } catch { /* already closed */ }
+    pending.settle(status());
+  };
+  server.once("error", fail);
+  server.listen(PORT, HOST, () => {
+    server.removeListener("error", fail);
+    if (httpServer !== server) {
+      try { if (server.closeAllConnections) server.closeAllConnections(); } catch { /* node without the helper */ }
+      try { server.close(() => {}); } catch { /* already closed */ }
+      pending.settle(status());
+      return;
+    }
+    const addr = server.address();
+    if (!addr || addr.address !== HOST) {
+      state.listening = false;
+      state.error = "bad_bind";
       server.close(() => {});
-      resolve(status());
-    };
-    server.once("error", fail);
-    server.listen(PORT, HOST, () => {
-      server.removeListener("error", fail);
-      const addr = server.address();
-      if (!addr || addr.address !== HOST) {
-        state.listening = false;
-        state.error = "bad_bind";
-        server.close();
-        httpServer = null;
-        resolve(status());
-        return;
-      }
-      boundPort = addr.port;
-      state.listening = true;
-      state.error = "";
-      state.port = addr.port;
-      resolve(status());
-    });
+      httpServer = null;
+      pending.settle(status());
+      return;
+    }
+    boundPort = addr.port;
+    state.listening = true;
+    state.error = "";
+    state.port = addr.port;
+    pending.settle(status());
   });
+  return promise;
 }
 
 function stop() {
   const current = httpServer;
+  const pending = starting;
   httpServer = null;
+  starting = null;
   state.listening = false;
   state.error = "";
-  if (!current) return Promise.resolve(status());
+  if (!current) {
+    if (pending) pending.settle(status());
+    return Promise.resolve(status());
+  }
   return new Promise((resolve) => {
+    const done = () => {
+      const currentStatus = status();
+      if (pending) pending.settle(currentStatus);
+      resolve(currentStatus);
+    };
     try { if (current.closeAllConnections) current.closeAllConnections(); } catch { /* node without the helper */ }
-    current.close(() => resolve(status()));
+    try {
+      current.close(() => done());
+    } catch {
+      done();
+    }
   });
 }
 

@@ -36,6 +36,7 @@ let installing = null;
 let resumeInstall = null;
 let installTimer = null;
 let installOnQuit = null;
+let installAbort = null;
 let hourlyTimer = null;
 let startupTimer = null;
 let checkFlight = null;
@@ -45,6 +46,8 @@ function resumeAfterFailedInstall() {
   installTimer = null;
   if (installOnQuit) app.removeListener("quit", installOnQuit);
   installOnQuit = null;
+  installAbort?.abort();
+  installAbort = null;
   const resume = resumeInstall;
   resumeInstall = null;
   if (resume) resume();
@@ -287,32 +290,47 @@ function registerIpc() {
     if (platform === "darwin") {
       return signedMacUpdater().install();
     }
-    if (!autoUpdater || !state.downloaded || state.installing) return installing || snapshot();
+    if (!autoUpdater || !state.downloaded || state.installing || checkFlight) return installing || snapshot();
+    const version = state.version;
     installing = (async () => {
       state.installing = true;
       state.error = null;
       try {
         resumeInstall = await installLifecycle.prepare();
         if (!state.installing) { resumeAfterFailedInstall(); return snapshot(); }
+        if (!state.downloaded || state.downloading || state.version !== version) {
+          throw new Error("The downloaded update changed. Check for updates and retry.");
+        }
         // NSIS --updated may force-close a running app. Launch it only from the
         // final, non-cancellable quit event, after normal confirmation/cleanup.
         // This is the same event used by electron-updater's install-on-quit path,
         // but armed only by this explicit main-window action.
-        installOnQuit = (_event, exitCode) => {
-          installOnQuit = null;
-          if (installTimer) clearTimeout(installTimer);
-          installTimer = null;
-          if (exitCode === 0 && state.installing) {
-            try { autoUpdater.quitAndInstall(false, true); }
-            catch (err) { setError(err); }
-          }
-        };
-        app.once("quit", installOnQuit);
-        installLifecycle.quit();
-        if (state.installing && installOnQuit) {
-          installTimer = setTimeout(() => setError(new Error("The app did not exit for the update. Finish active work and retry.")), 120000);
-          if (installTimer.unref) installTimer.unref();
-        }
+        const controller = installAbort = new AbortController();
+        const timeoutError = new Error("The app did not exit for the update. Finish active work and retry.");
+        installTimer = setTimeout(() => {
+          controller.abort(timeoutError);
+          if (installOnQuit) setError(timeoutError);
+        }, 120000);
+        installTimer.unref?.();
+        const requested = await installLifecycle.quit({
+          signal: controller.signal,
+          beforeExit() {
+            if (!state.downloaded || state.downloading || state.version !== version) {
+              throw new Error("The downloaded update changed. Check for updates and retry.");
+            }
+            installOnQuit = (_event, exitCode) => {
+              installOnQuit = null;
+              if (installTimer) clearTimeout(installTimer);
+              installTimer = null;
+              if (exitCode === 0 && state.installing) {
+                try { autoUpdater.quitAndInstall(false, true); }
+                catch (err) { setError(err); }
+              }
+            };
+            app.once("quit", installOnQuit);
+          },
+        });
+        if (!requested) setError(new Error("Update cancelled. The app is still open."));
       } catch (err) { setError(err); }
       return snapshot();
     })().finally(() => { installing = null; });

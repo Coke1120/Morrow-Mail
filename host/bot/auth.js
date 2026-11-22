@@ -117,12 +117,14 @@ function validate(parsed) {
   return parsed;
 }
 
+const MAX_STORE_BYTES = 1024 * 1024;
+
 function load() {
   const file = accessPath();
   if (!fs.existsSync(file)) return { ok: true, fresh: true, store: null };
   try {
     const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024) return { ok: false, fresh: false, store: null };
+    if (!stat.isFile() || stat.size > MAX_STORE_BYTES) return { ok: false, fresh: false, store: null };
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     const migrated = migrateStore(parsed);
     const store = migrated && validate(migrated);
@@ -137,7 +139,11 @@ function load() {
 }
 
 function save(store) {
-  writePrivate(accessPath(), `${JSON.stringify(store, null, 2)}\n`);
+  const text = `${JSON.stringify(store, null, 2)}\n`;
+  if (Buffer.byteLength(text, "utf8") > MAX_STORE_BYTES) {
+    throw publicError("Bot access storage is full. Delete unused grants before saving changes.", "store_full");
+  }
+  writePrivate(accessPath(), text);
 }
 
 function dayStamp(now = new Date()) {
@@ -346,7 +352,8 @@ function mint(input) {
   store.grants.push(grant);
   try {
     save(store);
-  } catch {
+  } catch (error) {
+    if (error && error.publicMessage) throw error;
     throw publicError("Morrow could not store the grant.");
   }
   return { secret: token.token, grant: publicGrant(grant) };
@@ -361,7 +368,8 @@ function mutate(clientId, change) {
   change(grant, store);
   try {
     save(store);
-  } catch {
+  } catch (error) {
+    if (error && error.publicMessage) throw error;
     throw publicError("Morrow could not store the grant.");
   }
   changed(clientId);
@@ -398,7 +406,8 @@ function removeGrant(clientId) {
   store.grants.splice(index, 1);
   try {
     save(store);
-  } catch {
+  } catch (error) {
+    if (error && error.publicMessage) throw error;
     throw publicError("Morrow could not store the grant.");
   }
   changed(clientId);

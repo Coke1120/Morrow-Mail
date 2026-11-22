@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.19": [
+      "Mailing-list unsubscribe handles more valid headers, and plain-text mail keeps line breaks and table cells separate.",
+      "Mail automation prevents duplicate sends on retries, and cross-mailbox transfers preserve recovery options after failures.",
+      "Canceling an update or staying in the app after an unsuccessful quit keeps notifications and scheduled digests running.",
+      "Windows reopen in usable positions after display changes. Interrupted MBOX imports keep saved progress, and queued attachment transfers cancel promptly.",
+    ],
     "0.4.18": [
       "Large Case Timelines can export compact JSON when formatted output exceeds the size limit, print long reports to PDF without repeating the same recipient list on every item, and reuse exact quoted history from HTML replies.",
       "Settings → AI and AI Setup make Continue with ChatGPT easier to find, preserve newer API model settings across open windows, and clear stale fetched model lists when you change the API endpoint.",

@@ -71,7 +71,7 @@ function retryAfter(now, burstBlocked) {
   return Math.max(1, 60000 - (now % 60000));
 }
 
-function takeCount(clientId, kind, perMinute, now) {
+function checkCount(clientId, kind, perMinute, now) {
   const row = bucket(clientId, kind);
   roll(row, now);
   if (row.minuteCount >= perMinute) {
@@ -80,9 +80,12 @@ function takeCount(clientId, kind, perMinute, now) {
   if (row.secondCount >= limits.burst) {
     return { ok: false, retryAfterMs: retryAfter(now, true) };
   }
+  return { ok: true, row };
+}
+
+function recordCount(row) {
   row.minuteCount += 1;
   row.secondCount += 1;
-  return { ok: true };
 }
 
 function admit({ clientId, kind, bytesToday }) {
@@ -112,17 +115,19 @@ function admit({ clientId, kind, bytesToday }) {
     return { ok: false, retryAfterMs: retryAfter(now, false) };
   }
   if (kind === "search" && searchActive) return { ok: false, retryAfterMs: 1000 };
-  const call = takeCount(clientId, "call", limits.callsPerMinute, now);
+  const call = checkCount(clientId, "call", limits.callsPerMinute, now);
   if (!call.ok) return call;
+  let extra = null;
   if (kind === "search") {
-    const search = takeCount(clientId, "search", limits.searchesPerMinute, now);
-    if (!search.ok) return search;
-    searchActive = true;
+    extra = checkCount(clientId, "search", limits.searchesPerMinute, now);
+    if (!extra.ok) return extra;
+  } else if (kind === "body") {
+    extra = checkCount(clientId, "body", limits.bodiesPerMinute, now);
+    if (!extra.ok) return extra;
   }
-  if (kind === "body") {
-    const body = takeCount(clientId, "body", limits.bodiesPerMinute, now);
-    if (!body.ok) return body;
-  }
+  recordCount(call.row);
+  if (extra) recordCount(extra.row);
+  if (kind === "search") searchActive = true;
   globalMinuteCount += 1;
   globalActive += 1;
   active.set(clientId, mine + 1);

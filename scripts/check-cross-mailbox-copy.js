@@ -115,6 +115,19 @@ test("expired reviews, duplicate selection, Move and over-limit selections canno
   await assert.rejects(f.review(Array.from({length:51},(_,i)=>String(i))),/1–50/);
   await assert.rejects(f.service.answer({action:"review",...f.params(),mode:"move"}),/Move/);assert.equal(f.state.uploads,0);
 });
+test("Copy expires while awaiting submission but verifies an upload already started", async t => {
+  const delayed = fixture(t), review = await delayed.review();
+  delayed.state.beforeWrite = () => delayed.expire();
+  await assert.rejects(delayed.copy(review), /expired/i);
+  assert.equal(delayed.state.uploads, 0);
+  assert.equal(delayed.ledger.list()[0].phase, "not_uploaded");
+
+  const started = fixture(t), fresh = await started.review();
+  started.state.afterWrite = () => started.expire();
+  assert.equal((await started.copy(fresh)).status, "copied");
+  assert.equal(started.state.uploads, 1);
+  assert.equal(started.ledger.list()[0].phase, "verified");
+});
 test("pending async reviews reserve bounded capacity and release it after failure or cancellation",async t=>{
   let release,entered=0;
   const held=new Promise(resolve=>{release=resolve});

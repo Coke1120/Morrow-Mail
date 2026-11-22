@@ -74,6 +74,11 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
     checkAccount(source.owner);
     const row = db.messageById(source.id);
     if (!same(row, source.row, sourceFields) || folderGeneration(db.folderByPath(source.accountId, row.folder_path)) !== source.folderGeneration) throw conflict();
+    const account = source.owner.account;
+    if (account.mail_transport === "gmail_api" && (!row.gmail_id || row.uid_validity !== account.gmail_generation
+      || db.gmailMap(source.accountId, row.gmail_id)?.local_uid !== row.uid)) {
+      throw unsupported("Sync Gmail and select the message again before transferring it. Its exact Gmail identity has not been confirmed.");
+    }
     identityReady(source.id);
   }
   function check(ticket, source) {
@@ -246,8 +251,8 @@ function createAccess({ db, bindAccount, assertAccountCurrent, owner, publicAcco
                 const store = localArchive(), message = store.verify(source.id);
                 snapshot = { raw: store.raw(source.id), unread: message.unread, starred: message.isStarred, date: Date.parse(message.date) };
               } else if (sourceTransport.gmail) {
-                const mapped = await sourceTransport.gmail.resolve(source.row.folder_path, source.row.uid, source.row.uid_validity, source.id, { readOnly: true }); checked();
-                sourceProviderId = mapped.provider_id;
+                // checkSource proved the current canonical ID. Never use the legacy RFC Message-ID resolver for a transfer.
+                sourceProviderId = source.row.gmail_id;
                 snapshot = await gmailSnapshot(sourceTransport, sourceProviderId, checked, true);
               } else snapshot = await imapSnapshot(sourceTransport, sourceLocator, checked);
               checked();

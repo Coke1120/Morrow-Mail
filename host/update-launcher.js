@@ -10,6 +10,7 @@ const { verifyManifest, validateArtifact } = require('./update-manifest');
 const { preserveQuarantine, requireQuarantine, extractZip, verifyBundle, assessBundleTrust, removeTree } = require('./update-installer');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const PREFIX = '.morrow-update-';
+const QUIT_TIMEOUT_MS = 120000;
 function childEnvironment(runAsNode = false) {
   const env = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
   for (const name of ['HOME', 'TMPDIR', 'LANG', 'LC_ALL']) if (typeof process.env[name] === 'string') env[name] = process.env[name];
@@ -114,6 +115,13 @@ async function elevatedStaging(parentPath) {
   catch (error) { await fs.rmdir(staging).catch(() => {}); throw error; }
   return staging;
 }
+async function assessForInstall(bundle) {
+  try { await assessBundleTrust(bundle, { enforce: false }); }
+  catch (cause) {
+    if (cause.code === 'UPDATE_MANUAL_TRUST') throw cause;
+    throw Object.assign(new Error('The macOS assessment tool could not complete the update check. Use Show downloaded update to review it in Finder.', { cause }), { code: 'UPDATE_MANUAL_TRUST' });
+  }
+}
 async function preflightInstall(archive, manifest, arch) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), PREFIX));
   await fs.chmod(directory, 0o700);
@@ -122,7 +130,7 @@ async function preflightInstall(archive, manifest, arch) {
     const preflight = await extractZip(archive, path.join(directory, 'preflight'));
     await preserveQuarantine(archive, preflight);
     await verifyBundle(preflight, { version: manifest.version, arch });
-    await assessBundleTrust(preflight, { enforce: false });
+    await assessForInstall(preflight);
   } catch (error) { failure = error; throw error; }
   finally { await removeTree(directory).catch(error => { if (!failure) throw error; }); }
 }
@@ -151,7 +159,16 @@ async function assertDirectoryIdentity(file, expected) {
   const actual = await directoryIdentity(file);
   if (!expected || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new Error('Update directory identity changed; no further replacement is safe.');
 }
-async function writeExclusive(file, value) { await fs.writeFile(file, value, { mode: 0o600, flag: 'wx' }); }
+async function writeExclusive(file, value) {
+  const temp = path.join(path.dirname(file), `.receipt-${crypto.randomBytes(16).toString('hex')}`);
+  const handle = await fs.open(temp, 'wx', 0o600);
+  try {
+    try { await handle.writeFile(value); } finally { await handle.close(); }
+    await fs.link(temp, file);
+  } finally {
+    await fs.unlink(temp);
+  }
+}
 async function readPrivateJSON(file) { const stat = await privatePath(file); if (stat.size > 16384) throw new Error('Update receipt exceeds size limit.'); return JSON.parse(await fs.readFile(file, 'utf8')); }
 async function cleanupUnstarted({ staging, target, identities }) {
   // Called only while this launcher knows spawn has not been attempted. Never
@@ -203,7 +220,7 @@ async function start(options) {
       const preflight = await extractZip(archiveCopy, path.join(staging, 'preflight'));
       await preserveQuarantine(archiveCopy, preflight);
       await verifyBundle(preflight, { version: manifest.version, arch });
-      await assessBundleTrust(preflight, { enforce: false });
+      await assessForInstall(preflight);
       // The helper re-extracts authenticated bytes after quit. This preview is no
       // longer needed and must not accumulate beside the retained backup.
       await assertDirectoryIdentity(staging, identities.staging);
@@ -226,8 +243,15 @@ async function start(options) {
       if (failed) throw failed;
       try {
         const ready = await readPrivateJSON(path.join(staging, 'ready.json'));
-        if (ready.nonce !== nonce || ready.pid !== child.pid) throw new Error('Invalid installer readiness receipt.');
-        return { staging, receipt: path.join(staging, 'receipt.json'), cancel: () => writeExclusive(path.join(staging, 'cancel'), 'cancel') };
+        const remaining = ready.deadline - Date.now();
+        if (ready.nonce !== nonce || ready.pid !== child.pid || !Number.isSafeInteger(remaining) || remaining <= 0 || remaining > QUIT_TIMEOUT_MS) {
+          throw new Error('Invalid installer readiness receipt.');
+        }
+        return {
+          staging, receipt: path.join(staging, 'receipt.json'), deadline: ready.deadline,
+          approve: () => writeExclusive(path.join(staging, 'approved.json'), JSON.stringify({ nonce, pid })),
+          cancel: () => writeExclusive(path.join(staging, 'cancel'), 'cancel'),
+        };
       } catch (err) { if (err.code !== 'ENOENT') throw err; }
       await delay(100);
     }
@@ -289,12 +313,20 @@ async function recoveryStatus(target) {
       const stat = await privatePath(file);
       if (stat.size > 8192) continue;
       const value = await readPrivateJSON(file);
-      records.push({ state: value.state, staging, time: stat.mtimeMs });
+      records.push({ state: value.state, helperPid: value.helperPid, staging, time: stat.mtimeMs });
     } catch { /* unrelated or invalid records cannot authorize any action */ }
   }
   records.sort((a, b) => b.time - a.time);
   const latest = records[0];
   if (!latest || !['failed', 'recovery-required', 'installing'].includes(latest.state)) return null;
-  return { state: latest.state, message: `An update transaction needs review (${latest.state}). Recovery files are retained at ${latest.staging}. Quit all app copies before restoring a verified backup; see Signed Updates recovery instructions.` };
+  if (latest.state === 'installing' && Number.isSafeInteger(latest.helperPid) && latest.helperPid > 1) {
+    try { process.kill(latest.helperPid, 0); return null; }
+    catch (error) { if (error.code !== 'ESRCH') return null; }
+  }
+  const backup = await fs.lstat(path.join(latest.staging, 'previous.app')).catch(() => null);
+  const guidance = backup?.isDirectory()
+    ? ' Quit all app copies before restoring a verified backup; see Signed Updates recovery instructions.'
+    : '';
+  return { state: latest.state, message: `An update transaction needs review (${latest.state}). Recovery files are retained at ${latest.staging}.${guidance}` };
 }
-module.exports = { cleanupUnstarted, trustedParent, validateParent, createSiblingStaging, openStaging, adminStagingScript, allowedPrivilegedPath, privilegedMoveScript, privilegedRename, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, start, registerStartup, acknowledge, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay };
+module.exports = { cleanupUnstarted, trustedParent, validateParent, createSiblingStaging, openStaging, adminStagingScript, allowedPrivilegedPath, privilegedMoveScript, privilegedRename, directoryIdentity, assertDirectoryIdentity, recoveryStatus, childEnvironment, start, registerStartup, acknowledge, validateStaging, privatePath, readPrivateJSON, writeExclusive, delay, QUIT_TIMEOUT_MS };

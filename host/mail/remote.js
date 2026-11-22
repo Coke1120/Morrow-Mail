@@ -421,7 +421,7 @@ async function readFetched(msg, validity, cap) {
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
     recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
-    listUnsubscribe: require("./list-unsubscribe").parseHeaders(source),
+    listUnsubscribe: source ? require("./list-unsubscribe").parseHeaders(source) : null,
     date: when.toISOString(),
     receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
     listSortTs: when.getTime(),
@@ -501,23 +501,55 @@ async function searchUids(client, folderPath, query, flagPage) {
   }
 }
 
+async function collectFetched(iterable, validity) {
+  const messages = [];
+  const flags = [];
+  const byUid = new Map();
+  for await (const msg of iterable) {
+    if (!msg) continue;
+    const uid = Number(msg.uid);
+    // Separate untagged flags-only FETCH rows so they never overwrite cached
+    // headers, bodies or List-Unsubscribe metadata with empty placeholders.
+    if (msg.source == null && msg.envelope == null) {
+      if (Number.isSafeInteger(uid) && uid > 0 && msg.flags instanceof Set) {
+        const prior = byUid.get(uid);
+        if (prior) {
+          prior.unread = !msg.flags.has("\\Seen");
+          prior.starred = msg.flags.has("\\Flagged");
+          Object.assign(prior, require("./reply-forward-state").fromFlags(msg.flags));
+        } else {
+          flags.push({
+            uid,
+            unread: !msg.flags.has("\\Seen"),
+            starred: msg.flags.has("\\Flagged"),
+            ...require("./reply-forward-state").fromFlags(msg.flags),
+          });
+        }
+      }
+      continue;
+    }
+    const row = await readFetched(msg, validity);
+    if (Number.isSafeInteger(uid) && uid > 0) byUid.set(uid, row);
+    messages.push(row);
+  }
+  return { messages, flags: flags.filter((entry) => !byUid.has(entry.uid)) };
+}
+
 async function fetchMessages(client, folderPath, uids) {
   if (client.gmail) throw new Error("Gmail API sync uses provider message retrieval, not IMAP FETCH.");
   const list = (uids || []).map(Number).filter((uid) => uid > 0);
   const lock = await client.getMailboxLock(folderPath);
   try {
     const validity = Number((client.mailbox || {}).uidValidity) || 0;
-    if (!list.length) return { messages: [], validity };
-    const messages = [];
+    if (!list.length) return { messages: [], flags: [], validity };
+    let collected;
     try {
-      for await (const msg of client.fetch(list.join(","), FETCH_FIELDS, { uid: true })) {
-        messages.push(await readFetched(msg, validity));
-      }
+      collected = await collectFetched(client.fetch(list.join(","), FETCH_FIELDS, { uid: true }), validity);
     } catch (error) {
       throwRate(error);
       throw error;
     }
-    return { messages, validity };
+    return { messages: collected.messages, flags: collected.flags, validity };
   } finally {
     lock.release();
   }
@@ -552,7 +584,8 @@ async function syncFolder(client, folderPath, options) {
       const start = Math.max(1, exists - limit + 1);
       range = `${start}:*`;
     }
-    const messages = [];
+    let messages = [];
+    let flags = [];
     if (range) {
       const query = {
         uid: true,
@@ -562,12 +595,13 @@ async function syncFolder(client, folderPath, options) {
         internalDate: true,
         source: { maxLength: SOURCE_CAP },
       };
-      for await (const msg of client.fetch(range, query, { uid: byUid })) {
-        messages.push(await readFetched(msg, validity));
-      }
+      const collected = await collectFetched(client.fetch(range, query, { uid: byUid }), validity);
+      messages = collected.messages;
+      flags = collected.flags;
     }
     return {
       messages,
+      flags,
       validity,
       exists,
       unseen: typeof box.unseen === "number" ? box.unseen : null,
@@ -980,23 +1014,21 @@ async function findText(client, folderPath, text, limit, options) {
     const picked = (uids || []).map(Number).filter((uid) => uid > 0).sort((a, b) => b - a).slice(0, cap);
     const validity = Number((client.mailbox || {}).uidValidity) || 0;
     if (!picked.length) return { messages: [], validity, searched: true };
-    const messages = [];
+    let collected;
     try {
-      for await (const msg of client.fetch(picked.join(","), {
+      collected = await collectFetched(client.fetch(picked.join(","), {
         uid: true,
         flags: true,
         envelope: true,
         bodyStructure: true,
         internalDate: true,
         source: { maxLength: SOURCE_CAP },
-      }, { uid: true })) {
-        messages.push(await readFetched(msg, validity));
-      }
+      }, { uid: true }), validity);
     } catch (error) {
       throwRate(error);
       throw error;
     }
-    return { messages, validity, searched: true };
+    return { messages: collected.messages, flags: collected.flags, validity, searched: true };
   } finally {
     lock.release();
   }

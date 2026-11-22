@@ -72,7 +72,7 @@ async function postUnsubscribe(value, options = {}) {
       issued = true;
       req = request({
         protocol: 'https:', hostname, port: 443,
-        path: uri.pathname + uri.search, method: 'POST',
+        path: uri.href.slice(uri.origin.length), method: 'POST',
         agent: false, lookup: pinnedLookup, family: pinned.family,
         autoSelectFamily: false,
         servername: net.isIP(hostname) ? '' : hostname,

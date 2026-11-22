@@ -130,7 +130,9 @@ function hidesWindowOnClose(platform) {
 function createQuitController({ listRows, requestChoice, quitApp, cleanup, platform, format }) {
   let confirmed = false;
   let cleaning = false;
+  let cleaned = null;
   let prompting = null;
+  let updateQuit = false;
 
   function startCleanup() {
     if (cleaning) return;
@@ -138,7 +140,47 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
     Promise.resolve()
       .then(() => cleanup())
       .catch(() => {})
-      .finally(() => quitApp());
+      .finally(() => { cleaned = "ordinary"; quitApp(); });
+  }
+
+  async function requestUpdateQuit({ beforeExit, signal }) {
+    if (prompting || cleaning || confirmed || updateQuit) throw new Error("A quit request is already in progress.");
+    updateQuit = true;
+    try {
+      const prompt = readPrompt(listRows, format);
+      if (prompt) {
+        signal.throwIfAborted();
+        const choice = await new Promise((resolve, reject) => {
+          const abort = () => reject(signal.reason);
+          signal.addEventListener("abort", abort, { once: true });
+          prompting = Promise.resolve().then(() => requestChoice(prompt))
+            .finally(() => {
+              signal.removeEventListener("abort", abort);
+              prompting = null;
+            }).then(resolve, reject);
+        });
+        if (!choiceAllowsQuit(choice)) return false;
+      }
+      signal.throwIfAborted();
+      cleaning = true;
+      await cleanup({ forUpdate: true });
+      signal.throwIfAborted();
+      await beforeExit();
+      signal.throwIfAborted();
+      cleaned = "update";
+      try { quitApp(); }
+      catch (error) { cleaned = null; throw error; }
+      return true;
+    } finally {
+      if (!cleaned) cleaning = false;
+      updateQuit = false;
+    }
+  }
+
+  function resumeAfterUpdateQuit() {
+    if (cleaned !== "update") return;
+    cleaned = null;
+    cleaning = false;
   }
 
   function startPrompt(prompt) {
@@ -159,7 +201,11 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
     // A real quit sets cleaning before Electron closes the window, because the
     // first before-quit is held until cleanup calls quit again. That close must
     // destroy the window. Every other macOS close hides and skips the confirm.
-    if (confirmed || cleaning) return "allow";
+    if (cleaned) return "allow";
+    if (updateQuit || cleaning || confirmed) {
+      event?.preventDefault?.();
+      return "blocked";
+    }
     if (hidesWindowOnClose(platform) && !prompting) {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       return "hide";
@@ -172,8 +218,9 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
   }
 
   function onBeforeQuit(event) {
-    if (cleaning) return "allow";
+    if (cleaned) return "allow";
     if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (updateQuit || cleaning) return "blocked";
     if (confirmed) {
       startCleanup();
       return "cleanup";
@@ -190,6 +237,9 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
   return {
     onClose,
     onBeforeQuit,
+    requestUpdateQuit,
+    resumeAfterUpdateQuit,
+    get updateReady() { return cleaned === "update"; },
     get confirmed() { return confirmed; },
     get cleaning() { return cleaning; },
   };

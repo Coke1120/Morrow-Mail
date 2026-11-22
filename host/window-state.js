@@ -37,6 +37,7 @@ function dimension(value, min, max) {
 }
 
 function coordinate(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return null;
   return dimension(value, -100000, 100000);
 }
 
@@ -74,12 +75,8 @@ function update(patch) {
   return next;
 }
 
-function visibleOn(bounds, x, y, area) {
-  const left = Math.max(x, area.x);
-  const top = Math.max(y, area.y);
-  const right = Math.min(x + bounds.width, area.x + area.width);
-  const bottom = Math.min(y + bounds.height, area.y + area.height);
-  return right - left >= 48 && bottom - top >= 48;
+function contains(area, x, y) {
+  return x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height;
 }
 
 function workAreas(displays) {
@@ -88,16 +85,28 @@ function workAreas(displays) {
     .filter((area) => area && dimension(area.width, 1, 100000) && dimension(area.height, 1, 100000) && coordinate(area.x) != null && coordinate(area.y) != null);
 }
 
-// A saved position is kept only when enough of the window still sits on a display.
+// Keep the saved origin only if the top-left controls are reachable.
 function place(saved, displays, fallback) {
   const state = sanitize(saved);
   const width = state.width || (fallback && fallback.width) || 1200;
   const height = state.height || (fallback && fallback.height) || 800;
   const bounds = { width, height };
   const areas = workAreas(displays);
-  if (state.x != null && state.y != null && areas.some((area) => visibleOn(bounds, state.x, state.y, area))) {
-    bounds.x = state.x;
-    bounds.y = state.y;
+  const originArea = state.x == null || state.y == null ? null : areas.find((area) =>
+    contains(area, state.x, state.y) && contains(area, state.x + 47, state.y + 47));
+  if (originArea) {
+    // Preserve frames that still span connected displays. If the far corner
+    // is now outside the desktop, fit the frame to its origin display.
+    const farCornerVisible = areas.some((area) => contains(area, state.x + width - 1, state.y + height - 1));
+    if (!farCornerVisible) {
+      bounds.width = Math.min(width, originArea.width);
+      bounds.height = Math.min(height, originArea.height);
+    }
+    bounds.x = farCornerVisible ? state.x : Math.min(state.x, originArea.x + originArea.width - bounds.width);
+    bounds.y = farCornerVisible ? state.y : Math.min(state.y, originArea.y + originArea.height - bounds.height);
+  } else if (areas.length === 1) {
+    bounds.width = Math.min(width, areas[0].width);
+    bounds.height = Math.min(height, areas[0].height);
   }
   return {
     bounds,

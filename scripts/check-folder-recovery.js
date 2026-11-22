@@ -300,7 +300,7 @@ function accessFixture(options = {}) {
       connects++; if (options.connection) await options.connection();
       const transport = { list: async () => { if (options.list) await options.list(); return [{ path: "User", delimiter: "/", flags: new Set() }]; }, mailboxCreate: async () => { writes++; }, mailboxRename: async () => { writes++; } };
       if (options.gmail) transport.gmail = { api: createGmailMailApi({ check: hooks.check, accessToken: async () => { if (options.token) await options.token(); return "synthetic"; },
-        fetchImpl: async (url, request) => { if ((request.method || "GET") !== "GET") writes++; return new Response(JSON.stringify({ labels: [{ id: "Label_1", name: "User", type: "user" }] }), { status: 200 }); } }) };
+        fetchImpl: async (url, request) => { if ((request.method || "GET") !== "GET") writes++; if (options.fetch) return options.fetch(url, request); return new Response(JSON.stringify({ labels: [{ id: "Label_1", name: "User", type: "user" }] }), { status: 200 }); } }) };
       return work(transport);
     }, refreshCache: async () => {} });
   return { access, account, get reads() { return reads; }, get connects() { return connects; }, get writes() { return writes; }, reconnect() { gen++; }, rotate() { rev = Symbol("replacement"); }, client() { clientId = "replacement"; } };
@@ -343,6 +343,33 @@ for (const change of ["rotate", "client"]) test(`Gmail ${change} during per-requ
   await assert.rejects(running, /changed/); assert.equal(f.writes, 0);
 });
 
+test("A proven Gmail label rejection can be cancelled; ambiguous DELETE stays blocked", async t => {
+  for (const kind of ["renamed", "rate-limited", "unknown"]) {
+    const scope = temp(t), journal = scope.journal();
+    let clock = 0, timer, listings = 0;
+    const f = accessFixture({ gmail: true, async fetch(url, request) {
+      if (request.method === "DELETE") {
+        if (kind === "unknown") throw new Error("Connection lost");
+        return new Response("{}", { status: 429 });
+      }
+      const name = ++listings === 4 && kind === "renamed" ? "Renamed" : "User";
+      return new Response(JSON.stringify({ labels: [{ id: "Label_1", name, type: "user" }] }), { status: 200 });
+    } });
+    const manager = createManager({ ...f.access, journal: () => journal, monotonic: () => clock,
+      setTimer(fn) { timer = fn; }, clearTimer() {} });
+    const review = await manager.answer({ accountId: "a", action: "review", intent: "delete", folderId: "Label_1" });
+    const deletion = await manager.answer({ accountId: "a", action: "delete", reviewId: review.reviewId, confirmation: "confirm" });
+    clock = GRACE_MS; await timer();
+    assert.equal(f.writes, kind === "renamed" ? 0 : 1);
+    const operation = manager.operations("a")[0];
+    assert.equal(operation.phase, kind === "unknown" ? "uncertain" : "paused");
+    assert.equal(operation.canUndo, kind !== "unknown");
+    if (operation.canUndo) {
+      await manager.answer({ accountId: "a", action: "undo", operationId: deletion.id });
+      assert.ok((await manager.answer({ accountId: "a", action: "review", intent: "delete", folderId: "Label_1" })).reviewId);
+    }
+  }
+});
 test("Gmail final provider listing rejects a renamed label before DELETE", async () => {
   let writes = 0;
   const api = createGmailMailApi({ accessToken: async () => "synthetic", fetchImpl: async (url, request) => {

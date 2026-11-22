@@ -99,12 +99,14 @@ function callBridge(config, operation, params, id, signal, checkBatchCredential)
           if (!raw.equals(Buffer.from(text, "utf8"))) throw Error("encoding");
           const result = parseStrict(text, 24);
           const type = String(res.headers["content-type"] || "").toLowerCase().split(";")[0];
+          const installMismatch = result && !result.ok && result.error?.code === "INSTALLATION_MISMATCH"
+            && typeof result.installationId === "string" && new RegExp(mcp.uuid).test(result.installationId);
           if (type !== "application/json" || !object(result) || result.apiVersion !== API_VERSION
             || typeof result.ok !== "boolean" || (result.requestId !== id && (result.ok || result.requestId !== null))
             || result.ok && (res.statusCode !== 200 || result.installationId !== config.installationId)
             || !result.ok && (!object(result.error) || !Object.hasOwn(ERRORS, result.error.code)
               || res.statusCode !== ERRORS[result.error.code].status
-              || result.installationId !== null && result.installationId !== config.installationId)) throw Error("envelope");
+              || result.installationId !== null && result.installationId !== config.installationId && !installMismatch)) throw Error("envelope");
           finish(null, result);
         } catch { finish(transportFailure()); }
       });

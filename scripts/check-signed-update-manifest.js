@@ -7,7 +7,7 @@ const path = require('node:path');
 const { Readable } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { verifyManifest, artifactURL, validateArtifact, compareVersions } = require('../host/update-manifest');
-const { allowedURL, fetchBytes, downloadArtifact, recordInternetDownload } = require('../host/update-download');
+const { allowedURL, fetchBytes, downloadArtifact, downloadManagedArtifact, recordInternetDownload } = require('../host/update-download');
 
 async function main() {
   const attrs = new Map(); let writes = 0;
@@ -57,7 +57,7 @@ async function main() {
     return req;
   };
   try {
-    const file = await downloadArtifact(manifest, { directory: dir, request: request([body]) });
+    const { archive: file, discard } = await downloadManagedArtifact(manifest, { directory: dir, request: request([body]) });
     assert.equal(await validateArtifact(file, manifest), true);
     if (process.platform !== 'win32') {
       assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
@@ -65,7 +65,8 @@ async function main() {
     } else {
       console.log('SKIP: POSIX file mode assertions on Windows; signed Mac updater permissions require macOS validation.');
     }
-    await fs.rm(path.dirname(file), { recursive: true });
+    await discard();
+    assert.deepEqual(await fs.readdir(dir), [], 'Retiring an owned download releases its ZIP and directory');
     for (const chunks of [[Buffer.from('wrong hash same size!')], [body.subarray(0, 3)], [Buffer.concat([body, body])]]) {
       await assert.rejects(downloadArtifact(manifest, { directory: dir, request: request(chunks) }));
       assert.deepEqual(await fs.readdir(dir), []);

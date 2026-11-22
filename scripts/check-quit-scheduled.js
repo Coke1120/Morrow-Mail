@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const quitScheduled = require("../host/quit-scheduled");
 const { renderer } = require("./check-ux-workflows");
 
@@ -496,12 +497,75 @@ function checkWiring() {
   assert.match(appJs, /api\.on\("app:confirmQuitScheduled", acceptQuitScheduled\)/);
 }
 
+async function checkUpdateDelivery() {
+  const main = fs.readFileSync(path.join(__dirname, "../host/main.js"), "utf8");
+  const events = new Map();
+  let choice = "stay", lifecycle, quitCalls = 0, noticeActive = true, digestTimer = true, digestPaused = false;
+  const proactive = {
+    pause() { digestPaused = true; },
+    resume() { digestPaused = false; },
+    stop() { digestPaused = true; digestTimer = false; },
+  };
+  const shellWindow = {};
+  const modules = {
+    "./bot/proactive": proactive,
+    "./bot/server": { stop: async () => {}, startIfEnabled: async () => {} },
+    "./mail/engine": { stopLocalImports: async () => {}, stopIdle: async () => {} },
+    "./mail/db": { checkpoint: async () => {} },
+  };
+  const context = vm.createContext({
+    process, quitScheduled, shellWindow, ipcMain: {}, bootFinished: true,
+    listScheduledRows: () => [{ subject: "Pending fixture", sendAt: "2099-01-01T00:00:00Z" }],
+    requestQuitChoice: async () => choice, scheduledQuitTime: () => "fixture",
+    mailNotifications: { stop() { noticeActive = false; } },
+    app: { on: (name, callback) => events.set(name, callback), quit() { quitCalls++; } },
+    updater: { configureInstall: value => { lifecycle = value; } },
+    BrowserWindow: { getAllWindows: () => [shellWindow] }, externalAsarPath: () => null,
+    requestRendererQuiescence: async () => () => {},
+    startBackgroundSync() {}, updateGate: { prepare: async () => {}, resume() {} },
+    require: name => { assert(name in modules, name); return modules[name]; },
+  });
+  const quitStart = main.indexOf("const quitController = quitScheduled.createQuitController(");
+  const installStart = main.indexOf("updater.configureInstall({");
+  vm.runInContext(main.slice(quitStart, main.indexOf('app.on("will-quit"', quitStart))
+    + main.slice(installStart, main.indexOf("updater.registerIpc();", installStart)), context);
+  const assertDelivery = () => {
+    assert.equal(noticeActive, true, "native notification delivery must remain armed");
+    assert.equal(digestTimer && !digestPaused, true, "the existing digest timer must resume ticking");
+  };
+  let attempt = new AbortController();
+  let resume = await lifecycle.prepare();
+  assert.equal(await lifecycle.quit({ signal: attempt.signal, beforeExit: () => assert.fail("Stay open forbids approval") }), false);
+  resume();
+  assertDelivery();
+  choice = "quit";
+  attempt = new AbortController();
+  resume = await lifecycle.prepare();
+  await assert.rejects(lifecycle.quit({ signal: attempt.signal, beforeExit: async () => { throw Error("Approval write failed"); } }), /Approval write failed/);
+  resume();
+  assertDelivery();
+  assert.equal(quitCalls, 0, "a failed approval cannot quit");
+  attempt = new AbortController();
+  resume = await lifecycle.prepare();
+  assert.equal(await lifecycle.quit({ signal: attempt.signal, beforeExit: async () => {} }), true);
+  attempt.abort(Error("Synthetic quit timeout"));
+  resume();
+  assertDelivery();
+  assert.equal(quitCalls, 1);
+  await lifecycle.prepare();
+  assert.equal(await lifecycle.quit({ signal: new AbortController().signal, beforeExit: async () => {} }), true);
+  assert.equal(quitCalls, 2, "a timed-out attempt cannot block a fresh approved quit");
+  events.get("quit")();
+  assert.deepEqual([noticeActive, digestTimer], [false, false]);
+}
+
 async function run() {
   await checkController();
   await checkMacClose();
   await checkRenderer();
   checkWiring();
   await checkEngine();
+  await checkUpdateDelivery();
   console.log("quit-scheduled-ok");
 }
 

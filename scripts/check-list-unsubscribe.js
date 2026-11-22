@@ -110,6 +110,8 @@ test('private, special-use, mapped, multicast and reserved IPv4/IPv6 addresses a
 test('mailto accepts one recipient and only subject/body, preserving literal plus', () => {
   assert.deepEqual(safeUri(mail), { url: mail, kind: 'mailto', destination: 'leave@example.net', to: 'leave@example.net', subject: 'unsubscribe', text: 'Remove me' });
   assert.equal(safeUri('mailto:list%2Bleave@EXAMPLE.NET?subject=A+B').subject, 'A+B');
+  assert.equal(safeUri('mailto:leave@example.net?subject=&body=remove').subject, '');
+  assert.equal(safeUri('mailto:leave@example.net?body=remove').subject, 'Unsubscribe');
   const special = safeUri('mailto:list%23leave@example.net?subject=A%20B');
   assert.equal(special.to, 'list#leave@example.net');
   assert.equal(safeUri(special.url).to, special.to);

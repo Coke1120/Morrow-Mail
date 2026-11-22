@@ -90,14 +90,24 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
           updatedAt: now(), phase: "prepared", detail: "Prepared; no upload has started." };
         receipt = receipt ? ledger.update(receipt.id, "not_uploaded", intent)
           : ledger.insert({ id: "mailbox-copy:" + crypto.randomUUID(), key, sourceKey, destinationKey, createdAt: now(), ...intent });
-        try {
+        const checkSubmission = () => {
           if (reviewed.cancelled) throw problem("copy_cancelled", "Copy was cancelled before upload. The source was retained.");
+          if (reviewed.expires <= clock()) throw problem("copy_review", "This copy review expired before upload. Review the destination again.");
           session.check();
+        };
+        let importRejected = false;
+        try {
+          checkSubmission();
           const destination = await session.upload(snapshot, expected, () => {
-            if (reviewed.cancelled) throw problem("copy_cancelled", "Copy was cancelled before upload. The source was retained.");
-            session.check();
+            checkSubmission();
             receipt = ledger.update(receipt.id, "prepared", { phase: "unknown", updatedAt: now(), detail: UNKNOWN });
-            session.check(); submitted = true;
+            checkSubmission(); submitted = true;
+          }).catch(error => {
+            // Only an explicit Import response can clear a submitted intent.
+            // Readback and ownership failures after upload must remain uncertain.
+            importRejected = submitted && session.backend === "gmail" && error.operationIssued === false
+              && error.status >= 400 && error.status < 500 && error.gmailDiagnostic?.status === error.status;
+            throw error;
           });
           if (!submitted) throw problem("copy_protocol", "The destination did not prove a submitted upload. The source was retained.");
           receipt = ledger.update(receipt.id, "unknown", { phase: "unverified", destination, updatedAt: now(), detail: "Upload acknowledged; checking complete destination readback." });
@@ -108,8 +118,10 @@ function createService({ access, journal, gate, now = Date.now, clock = () => pe
           receipt = ledger.update(receipt.id, "unverified", { phase: "verified", updatedAt: now(), detail: "Complete destination content and read/star/date state verified." });
           return result(receipt, "copied", "A complete destination copy was verified. The source message stayed in place.");
         } catch (error) {
-          if (!submitted && error.operationIssued !== true) {
-            ledger.update(receipt.id, receipt.phase, { phase: "not_uploaded", updatedAt: now(), detail: "No upload was submitted. A new explicit review is required." });
+          if (importRejected || (!submitted && error.operationIssued !== true)) {
+            const detail = importRejected ? "Gmail rejected the import. A new explicit review is required."
+              : "No upload was submitted. A new explicit review is required.";
+            ledger.update(receipt.id, receipt.phase, { phase: "not_uploaded", updatedAt: now(), detail });
             throw error;
           }
           receipt = ledger.update(receipt.id, receipt.phase, { phase: "unknown", updatedAt: now(), detail: UNKNOWN });

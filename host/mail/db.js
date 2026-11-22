@@ -1456,7 +1456,9 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
       updateChanged("messages", { decoding_json: require("./mime-decoding").serialize(message.decoding) }, "id = ?", [id]);
       updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
-      updateChanged("messages", { list_unsubscribe_json: JSON.stringify(message.listUnsubscribe || null) }, "id = ?", [id]);
+      if (message.listUnsubscribe != null) {
+        updateChanged("messages", { list_unsubscribe_json: JSON.stringify(message.listUnsubscribe) }, "id = ?", [id]);
+      }
     }
     for (const flags of Array.isArray(report.flags) ? report.flags : []) {
       const row = get("SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
@@ -2799,7 +2801,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           is_draft: input.isDraft ? 1 : 0, html_body: input.htmlBody || null, text_body: input.textBody || null,
           has_attachments: input.hasAttachments ? 1 : 0, attachments_json: JSON.stringify(input.attachments || []),
           body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
-          list_unsubscribe_json: JSON.stringify(input.listUnsubscribe || null),
+          ...(input.listUnsubscribe != null ? { list_unsubscribe_json: JSON.stringify(input.listUnsubscribe) } : {}),
           decoding_json: require("./mime-decoding").serialize(input.decoding),
           ...require("./reply-forward-state").patch(input) };
         if (flagHeld(found.id, "read")) delete patch.unread;
