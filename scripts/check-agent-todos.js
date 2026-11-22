@@ -449,21 +449,26 @@ async function rendererChecks() {
   assert.match(dom.window.document.getElementById("status").textContent, /mailbox or pending selection changed/);
 
   const batchUI = renderer({ requestAnimationFrame: (fn) => setTimeout(fn, 0) });
-  await batchUI.run(`
+  const packedCalls = await batchUI.run(`
     const packed = Array.from({length: 6}, (_, i) => ({ id: "b" + i, accountId: i % 2 ? "grace" : "ada",
       contextOwner: { emailId: "b" + i, accountId: i % 2 ? "grace" : "ada" } }));
     beginRemovalRequest = () => 1;
     renderList = () => {};
     showStatus = () => {};
-    globalThis.packedCalls = null;
-    runBulk = async (calls) => { globalThis.packedCalls = calls; return {}; };
     finishBulkRemoval = async () => {};
-    queueBulkRemoval("Archive", contextOwnedCalls(bulkRemovalCalls(packed, "archive", false), packed), packed, "archive");
-    new Promise(resolve => setTimeout(resolve, 10))
+    new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Archive batch did not reach runBulk")), 5000);
+      runBulk = async (calls) => {
+        clearTimeout(timeout);
+        resolve(calls);
+        return {};
+      };
+      queueBulkRemoval("Archive", contextOwnedCalls(bulkRemovalCalls(packed, "archive", false), packed), packed, "archive");
+    });
   `);
-  assert.deepEqual(Array.from(batchUI.run("packedCalls"), (spec) => Array.from(spec.params.items, (item) => item.emailId)),
+  assert.deepEqual(Array.from(packedCalls, (spec) => Array.from(spec.params.items, (item) => item.emailId)),
     [["b0", "b1", "b2", "b3"], ["b4", "b5"]]);
-  assert.deepEqual(Array.from(batchUI.run("packedCalls"), (spec) => Array.from(spec.params.contextOwners, (owner) => owner.emailId)),
+  assert.deepEqual(Array.from(packedCalls, (spec) => Array.from(spec.params.contextOwners, (owner) => owner.emailId)),
     [["b0", "b1", "b2", "b3"], ["b4", "b5"]], "each journal chunk carries only its own exact proofs");
 
   const mixed = renderer();
