@@ -230,6 +230,7 @@ async function uiChecks() {
     row({ id: "g", uid: 1, ts: T, to: ["Grace Hopper <grace@example.test>"] }),
     row({ id: "r", uid: 2, ts: T - DAY, to: ["Greg <greg@example.test>"] }),
     row({ id: "a", uid: 3, ts: T - 2 * DAY, from_addr: "Ada Lovelace <ada@example.test>", from_address: "ada@example.test" }),
+    row({ id: "alice", uid: 4, ts: T, to: ["Alice <alice@example.test>"] }),
   ];
   const ui = renderer({
     document: dom.window.document,
@@ -248,6 +249,9 @@ async function uiChecks() {
   ui.context.fixtureRows = rows;
   ui.run("wire()");
   ui.run(`
+    document.getElementById("compose").open = true;
+    document.getElementById("compose-cc-row").hidden = false;
+    document.getElementById("compose-bcc-row").hidden = false;
     state.accounts = [{ id: "box", email: "me@example.test", platform: "imap", preferredFromAddress: "me@example.test" }];
     state.composeMeta = { accountId: "box", fromAddress: "me@example.test", fromDisplayName: "Me" };
     state.accountId = "box";
@@ -275,6 +279,7 @@ async function uiChecks() {
   assert.equal(opened.hidden, false, JSON.stringify(opened));
   assert.deepEqual(JSON.parse(JSON.stringify(opened.labels)), ["Grace Hopper grace@example.test", "Greg greg@example.test"]);
   assert.equal(opened.expanded, "true");
+  assert.equal(opened.active, "compose-to");
   ui.run(`
     document.getElementById("compose-to").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
   `);
@@ -324,6 +329,98 @@ async function uiChecks() {
   assert.equal(ui.run('document.getElementById("recipient-suggest").hidden'), true);
   assert.equal(ui.run("takeRecipientSuggestEscape()"), true);
   assert.equal(ui.run("takeRecipientSuggestEscape()"), false);
+
+  const { document, Event, KeyboardEvent } = dom.window;
+  const to = document.getElementById("compose-to");
+  const cc = document.getElementById("compose-cc");
+  const bcc = document.getElementById("compose-bcc");
+  const list = document.getElementById("recipient-suggest");
+  const typeAt = (input, value, start = value.length, end = start) => {
+    input.focus();
+    input.value = value;
+    input.setSelectionRange(start, end);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const key = (input, value) => input.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
+  const holdNextSuggestions = () => ui.run(`
+    new Promise((started, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Recipient suggestion request did not start")), 1000);
+      const original = call;
+      call = async (...args) => {
+        call = original;
+        const result = await original(...args);
+        clearTimeout(timeout);
+        return new Promise((resolve) => started(() => resolve(result)));
+      };
+    })
+  `);
+
+  // Complete the first or middle recipient and preserve exact surrounding text.
+  const prefix = '"Doe, \\"JD\\"" <doe@example.test>;  ';
+  const middleSuffix = "  ,Greg <greg@example.test>";
+  for (const [value, caret, expectedEmail, completed, suffix] of [
+    ["al, ann@example.test", 2, "alice@example.test", "Alice <alice@example.test>", ", ann@example.test"],
+    [prefix + "gr" + middleSuffix, prefix.length + 2, "grace@example.test", prefix + "Grace Hopper <grace@example.test>", middleSuffix],
+  ]) {
+    typeAt(to, value, caret);
+    await sleep(180);
+    assert.deepEqual(Array.from(list.querySelectorAll('[role="option"]'), (option) => option.dataset.email), [expectedEmail]);
+    let edits = 0;
+    to.addEventListener("input", () => { edits += 1; }, { once: true });
+    key(to, "ArrowDown");
+    assert.equal(key(to, "Enter"), false);
+    assert.equal(to.value, completed + suffix);
+    assert.equal(to.selectionStart, completed.length);
+    assert.equal(to.selectionEnd, completed.length);
+    assert.equal(edits, 1, "accepting a suggestion emits a draft input event");
+    await sleep(180);
+    assert.equal(list.hidden, true, "acceptance must not reopen suggestions");
+  }
+
+  // The same query text in another token cannot keep a pending or open list valid.
+  const pendingCaret = holdNextSuggestions();
+  typeAt(to, "al; al", 2);
+  const releaseCaret = await pendingCaret;
+  to.setSelectionRange(to.value.length, to.value.length);
+  releaseCaret();
+  await sleep(0);
+  assert.equal(list.hidden, true);
+
+  typeAt(to, "al; al", 2);
+  await sleep(180);
+  assert.equal(list.hidden, false);
+  key(to, "ArrowDown");
+  to.setSelectionRange(to.value.length, to.value.length);
+  assert.equal(key(to, "Enter"), true, "stale acceptance must leave Enter available");
+  assert.equal(to.value, "al; al");
+  assert.equal(list.hidden, true);
+  const requests = ui.run("suggestCalls.length");
+  typeAt(to, "al; al", 0, to.value.length);
+  await sleep(180);
+  assert.equal(ui.run("suggestCalls.length"), requests, "a selection crossing recipients must not query");
+  assert.equal(list.hidden, true);
+
+  // Options stay out of the tab order, and blur retires in-flight ownership too.
+  typeAt(cc, "ad");
+  await sleep(180);
+  const staleOption = list.querySelector("button");
+  assert.equal(staleOption.tabIndex, -1);
+  assert.equal(key(cc, "Tab"), true, "Tab keeps its native focus navigation");
+  bcc.focus();
+  staleOption.click();
+  assert.equal(list.hidden, true);
+  assert.equal(cc.getAttribute("aria-expanded"), "false");
+  assert.equal(cc.value, "ad");
+  assert.equal(document.activeElement, bcc);
+
+  const pendingBlur = holdNextSuggestions();
+  typeAt(cc, "ad");
+  const releaseBlur = await pendingBlur;
+  bcc.focus();
+  releaseBlur();
+  await sleep(0);
+  assert.equal(list.hidden, true);
+  assert.equal(document.activeElement, bcc);
 }
 
 async function main() {

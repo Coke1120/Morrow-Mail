@@ -28621,13 +28621,13 @@ function wireSenderHistory() {
   }
 }
 
-let recipientSuggestGen = 0;
 let recipientSuggestTimer = 0;
 let recipientSuggestIndex = -1;
 let recipientSuggestRows = [];
 let recipientSuggestInput = null;
 let recipientSuggestEscape = false;
 let recipientSuggestSnapshot = null;
+let recipientSuggestChoiceEvent = null;
 
 function recipientSuggestApi() {
   return typeof window !== "undefined" ? window.morrowRecipientSuggest : null;
@@ -28652,48 +28652,62 @@ function hideRecipientSuggest() {
   }
   if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
   recipientSuggestTimer = 0;
-  recipientSuggestGen += 1;
   return open;
 }
 
+function recipientSuggestRange(input) {
+  return recipientSuggestApi()?.recipientAt(input.value, input.selectionStart, input.selectionEnd);
+}
+
+function recipientSuggestIsCurrent(input) {
+  const snapshot = recipientSuggestSnapshot;
+  if (!snapshot || recipientSuggestInput !== input || input.disabled || input.readOnly || input.value !== snapshot.value) return false;
+  if (document.activeElement !== input) return false;
+  const range = recipientSuggestRange(input);
+  return !!range && range.start === snapshot.range?.start && range.end === snapshot.range?.end;
+}
+
 function scheduleRecipientSuggest(input) {
-  const api = recipientSuggestApi();
-  const query = api && input ? api.activeQuery(input.value) : "";
-  if (!api || !input || input.disabled || input.readOnly || !query) {
-    hideRecipientSuggest();
-    return;
-  }
   hideRecipientSuggest();
-  const gen = ++recipientSuggestGen;
-  if (recipientSuggestTimer) clearTimeout(recipientSuggestTimer);
+  const api = recipientSuggestApi();
+  if (!api || !input || input.disabled || input.readOnly) return;
+  const range = recipientSuggestRange(input);
+  const query = api.activeQuery(input.value, range);
+  if (!query) return;
+  const snapshot = { value: input.value, range };
+  recipientSuggestInput = input;
+  recipientSuggestSnapshot = snapshot;
   recipientSuggestTimer = setTimeout(() => {
     recipientSuggestTimer = 0;
-    loadRecipientSuggest(input, gen);
+    loadRecipientSuggest(input, snapshot, query);
   }, 80);
 }
 
-async function loadRecipientSuggest(input, gen) {
-  const api = recipientSuggestApi();
-  if (!api) return;
-  const query = api.activeQuery(input.value);
+async function loadRecipientSuggest(input, snapshot, query) {
+  if (snapshot !== recipientSuggestSnapshot) return;
+  if (!recipientSuggestIsCurrent(input)) {
+    hideRecipientSuggest();
+    return;
+  }
   let result;
   try {
     result = await call("mail:suggestRecipients", { query });
   } catch {
-    if (gen === recipientSuggestGen) hideRecipientSuggest();
+    if (snapshot === recipientSuggestSnapshot) hideRecipientSuggest();
     return;
   }
-  if (gen !== recipientSuggestGen) return;
-  const active = document.activeElement;
-  if (active && active !== input && active !== document.body && active !== document.documentElement) return;
-  if (api.activeQuery(input.value) !== query) return;
-  const used = api.usedAddresses(input.value);
+  if (snapshot !== recipientSuggestSnapshot) return;
+  if (!recipientSuggestIsCurrent(input)) {
+    hideRecipientSuggest();
+    return;
+  }
+  const used = recipientSuggestApi().usedAddresses(snapshot.value, snapshot.range);
   const rows = ((result && result.suggestions) || []).filter((row) => row && row.email && !used.has(row.email));
   if (!rows.length) {
     hideRecipientSuggest();
     return;
   }
-  paintRecipientSuggest(input, rows);
+  paintRecipientSuggest(input, rows, snapshot);
 }
 
 function recipientSuggestIcon() {
@@ -28707,7 +28721,7 @@ function recipientSuggestIcon() {
   return svg;
 }
 
-function paintRecipientSuggest(input, rows) {
+function paintRecipientSuggest(input, rows, snapshot = { value: input.value, range: recipientSuggestRange(input) }) {
   const box = document.getElementById("recipient-suggest");
   if (!box || typeof box.replaceChildren !== "function") return;
   const host = input.closest ? input.closest(".field-row") : input.parentElement;
@@ -28715,7 +28729,7 @@ function paintRecipientSuggest(input, rows) {
   box.replaceChildren();
   recipientSuggestRows = rows;
   recipientSuggestInput = input;
-  recipientSuggestSnapshot = { value: input.value, gen: recipientSuggestGen };
+  recipientSuggestSnapshot = snapshot;
   recipientSuggestIndex = -1;
   for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
     const node = document.getElementById(id);
@@ -28726,6 +28740,7 @@ function paintRecipientSuggest(input, rows) {
   rows.forEach((item, index) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.tabIndex = -1;
     button.id = "recipient-suggest-" + index;
     button.className = "recipient-suggest-option";
     button.setAttribute("role", "option");
@@ -28778,25 +28793,37 @@ function chooseRecipientSuggest(email) {
   const input = recipientSuggestInput;
   const choice = recipientSuggestRows.find((row) => row.email === email);
   if (!api || !input || !choice) return;
-  if (!recipientSuggestSnapshot || recipientSuggestSnapshot.value !== input.value || recipientSuggestSnapshot.gen !== recipientSuggestGen) {
+  if (!recipientSuggestIsCurrent(input)) {
     hideRecipientSuggest();
     return;
   }
-  input.value = api.applyChoice(input.value, choice);
+  const { value, range } = recipientSuggestSnapshot;
+  const next = api.applyChoice(value, choice, range);
+  const end = range.end === value.length
+    ? next.length
+    : next.slice(0, range.end + next.length - value.length).trimEnd().length;
+  input.value = next;
   hideRecipientSuggest();
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  if (typeof input.focus === "function") input.focus();
   if (typeof input.setSelectionRange === "function") {
-    const end = input.value.length;
     try { input.setSelectionRange(end, end); } catch { /* some fields reject a range while hidden */ }
   }
+  const event = new Event("input", { bubbles: true });
+  recipientSuggestChoiceEvent = event;
+  try { input.dispatchEvent(event); } finally { recipientSuggestChoiceEvent = null; }
 }
 
 function onRecipientSuggestKey(event) {
   const api = recipientSuggestApi();
-  if (!api || !event) return;
+  if (!api || !event || event.isComposing || event.keyCode === 229) return;
+  const input = event.currentTarget;
+  if (recipientSuggestInput !== input) return;
+  if (event.key === "Tab" || !recipientSuggestIsCurrent(input)) {
+    hideRecipientSuggest();
+    return;
+  }
+  if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
   const box = document.getElementById("recipient-suggest");
-  const open = !!(box && box.hidden === false && recipientSuggestInput === event.currentTarget);
+  const open = !!(box && box.hidden === false);
   const action = api.keyAction(event.key, open, recipientSuggestIndex);
   if (!action) return;
   event.preventDefault();
@@ -28831,17 +28858,17 @@ function wireRecipientSuggest() {
   for (const id of ["compose-to", "compose-cc", "compose-bcc"]) {
     const input = $(id);
     if (!input || typeof input.addEventListener !== "function") continue;
-    input.addEventListener("input", () => scheduleRecipientSuggest(input));
+    input.addEventListener("input", (event) => {
+      if (event !== recipientSuggestChoiceEvent && !event.isComposing) scheduleRecipientSuggest(input);
+    });
     input.addEventListener("keydown", onRecipientSuggestKey);
+    input.addEventListener("compositionstart", hideRecipientSuggest);
+    input.addEventListener("compositionend", () => scheduleRecipientSuggest(input));
+    input.addEventListener("selectionchange", () => {
+      if (recipientSuggestInput === input && !recipientSuggestIsCurrent(input)) hideRecipientSuggest();
+    });
     input.addEventListener("blur", () => {
-      const gen = recipientSuggestGen;
-      setTimeout(() => {
-        if (gen !== recipientSuggestGen || recipientSuggestInput !== input) return;
-        if (document.activeElement === input) return;
-        const box = document.getElementById("recipient-suggest");
-        if (box && typeof box.contains === "function" && box.contains(document.activeElement)) return;
-        hideRecipientSuggest();
-      }, 0);
+      if (recipientSuggestInput === input) hideRecipientSuggest();
     });
   }
   const box = $("recipient-suggest");
