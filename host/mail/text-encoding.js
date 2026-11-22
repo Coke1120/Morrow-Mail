@@ -156,6 +156,7 @@ function htmlToPlain(html) {
   return String(html || "")
     .replace(/<(script|style|head|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<br\s*\/?>|<\/(?:p|div|tr|li|h[1-6]|blockquote)>/gi, "\n")
+    .replace(/<\/t[dh]\s*>\s*(?=<t[dh]\b)/gi, " ")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/gi, " ")
     .replace(/&lt;/gi, "<")

@@ -339,13 +339,13 @@ async function run() {
         accountId: 'imap',
         to: 'leave@news.example.com',
         subject: '',
-        body: 'remove &lt;literal&gt; &amp; me<br>line 2',
+        body: 'remove &lt;literal&gt; &amp; me<br>line 2<br><table><tr><th>2</th><td>500</td></tr><tr><td>3</td><td>100</td></tr></table>',
         fromAddress: fixture.account.email,
       });
     } finally { engine.setSmtpSenderForTest(null); }
-    assert.equal(capturedMime.text, 'remove <literal> & me\nline 2');
+    assert.equal(capturedMime.text, 'remove <literal> & me\nline 2\n2 500\n3 100');
     const assembled = await require('mailparser').simpleParser(await remote.buildRaw(capturedMime));
-    assert.equal(assembled.text.trim(), 'remove <literal> & me\nline 2');
+    assert.equal(assembled.text.trim(), 'remove <literal> & me\nline 2\n2 500\n3 100');
 
     // Execute the real preload so a missing bridge allowlist fails this suite.
     let bridge, invoked;
