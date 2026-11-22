@@ -399,6 +399,28 @@ test('queued width saves retain their own snapshots and stale failures do not re
   assert.doesNotMatch(f.get('mail-columns-status').textContent,/Could not save/i);
 });
 
+test('a canceled drag does not hide a delayed keyboard resize save failure', async t => {
+  const f = uiFixture(t), handle = widthHandle(f, 'subject', 310);
+  f.ui.run('state.mailColumnWidths = { subject: 300 }');
+  let rejectWrite;
+  f.window.morrow.invoke = (channel, payload) => {
+    f.saved.push({ channel, payload });
+    return new Promise((_resolve, reject) => { rejectWrite = reject; });
+  };
+  handle.dispatchEvent(new f.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+  await settle();
+  assert.equal(widthSaves(f)[0].payload.subject, 310);
+  pointer(f, handle, 'pointerdown');
+  pointer(f, f.document, 'pointermove', { clientX: 120 });
+  pointer(f, f.document, 'pointercancel');
+  rejectWrite(new Error('Synthetic width save failure'));
+  await assert.rejects(f.ui.run('mailColumnWidthSave'));
+  assert.equal(widthSaves(f).length, 1);
+  assert.equal(f.ui.run('state.mailColumnWidths.subject'), 310);
+  assert.match(f.get('mail-columns-status').textContent, /Could not save column widths/);
+  assert.match(f.get('status').textContent, /Could not save column widths/);
+});
+
 
 test('actual list repaint cancels uncommitted pointer preview and keeps selection', async t => {
   const f = uiFixture(t), handle = widthHandle(f, 'sender');

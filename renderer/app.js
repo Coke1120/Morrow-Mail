@@ -1572,16 +1572,17 @@ async function loadMailColumnWidths() {
 }
 function saveMailColumnWidths(key) {
   const value = normalizedMailColumnWidths();
-  const revision = ++mailColumnWidthRevision;
+  ++mailColumnWidthRevision;
   const message = mailColumnLabels[key] + " column: " + (Object.hasOwn(value, key) ? value[key] + " pixels." : "automatic width.");
   if ($("mail-columns-status")) $("mail-columns-status").textContent = message;
-  mailColumnWidthSave = mailColumnWidthSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnWidths", value));
-  mailColumnWidthSave.catch(() => {
-    if (revision !== mailColumnWidthRevision) return;
+  const save = mailColumnWidthSave.catch(() => {}).then(() => api.invoke("morrow:configSetMailColumnWidths", value));
+  mailColumnWidthSave = save;
+  save.catch(() => {
+    if (save !== mailColumnWidthSave) return;
     if ($("mail-columns-status")) $("mail-columns-status").textContent = "Could not save column widths. This window keeps your layout; resize again to save it.";
     showStatus("Could not save column widths. Resize again to keep them after restart.", true);
   });
-  return mailColumnWidthSave;
+  return save;
 }
 function changeMailColumnWidth(key, value) {
   if (!Object.hasOwn(mailColumnLabels, key)) return Promise.resolve();
@@ -1628,7 +1629,12 @@ function wireMailColumnResize(cell, key) {
     }
     if (!["ArrowLeft", "ArrowRight", "Home", "End", "Delete", "Backspace"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
     event.preventDefault(); event.stopPropagation();
-    const current = normalizedMailColumnWidths()[key] ?? (cell.getBoundingClientRect().width || mailColumnDefaultMinimum[key]);
+    const saved = normalizedMailColumnWidths()[key];
+    const current = saved ?? (cell.getBoundingClientRect().width || mailColumnDefaultMinimum[key]);
+    if (event.key === "ArrowRight" && saved == null && current >= max) {
+      cancelMailColumnResize();
+      return;
+    }
     const next = event.key === "Home" ? min : event.key === "End" ? max
       : ["Delete", "Backspace"].includes(event.key) ? null
       : current + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 50 : 10);
@@ -1647,9 +1653,11 @@ function wireMailColumnResize(cell, key) {
       if (mailColumnResize !== session || next.pointerId !== session.pointerId) return;
       if (!handle.isConnected || cell.hidden) { cancelMailColumnResize(); return; }
       next.preventDefault(); next.stopPropagation();
-      const width = Math.max(min, Math.min(max, Math.round(startWidth + next.clientX - session.x + list.scrollLeft - session.scroll)));
-      session.changed = width !== Math.round(startWidth);
-      state.mailColumnWidths = { ...before, [key]: width };
+      const targetWidth = startWidth + next.clientX - session.x + list.scrollLeft - session.scroll;
+      const width = Math.max(min, Math.min(max, Math.round(targetWidth)));
+      const keepAutomatic = before[key] == null && startWidth >= max && targetWidth >= startWidth;
+      session.changed = !keepAutomatic && width !== Math.round(startWidth);
+      state.mailColumnWidths = session.changed ? { ...before, [key]: width } : before;
       applyMailColumnWidths(list);
     };
     const finish = next => {
