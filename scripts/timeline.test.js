@@ -433,6 +433,28 @@ test("export requires fresh confirmation and an exact saved revision", async con
   assert.equal(fixture.calls.length, 0);
 });
 
+test("JSON export keeps pretty formatting when it fits and compacts recipient-heavy timelines", () => {
+  const small = documentFixture();
+  assert.equal(exporters.json(small), JSON.stringify(small, null, 2) + "\n");
+
+  const to = Array.from({ length: 96 }, (_, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    return { address: `recipient-${number}@example.org`, name: `陳大文 專案參與者 ${number}` };
+  });
+  const source_thread_id = uuid();
+  const events = Array.from({ length: 192 }, () => ({
+    ...metadata({ source_thread_id, to }), summary: "Planning notes shared.", open_actions: [], unclear: [],
+  }));
+  const document = documentFixture(events);
+  const pretty = JSON.stringify(document, null, 2) + "\n";
+  assert.ok(pretty.length <= MAX_BYTES);
+  assert.ok(Buffer.byteLength(pretty) > MAX_BYTES);
+
+  const output = exporters.json(document);
+  assert.equal(output, JSON.stringify(document));
+  assert.deepEqual(validateDocument(parseJson(Buffer.from(output, "utf8"))), document);
+});
+
 test("exporters keep generated markup inert and preserve CJK, uncertainty and coverage", () => {
   const document = documentFixture();
   document.title = '<img src="https://example.org/track"> 繁體中文';
@@ -449,24 +471,106 @@ test("exporters keep generated markup inert and preserve CJK, uncertainty and co
   assert.match(html, /orphans:3;widows:3/);
   assert.deepEqual(parseJson(exporters.json(document)), document);
 });
-test("PDF uses a scriptless isolated renderer, blocks network/navigation and destroys it", async () => {
-  let settings, filter, destroyed = false, html = "", permission;
-  const handlers = new Map();
-  const partition = { setPermissionRequestHandler: value => { permission = value; }, setPermissionCheckHandler: value => { assert.equal(value(), false); }, webRequest: { onBeforeRequest: value => { filter = value; } } };
-  class PrintWindow {
-    constructor(value) { settings = value; this.webContents = { setWindowOpenHandler: value => assert.equal(value().action, "deny"), on: (name, work) => handlers.set(name, work), printToPDF: async value => { assert.equal(value.pageSize, "A4"); return Buffer.from("synthetic-pdf"); } }; }
-    async loadURL(value) { html = value; }
-    isDestroyed() { return destroyed; }
-    destroy() { destroyed = true; }
+test("PDF loads large CJK documents in an isolated, scriptless session and cleans up", async context => {
+  const recipients = Array.from({ length: 96 }, (_, index) => ({ name: "繁體中文收件人姓名", address: `recipient${index}@example.org` }));
+  // Distinct lists keep this transport fixture large even when repeated lists are shared.
+  const large = documentFixture(Array.from({ length: 192 }, (_, index) => ({
+    ...metadata({ to: [{ ...recipients[0], name: `繁體中文收件人姓名 ${index}` }, ...recipients.slice(1)], attachments: ["發票 & 報告.pdf"] }),
+    summary: "繁體中文 <img src=x>", open_actions: [], unclear: [],
+  })));
+  const partitions = new Set();
+  for (const outcome of ["success", "handler attachment failure", "load failure", "print failure", "cancellation"]) {
+    await context.test(outcome, async () => {
+      const failure = new Error(outcome);
+      let scheme, destroyed = false, checks = 0;
+      const sessionHandlers = new Map(), windowHandlers = new Map();
+      const attach = name => handler => {
+        if (handler === null) sessionHandlers.delete(name);
+        else sessionHandlers.set(name, handler);
+      };
+      const partition = {
+        protocol: {
+          handle(name, handler) { scheme = name; attach("protocol")(handler); },
+          unhandle(name) { assert.equal(name, scheme); assert.equal(destroyed, true); assert.ok(sessionHandlers.delete("protocol")); },
+        },
+        setPermissionRequestHandler: attach("permission request"),
+        setPermissionCheckHandler: attach("permission check"),
+        webRequest: { onBeforeRequest: attach("request filter") },
+      };
+      class PrintWindow {
+        constructor(settings) {
+          assert.equal(settings.show, false);
+          assert.deepEqual(settings.webPreferences, { session: partition, sandbox: true, contextIsolation: true,
+            nodeIntegration: false, javascript: false, webSecurity: true, webviewTag: false, spellcheck: false });
+          this.webContents = {
+            setWindowOpenHandler(handler) {
+              if (outcome === "handler attachment failure") throw failure;
+              assert.deepEqual(handler(), { action: "deny" });
+            },
+            on: (name, handler) => windowHandlers.set(name, handler),
+            async printToPDF(options) {
+              assert.equal(checks, 2);
+              assert.deepEqual(options, { printBackground: false, pageSize: "A4", preferCSSPageSize: true });
+              if (outcome === "print failure") throw failure;
+              return Buffer.from("synthetic-pdf");
+            },
+          };
+        }
+        async loadURL(url) {
+          assert.equal(checks, 1);
+          assert.equal(url, `${scheme}://document/index.html`);
+          if (outcome === "load failure") throw failure;
+          const allow = { url, method: "GET", resourceType: "mainFrame" };
+          const request = sessionHandlers.get("protocol"), filter = sessionHandlers.get("request filter");
+          filter(allow, result => assert.equal(result.cancel, false));
+          for (const detail of [{ url: `${url}?extra` }, { method: "POST" }, { method: "HEAD" }]) {
+            const denied = { ...allow, ...detail };
+            assert.equal(request(denied).status, 404);
+            filter(denied, result => assert.equal(result.cancel, true));
+          }
+          for (const detail of [{ resourceType: "subFrame" }, { resourceType: "image" }, { url: "https://example.org/track" }]) {
+            filter({ ...allow, ...detail }, result => assert.equal(result.cancel, true));
+          }
+          assert.equal(sessionHandlers.get("permission check")(), false);
+          sessionHandlers.get("permission request")(null, "camera", allowed => assert.equal(allowed, false));
+          for (const name of ["will-navigate", "will-attach-webview"]) {
+            let prevented = false;
+            windowHandlers.get(name)({ preventDefault: () => { prevented = true; } });
+            assert.equal(prevented, true);
+          }
+          const response = request(allow);
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+          assert.equal(response.headers.get("cache-control"), "no-store");
+          assert.equal(request(allow).status, 404);
+          if (outcome === "success") {
+            const html = await response.text();
+            assert.ok(encodeURIComponent(html).length > 2 * 1024 * 1024);
+            assert.match(html, /192 entries/);
+            assert.match(html, /繁體中文 &lt;img src=x&gt;/);
+            assert.match(html, /發票 &amp; 報告\.pdf/);
+            assert.match(html, /connect-src 'none'/);
+          }
+        }
+        isDestroyed() { return destroyed; }
+        destroy() { destroyed = true; windowHandlers.clear(); }
+      }
+      const electron = { session: { fromPartition(name) {
+        assert.match(name, /^timeline-print-[a-f0-9-]+$/);
+        assert.equal(partitions.has(name), false);
+        partitions.add(name);
+        return partition;
+      } }, BrowserWindow: PrintWindow };
+      const check = () => { if (++checks === 3 && outcome === "cancellation") throw failure; };
+      const exported = exporters.pdf(outcome === "success" ? large : documentFixture(), { electron, check });
+      if (outcome === "success") {
+        assert.equal((await exported).toString(), "synthetic-pdf");
+        assert.equal(checks, 3);
+      } else await assert.rejects(exported, error => error === failure);
+      assert.equal(destroyed, true);
+      assert.equal(sessionHandlers.size, 0);
+    });
   }
-  const bytes = await exporters.pdf(documentFixture(), { electron: { session: { fromPartition: () => partition }, BrowserWindow: PrintWindow } });
-  assert.equal(bytes.toString(), "synthetic-pdf");
-  assert.equal(settings.show, false); assert.equal(settings.webPreferences.javascript, false); assert.equal(settings.webPreferences.nodeIntegration, false); assert.equal(settings.webPreferences.sandbox, true); assert.equal(settings.webPreferences.preload, undefined);
-  filter({ url: "https://example.org/track", resourceType: "image" }, value => assert.equal(value.cancel, true));
-  filter({ url: html, resourceType: "mainFrame" }, value => assert.equal(value.cancel, false));
-  permission(null, "camera", allowed => assert.equal(allowed, false));
-  let prevented = false; handlers.get("will-navigate")({ preventDefault: () => { prevented = true; } });
-  assert.equal(prevented, true); assert.equal(destroyed, true);
 });
 test("native export saves only a confirmed chosen file and respects cancellation", async context => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-timeline-export-")); context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -872,7 +976,11 @@ test("Features catalog, CLI tab, format asset and reduced-motion claims stay ali
   fixture.window.motionApi = () => null;
   fixture.window.eval(read("renderer/features-catalog.js"));
   fixture.window.eval(app.slice(app.indexOf("function normalizeFeatureCatalog("), app.indexOf("function wireFeaturesTabs(")) + '\npaintFeatureCatalog(); showFeaturesTab("cli");');
-  assert.ok([...fixture.document.querySelectorAll(".feature-card")].some(card => /Selected-mail timeline/.test(card.textContent) && /No URL\/webhook export/.test(card.textContent) && /Preflight includes the complete request/.test(card.textContent)));
+  const timelineCard = [...fixture.document.querySelectorAll(".feature-card")].find(card => /Selected-mail timeline/.test(card.textContent));
+  assert.ok(timelineCard);
+  assert.match(timelineCard.textContent, /No URL\/webhook export/);
+  assert.match(timelineCard.textContent, /Preflight includes the complete request/);
+  assert.match(timelineCard.textContent, /If indentation would exceed 2 MiB, JSON keeps all fields in compact form/);
   assert.equal(fixture.document.getElementById("features-tab-cli").getAttribute("aria-selected"), "true");
   assert.equal(fixture.document.getElementById("features-pane-cli").hidden, false);
   fixture.dom.window.close();
@@ -1043,6 +1151,33 @@ test("readable HTML has escaped evidence, no active content and responsive chron
   assert.match(body.querySelector('meta[http-equiv]').content, /script-src 'none'/);
   assert.match(body.querySelector('style').textContent, /max-width:480px/);
   assert.equal(body.querySelectorAll('ol.sequence > li').length, 1);
+  dom.window.close();
+});
+test("print reports list repeated recipients once and keep each event's To and Cc evidence", () => {
+  const people = [{ name: "小組 <A>", address: "a@example.org" }, { name: "小組 B", address: "b@example.org" }];
+  const changed = [{ ...people[0], name: "New label" }, people[1]];
+  const events = [
+    { to: people, cc: [] }, { to: [], cc: copy(people) },
+    { to: [...people].reverse(), cc: [] }, { to: changed, cc: [] },
+    { to: [people[1]], cc: [] },
+  ].map((fields, i) => ({ ...metadata(fields), occurred_at: new Date(Date.UTC(2026, 10, 1, i)).toISOString(),
+    summary: `Update ${i + 1}`, open_actions: [], unclear: [] }));
+  const document = documentFixture(events);
+  const original = copy(document);
+  const dom = new JSDOM(exporters.printHtml(document));
+  const page = dom.window.document;
+  const rows = [...page.querySelectorAll(".event")];
+  assert.deepEqual(rows.map(row => row.querySelector(".summary").textContent), events.map(event => event.summary));
+  const evidence = rows.map(row => row.querySelector(".evidence").textContent);
+  assert.match(evidence[0], /To: Recipient list 1 \(2\)/);
+  assert.match(evidence[1], /Cc: Recipient list 1 \(2\)/);
+  assert.match(evidence[2], /To: 小組 B <b@example.org>, 小組 <A> <a@example.org>/);
+  assert.match(evidence[3], /To: New label <a@example.org>/);
+  assert.match(evidence[4], /To: 小組 B <b@example.org>/);
+  for (const [i, text] of evidence.entries()) assert.ok(text.includes(events[i].source_message_id));
+  assert.equal(page.querySelectorAll(".recipient-lists h3").length, 1);
+  assert.equal(page.querySelector(".recipient-lists p").textContent, "小組 <A> <a@example.org>, 小組 B <b@example.org>");
+  assert.deepEqual(document, original);
   dom.window.close();
 });
 test("HTML export uses native save and checks the revision again after file selection", async context => {
