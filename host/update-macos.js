@@ -13,14 +13,19 @@ function createMacUpdater(options) {
   const arch = options.arch || process.arch;
   const publicKey = options.publicKey === undefined ? trust.publicKey : options.publicKey;
   const fetchBytes = options.fetchBytes || downloads.fetchBytes;
-  const downloadArtifact = options.downloadArtifact || downloads.downloadArtifact;
+  const downloadArtifact = options.downloadManagedArtifact || (options.downloadArtifact
+    ? async (manifest, settings) => ({ archive: await options.downloadArtifact(manifest, settings) })
+    : downloads.downloadManagedArtifact);
   const verifyManifest = options.verifyManifest || manifestTools.verifyManifest;
   const validateArtifact = options.validateArtifact || manifestTools.validateArtifact;
   let checking = null;
   let installing = null;
+  let manualFlight = null;
   let candidate = null;
   let lifecycle = null;
-  function invalidateCandidate() {
+  let recoveryMessage = null;
+  async function invalidateCandidate() {
+    const previous = candidate;
     candidate = null;
     state.downloaded = false;
     state.available = false;
@@ -28,10 +33,11 @@ function createMacUpdater(options) {
     state.progress = 0;
     state.manualRequired = false;
     state.manualAvailable = true;
+    await previous?.discard?.().catch(() => {});
   }
   async function validateCandidate() {
     try { await validateArtifact(candidate.archive, candidate.manifest); }
-    catch (err) { invalidateCandidate(); throw err; }
+    catch (err) { await invalidateCandidate(); throw err; }
   }
   function configure(value) { lifecycle = value; }
   function snapshot() { return { ...state }; }
@@ -98,11 +104,13 @@ function createMacUpdater(options) {
         return snapshot();
       }
       state.downloading = true;
-      const archive = await downloadArtifact(manifest, {
+      const download = await downloadArtifact(manifest, {
         directory: app.getPath("temp"),
         onProgress: ({ percent }) => { state.progress = Math.min(100, percent); },
       });
-      candidate = { archive, manifestBytes: bytes, signature, manifest };
+      const previous = candidate;
+      candidate = { ...download, manifestBytes: bytes, signature, manifest };
+      await previous?.discard?.().catch(() => {});
       state.downloading = false;
       state.downloaded = true;
       state.progress = 100;
@@ -134,6 +142,7 @@ function createMacUpdater(options) {
     return snapshot();
   }
   function check() {
+    if (manualFlight) return manualFlight;
     if (!checking) checking = performCheck().finally(() => { checking = null; });
     return checking;
   }
@@ -141,6 +150,8 @@ function createMacUpdater(options) {
     if (!candidate || !lifecycle) return snapshot();
     let resume;
     let started;
+    let timer;
+    let quitAccepted = false;
     state.error = null;
     state.installing = true;
     state.manualRequired = false;
@@ -157,17 +168,22 @@ function createMacUpdater(options) {
         signature: candidate.signature, publicKey, currentVersion: app.getVersion(),
         arch, pid: process.pid, execPath: process.execPath,
       });
-      // This takes the normal before-quit path. No force-exit or mail-data edits.
-      lifecycle.quit();
-      // A prevented/hung quit must unfreeze the current application after the
-      // helper's exit deadline. The helper never replaces a running old app.
-      const timer = setTimeout(async () => {
-        try { if (started.cancel) await started.cancel(); } catch { /* journal retains the diagnosis */ }
+      const controller = new AbortController();
+      const timeout = new Error("The app did not exit for the update. Your current app and data were retained; retry after finishing active work.");
+      const remaining = started.deadline - Date.now() - 5000;
+      if (remaining <= 0) throw timeout;
+      timer = setTimeout(async () => {
+        controller.abort(timeout);
+        if (!quitAccepted) return;
+        try { await started.cancel(); } catch { /* journal retains the diagnosis */ }
         if (resume) resume();
-        error(new Error("The app did not exit for the update. Your current app and data were retained; retry after finishing active work."));
-      }, 120000);
-      if (timer.unref) timer.unref();
+        error(timeout);
+      }, remaining);
+      timer.unref?.();
+      quitAccepted = await lifecycle.quit({ beforeExit: started.approve, signal: controller.signal });
+      if (!quitAccepted) throw new Error("Update cancelled. The app is still open.");
     } catch (err) {
+      clearTimeout(timer);
       if (started && started.cancel) await started.cancel().catch(() => {});
       if (resume) resume();
       error(err);
@@ -178,8 +194,7 @@ function createMacUpdater(options) {
     }
     return snapshot();
   }
-  async function manual() {
-    if (installing || state.installing || checking || !state.manualAvailable) return snapshot();
+  async function performManual() {
     try {
       const shell = options.shell || require('electron').shell;
       if (!candidate) {
@@ -198,15 +213,25 @@ function createMacUpdater(options) {
     } catch (err) { state.manualAvailable = !candidate; error(err); }
     return snapshot();
   }
+  function manual() {
+    if (manualFlight) return manualFlight;
+    if (installing || state.installing || checking || !state.manualAvailable) return Promise.resolve(snapshot());
+    manualFlight = performManual().finally(() => { manualFlight = null; });
+    return manualFlight;
+  }
   function install() {
-    if (checking) return Promise.resolve(snapshot());
+    if (checking || manualFlight) return Promise.resolve(snapshot());
     if (!installing && !state.installing) installing = performInstall().finally(() => { installing = null; });
     return installing || Promise.resolve(snapshot());
   }
   async function refreshStatus() {
-    if (!state.installing && !checking && !candidate && process.resourcesPath) {
-      const recovery = await require("./update-launcher").recoveryStatus(path.resolve(process.resourcesPath, "..", ".."));
-      if (recovery) state.error = recovery.message;
+    const resourcesPath = options.resourcesPath || process.resourcesPath;
+    if (!state.installing && !checking && !candidate && resourcesPath) {
+      const getRecovery = options.recoveryStatus || require("./update-launcher").recoveryStatus;
+      const recovery = await getRecovery(path.resolve(resourcesPath, "..", ".."));
+      if (state.installing || checking || candidate || manualFlight) return snapshot();
+      if (state.error == null || state.error === recoveryMessage) state.error = recovery?.message ?? null;
+      recoveryMessage = recovery?.message ?? null;
     }
     return snapshot();
   }

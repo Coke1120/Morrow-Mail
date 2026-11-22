@@ -854,7 +854,7 @@ app.whenReady().then(async () => {
       }
       return resume;
     },
-    quit: () => app.quit(),
+    quit: options => quitController.requestUpdateQuit(options),
   });
   updater.registerIpc();
   updater.init();

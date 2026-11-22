@@ -87,13 +87,14 @@ async function recordInternetDownload(file, { platform = process.platform, run =
     throw new Error('Downloaded update quarantine could not be established. Use the manual download.');
   }
 }
-async function downloadArtifact(manifest, { directory, onProgress, quarantine = recordInternetDownload, ...options }) {
+async function downloadManagedArtifact(manifest, { directory, onProgress, quarantine = recordInternetDownload, ...options }) {
   // Caller supplies a host-owned private directory; create a private child and never overwrite a path.
   const dir = await fs.promises.mkdtemp(path.join(directory, 'signed-update-'));
   await fs.promises.chmod(dir, 0o700);
   const file = path.join(dir, 'update.zip');
   let handle;
   try {
+    const identity = await fs.promises.lstat(dir);
     handle = await fs.promises.open(file, 'wx', 0o600);
     const hash = crypto.createHash('sha256');
     const size = await streamDownload(manifest.url, { ...options, maxBytes: manifest.size, onChunk: async (chunk, received) => {
@@ -106,11 +107,22 @@ async function downloadArtifact(manifest, { directory, onProgress, quarantine = 
     await handle.sync();
     await handle.close(); handle = null;
     await quarantine(file);
-    return file;
+    return {
+      archive: file,
+      async discard() {
+        const current = await fs.promises.lstat(dir);
+        if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino) return;
+        await fs.promises.unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        await fs.promises.rmdir(dir);
+      },
+    };
   } catch (error) {
     if (handle) await handle.close();
     await fs.promises.rm(dir, { recursive: true, force: true });
     throw error;
   }
 }
-module.exports = { allowedURL, fetchBytes, downloadArtifact, recordInternetDownload };
+async function downloadArtifact(manifest, options) {
+  return (await downloadManagedArtifact(manifest, options)).archive;
+}
+module.exports = { allowedURL, fetchBytes, downloadArtifact, downloadManagedArtifact, recordInternetDownload };
