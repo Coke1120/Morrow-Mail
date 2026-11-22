@@ -25,8 +25,7 @@ function caseLines(document) {
 function json(document) {
   validateDocument(document);
   const output = JSON.stringify(document, null, 2) + "\n";
-  if (Buffer.byteLength(output) > MAX_BYTES) throw failure("timeline-size");
-  return output;
+  return Buffer.byteLength(output) <= MAX_BYTES ? output : JSON.stringify(document);
 }
 
 function lines(document) {
