@@ -72,3 +72,120 @@ test("actual preload/picker/engine imports MIME offline, tracks update admission
   assert.deepEqual([providerCalls, secretReads], [0, 0]);
   await assert.rejects(preload.invoke("mail:mboxReadArbitraryPath", { path: picked }), /Unsupported channel/);
 });
+
+function importFixture(t, { beforeWrite, ...options } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-mbox-removal-"));
+  const source = path.join(dir, "source.mbox");
+  const message = subject => `From - Thu Nov  5 10:00:00 2026\nFrom: sender@fixture.invalid\nTo: owner@fixture.invalid\nSubject: ${subject}\n\nSynthetic local message\n`;
+  const contents = message("First") + message("Second");
+  fs.writeFileSync(source, contents);
+  const store = L.createLocalStore(path.join(dir, "local-folders.sqlite"));
+  const { createImporter } = require("../host/mail/mbox-import");
+  if (beforeWrite) {
+    const jobs = store.importJobs();
+    store.importJobs = () => ({ ...jobs, write(job) { beforeWrite(job); jobs.write(job); } });
+  }
+  const importer = createImporter({ store, ...options });
+  t.after(async () => {
+    await importer.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return { importer, store, source, contents };
+}
+
+test("confirmed snapshot removal excludes Continue and finishes before shutdown", async t => {
+  const { importer, store, source, contents } = importFixture(t, { limits: { runBytes: 1 } });
+  const { id } = await importer.select([source]);
+  importer.start(id, { destination: L.ARCHIVE_ID, variant: "mboxrd" });
+  await importer.idle();
+  assert.equal(importer.status(id).status, "paused");
+  assert.equal(store.list().total, 1);
+  const removal = importer.discard(id);
+  try {
+    assert.throws(() => importer.start(id), { code: "mbox_busy" });
+    await importer.stop();
+    assert.equal(importer.status(id).status, "discarded");
+  } finally {
+    await removal;
+    await importer.idle();
+  }
+  assert.equal(importer.status(id).canContinue, false);
+  assert.equal(fs.existsSync(path.join(importer.root, id)), false);
+  assert.equal(fs.readFileSync(source, "utf8"), contents);
+  assert.equal(store.list().total, 1);
+});
+
+test("an early snapshot EOF cannot acknowledge unread input", async t => {
+  const { importer, store, source, contents } = importFixture(t, { beforeWrite(job) {
+    if (job.status === "importing") fs.truncateSync(path.join(importer.root, job.id, "0.mbox"), 0);
+  } });
+  const { id } = await importer.select([source]);
+  importer.start(id, { destination: L.ARCHIVE_ID, variant: "mboxrd" });
+  await importer.idle();
+  const status = importer.status(id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.consumedBytes, 0);
+  assert.equal(store.list().total, 0);
+  assert.equal(fs.readFileSync(source, "utf8"), contents);
+});
+
+test("a readable job with a failed progress write shows the durable checkpoint", async t => {
+  let failWrites = true;
+  const { importer, store, source } = importFixture(t, { beforeWrite(job) {
+    if (failWrites && (job.imported || job.status === "failed")) throw Error("Synthetic SQLite write failure");
+  } });
+  const { id } = await importer.select([source]);
+  importer.start(id, { destination: L.ARCHIVE_ID, variant: "mboxrd" });
+  await importer.idle();
+  const status = importer.status(id);
+  assert.equal(status.status, "interrupted");
+  assert.equal(status.running, false);
+  assert.equal(status.consumedBytes, 0);
+  assert.equal(store.list().total, 0);
+  failWrites = false;
+  importer.start(id);
+  await importer.idle();
+  assert.equal(importer.status(id).imported, 2);
+  assert.equal(store.list().total, 2);
+});
+
+test("import budgets ignore wall clock changes and phase bytes restart on verification and import", async t => {
+  const baseTime = Date.now();
+  let skew = 0;
+  t.mock.method(Date, "now", () => baseTime + skew);
+  const phases = new Map();
+  const { importer, source } = importFixture(t, {
+    limits: { runMs: 10000 },
+    beforeWrite(job) {
+      if (["verifying", "importing"].includes(job.status) && !phases.has(job.status)) {
+        phases.set(job.status, importer.status(job.id).phaseBytes);
+      }
+    },
+    hooks: { stageChunk() { skew = 60000; } },
+  });
+  const { id } = await importer.select([source]);
+  importer.start(id, { destination: L.ARCHIVE_ID, variant: "mboxrd" });
+  await importer.idle();
+  assert.equal(importer.status(id).status, "completed");
+  assert.deepEqual([...phases], [["verifying", 0], ["importing", 0]]);
+});
+
+test("if the final removal status cannot be saved, only snapshot removal can be retried", async t => {
+  let failFinal = true;
+  const { importer, store, source } = importFixture(t, {
+    limits: { runBytes: 1 },
+    beforeWrite(job) {
+      if (failFinal && job.status === "discarded") throw Error("Synthetic SQLite write failure");
+    },
+  });
+  const { id } = await importer.select([source]);
+  importer.start(id, { destination: L.ARCHIVE_ID, variant: "mboxrd" });
+  await importer.idle();
+  await assert.rejects(importer.discard(id), /SQLite write failure/);
+  assert.equal(importer.status(id).canContinue, false);
+  assert.throws(() => importer.start(id), { code: "mbox_finished" });
+  failFinal = false;
+  assert.equal((await importer.discard(id)).status, "discarded");
+  assert.equal(store.list().total, 1);
+});
