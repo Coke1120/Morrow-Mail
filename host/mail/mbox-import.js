@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { performance } = require("node:perf_hooks");
 const { Worker } = require("node:worker_threads");
 const { setImmediate: yieldTurn } = require("node:timers/promises");
 const { digest, ARCHIVE_ID } = require("./local-folders");
@@ -52,20 +53,24 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
   const jobs = store.importJobs();
   const root = path.join(path.dirname(store.file), "mbox-imports");
   let current = null;
+  let discarding = null;
   let closing = false;
   // Recovery never starts work, scans user directories or contacts a provider.
   for (const job of jobs.list()) if (activeStates.has(job.status)) {
     job.status = "interrupted"; job.detail = "Import was interrupted. Continue verifies the saved snapshot before using its committed offset."; jobs.write(job);
   }
   function publicJob(job) {
-    return { id: job.id, status: job.status, destination: job.destination, variant: job.variant,
+    const running = current?.id === job.id;
+    const interrupted = !running && activeStates.has(job.status);
+    return { id: job.id, status: interrupted ? "interrupted" : job.status, destination: job.destination, variant: job.variant,
       files: job.files.map(file => ({ name: file.name, size: file.size, offset: file.offset, staged: !!file.snapshot })),
       totalBytes: job.files.reduce((n, file) => n + file.size, 0),
       consumedBytes: job.files.reduce((n, file) => n + file.offset, 0),
       imported: job.imported, skipped: job.skipped, failed: job.failed, expunged: job.expunged,
-      detail: job.detail, errors: job.errors, phaseBytes: current?.id === job.id ? current.phaseBytes : 0,
-      canContinue: !["review", "completed", "completed_with_errors", "discarded"].includes(job.status),
-      running: current?.id === job.id };
+      detail: interrupted ? "Import stopped before saving its final status. Counts reflect the last durable checkpoint. Check storage before continuing." : job.detail,
+      errors: job.errors, phaseBytes: running ? current.phaseBytes : 0,
+      canContinue: !["review", "completed", "completed_with_errors", "discarding", "discarded"].includes(job.status),
+      running };
   }
   function status(id) { return publicJob(jobs.read(id)); }
   function list() { return jobs.list().map(publicJob); }
@@ -92,6 +97,7 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
   async function stage(job, index, token) {
     const source = job.files[index];
     if (source.snapshot) return;
+    token.phaseBytes = 0;
     job.status = "staging"; job.detail = "Making a private source snapshot. No messages from this file are acknowledged yet."; jobs.write(job);
     await fs.promises.mkdir(path.join(root, job.id), { recursive: true, mode: 0o700 });
     await syncDirectory(path.dirname(root)); await syncDirectory(root);
@@ -105,7 +111,7 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
       const hash = crypto.createHash("sha256"); let position = 0;
       while (position < source.size) {
         check(token);
-        if (Date.now() - token.started > limits.runMs) throw error("mbox_budget", "Snapshot creation reached the 10-minute run budget. Continue retries this file; use smaller exports if this repeats.");
+        if (performance.now() - token.started > limits.runMs) throw error("mbox_budget", "Snapshot creation reached the 10-minute run budget. Continue retries this file; use smaller exports if this repeats.");
         const chunk = Buffer.allocUnsafe(limits.chunk);
         const { bytesRead } = await input.read(chunk, 0, Math.min(chunk.length, source.size - position), position);
         if (!bytesRead) throw error("mbox_changed", "The source was truncated while making its snapshot. Select a stopped/exported mailbox again.");
@@ -132,6 +138,7 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
   }
   async function snapshot(job, index, token) {
     const source = job.files[index];
+    token.phaseBytes = 0;
     job.status = "verifying"; job.detail = "Verifying the entire saved snapshot before reading its committed offset."; jobs.write(job);
     const handle = await openRead(snapshotPath(job, index));
     try {
@@ -139,7 +146,7 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
       const hash = crypto.createHash("sha256"); let position = 0;
       for (;;) {
         check(token);
-        if (Date.now() - token.started > limits.runMs) throw error("mbox_budget", "Snapshot verification reached the 10-minute run budget. Continue retries verification; use smaller exports if this repeats.");
+        if (performance.now() - token.started > limits.runMs) throw error("mbox_budget", "Snapshot verification reached the 10-minute run budget. Continue retries verification; use smaller exports if this repeats.");
         const chunk = Buffer.allocUnsafe(limits.chunk);
         const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
         if (!bytesRead) break;
@@ -169,9 +176,11 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
         await stage(job, index, token);
         const handle = await snapshot(job, index, token);
         try {
+          const startOffset = source.offset;
+          token.phaseBytes = 0;
           job.status = "importing"; job.detail = "Importing complete messages one at a time. Counts acknowledge durable commits."; jobs.write(job);
-          for await (const entry of entries(handle, source.offset, { variant: job.variant, limits,
-            check: () => check(token), progress: position => { token.phaseBytes = position; } })) {
+          for await (const entry of entries(handle, startOffset, { variant: job.variant, limits,
+            check: () => check(token), progress: position => { token.phaseBytes = position - startOffset; } })) {
             check(token);
             const contentKey = entry.raw ? "mbox-v1:" + digest(entry.raw) : null;
             const existing = contentKey && store.receipt(contentKey, job.destination);
@@ -202,12 +211,14 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
             result = null;
             check(token);
             await yieldTurn();
-            if (Date.now() - token.started > limits.runMs || job.files.reduce((n, file) => n + file.offset, 0) - startingBytes >= limits.runBytes) {
+            if (performance.now() - token.started > limits.runMs || job.files.reduce((n, file) => n + file.offset, 0) - startingBytes >= limits.runBytes) {
               throw error("mbox_budget", "Import paused at its byte/time budget. Continue verifies the snapshot and resumes after the last committed message.");
             }
           }
-          // Empty files and a crash after the last message are safe no-ops.
-          source.offset = source.size; jobs.write(job);
+          // EOF does not acknowledge bytes. Only an entry's transaction can advance its checkpoint.
+          if (job.files[index].offset !== source.size) {
+            throw error("mbox_snapshot", "The saved snapshot ended before all input was committed. The last durable checkpoint was retained.");
+          }
         } finally { await handle.close(); }
       }
       job.status = job.failed ? "completed_with_errors" : "completed";
@@ -227,7 +238,9 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
   }
   function start(id, { destination, variant } = {}, admit = work => work()) {
     if (closing || current) throw error("mbox_busy", "Finish or cancel the running import first.");
+    if (discarding) throw error("mbox_busy", "Wait for the private snapshots to finish being removed.");
     const job = jobs.read(id);
+    if (job.status === "discarding") throw error("mbox_finished", "Snapshot removal has started. Finish removing it or select the original files for a new import.");
     if (["completed", "completed_with_errors", "discarded"].includes(job.status)) throw error("mbox_finished", "This job is finished. Select files again for a separate import.");
     if (job.status === "review") {
       if (!["mboxrd", "mboxo"].includes(variant)) throw error("mbox_variant", "Choose mboxrd or mboxo explicitly.");
@@ -235,7 +248,7 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
     } else if ((destination && destination !== job.destination) || (variant && variant !== job.variant)) {
       throw error("mbox_frozen", "A started import keeps its reviewed destination and format. Select files again to change them.");
     }
-    const token = { id, controller: new AbortController(), started: Date.now(), phaseBytes: 0, promise: null };
+    const token = { id, controller: new AbortController(), started: performance.now(), phaseBytes: 0, promise: null };
     job.status = "staging"; jobs.write(job);
     current = token;
     try { token.promise = Promise.resolve(admit(() => run(job, token))).finally(() => { if (current === token) current = null; }); }
@@ -248,18 +261,29 @@ function createImporter({ store, limits: overrides = {}, parse = parseMessage, h
     return status(id);
   }
   async function discard(id) {
-    if (current) throw error("mbox_busy", "Finish the running import before removing a snapshot.");
+    if (closing || current || discarding) throw error("mbox_busy", "Wait for the current import operation to finish.");
     const job = jobs.read(id);
+    if (job.status === "discarded") return publicJob(job);
+    job.status = "discarding"; job.detail = "Snapshot removal started. If it was interrupted, choose Remove snapshots again to finish.";
+    jobs.write(job);
     // This explicit action deletes only this job's private input copies, never
     // the user's source or any acknowledged local message/attachment/receipt.
-    await fs.promises.rm(path.join(root, job.id), { recursive: true, force: true });
-    if (fs.existsSync(root)) await syncDirectory(root);
-    job.status = "discarded"; job.detail = "Private import snapshots removed. Local messages and original source files were retained.";
-    jobs.write(job); return publicJob(job);
+    discarding = (async () => {
+      await fs.promises.rm(path.join(root, job.id), { recursive: true, force: true });
+      if (fs.existsSync(root)) await syncDirectory(root);
+      job.status = "discarded"; job.detail = "Private import snapshots removed. Local messages and original source files were retained.";
+      jobs.write(job); return publicJob(job);
+    })();
+    try { return await discarding; } finally { discarding = null; }
   }
   return { select, start, status, list, cancel, discard,
     async idle() { await current?.promise; },
-    async stop() { closing = true; current?.controller.abort(); await current?.promise; },
+    async stop() {
+      closing = true; current?.controller.abort();
+      await current?.promise;
+      // The caller of discard still receives any removal failure.
+      await discarding?.catch(() => {});
+    },
     root };
 }
 
