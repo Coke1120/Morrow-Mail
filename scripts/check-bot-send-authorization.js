@@ -210,10 +210,36 @@ async function run() {
       const replay = await service.execute(ctx);
       assert.equal(replay.data.idempotentReplay, true);
       assert.equal(smtpCalls, 1, "an already submitted send cannot be repeated");
+      const upperReplay = await service.execute({ ...ctx, requestId: ctx.requestId.toUpperCase() });
+      assert.equal(upperReplay.data.idempotentReplay, true);
+      assert.equal(upperReplay.data.auditId, replay.data.auditId);
+      assert.equal(smtpCalls, 1, "UUID casing changes cannot resubmit a send");
     } finally {
       held.resolve();
       await Promise.allSettled([first, joined]);
     }
+    await reset("reply-evicted-replay");
+    db.replaceFolders("sender", [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }], "/");
+    db.insertMessage({
+      id: "orig-reply", accountId: "sender", folderPath: "INBOX", uid: 1, uidValidity: 1,
+      rfcMessageId: "<orig-reply@example.test>", subject: "Orig", snippet: "orig",
+      from: "recipient@example.test", to: ["sender@example.test"],
+      date: new Date().toISOString(), listSortTs: Date.now(), unread: false, bodyComplete: true, textBody: "orig",
+    });
+    const replyCtx = { ...ctx, params: { ...params, inReplyToMessageId: "orig-reply" } };
+    const sentReply = await service.execute(replyCtx);
+    assert.equal(smtpCalls, 1);
+    db.applyFolderSync("sender", "INBOX", { messages: [], uids: [], validity: 1, keepOthers: false });
+    const replyReplay = await service.execute({ ...replyCtx, requestId: replyCtx.requestId.toUpperCase() });
+    assert.equal(replyReplay.data.idempotentReplay, true);
+    assert.equal(replyReplay.data.auditId, sentReply.data.auditId);
+    assert.equal(smtpCalls, 1, "evicting the replied-to message must still return the saved send receipt");
+    await assert.rejects(
+      service.execute({ ...replyCtx, requestId: crypto.randomUUID() }),
+      { code: "INVALID_REQUEST" },
+      "new sends still reject missing inReplyToMessageId"
+    );
+    assert.equal(smtpCalls, 1);
     console.log("bot-send-authorization-ok: 24 invalidation races; submitted/join/replay preserved");
   } finally {
     identity.sendingFrom = original.sendingFrom;

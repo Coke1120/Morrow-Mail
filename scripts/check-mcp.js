@@ -220,6 +220,18 @@ async function transportChecks() {
       if (scenario === "utf8") { res.end(Buffer.from([0xff])); return; }
       if (scenario === "request-id") result.requestId = crypto.randomUUID();
       if (scenario === "installation") result.installationId = crypto.randomUUID();
+      if (scenario === "install-mismatch") {
+        res.statusCode = 409;
+        res.end(JSON.stringify({ apiVersion: "1.0", requestId: request.requestId, installationId: crypto.randomUUID(),
+          ok: false, error: { code: "INSTALLATION_MISMATCH", message: "Wrong installation", retryable: false, action: "REPAIR_IN_MORROW" } }));
+        return;
+      }
+      if (scenario === "foreign-error-install") {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ apiVersion: "1.0", requestId: request.requestId, installationId: crypto.randomUUID(),
+          ok: false, error: { code: "FORBIDDEN", message: "Forbidden", retryable: false } }));
+        return;
+      }
       if (scenario === "dropped-write") { res.destroy(); return; }
       res.end(JSON.stringify(result));
     });
@@ -227,13 +239,18 @@ async function transportChecks() {
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(47831, "127.0.0.1", resolve); });
   try {
     assert.equal((await adapter.callBridge(config, "accounts.list", {}, crypto.randomUUID())).ok, true);
-    for (scenario of ["redirect", "html", "large", "utf8", "request-id", "installation"]) {
+    for (scenario of ["redirect", "html", "large", "utf8", "request-id", "installation", "foreign-error-install"]) {
       const before = requests;
       await assert.rejects(adapter.callBridge(config, "accounts.list", {}, crypto.randomUUID()), error => {
         assert.equal(error.code, "LOCAL_BRIDGE_UNAVAILABLE"); assert.ok(!error.message.includes("RAW_ERROR_SENTINEL")); return true;
       });
       assert.equal(requests, before + 1, "failed/foreign responses are never followed or retried: " + scenario);
     }
+    scenario = "install-mismatch";
+    const mismatchRead = await adapter.callBridge(config, "accounts.list", {}, crypto.randomUUID());
+    assert.equal(mismatchRead.ok, false); assert.equal(mismatchRead.error.code, "INSTALLATION_MISMATCH");
+    const mismatchWrite = await adapter.callBridge(config, "mail.send", { accountId: "alpha", to: ["synthetic@example.test"], subject: "s", bodyText: "b" }, crypto.randomUUID());
+    assert.equal(mismatchWrite.ok, false); assert.equal(mismatchWrite.error.code, "INSTALLATION_MISMATCH");
     scenario = "dropped-write";
     const before = requests;
     await assert.rejects(adapter.callBridge(config, "mail.send", { accountId: "alpha", to: ["synthetic@example.test"], subject: "s", bodyText: "b" }, crypto.randomUUID()), error => {

@@ -204,14 +204,18 @@ async function prepare(ctx) {
   }
   let inReplyToMessageId = "";
   let inReplyToHeader = "";
+  let missingReplySource = false;
   if (params.inReplyToMessageId != null && params.inReplyToMessageId !== "") {
     if (typeof params.inReplyToMessageId !== "string" || !/^[A-Za-z0-9._:-]{1,120}$/.test(params.inReplyToMessageId)) {
       throw coded("INVALID_REQUEST");
     }
-    const row = db.messageById(params.inReplyToMessageId);
-    if (!row || row.account_id !== params.accountId || !row.rfc_message_id) throw coded("INVALID_REQUEST");
     inReplyToMessageId = params.inReplyToMessageId;
-    inReplyToHeader = row.rfc_message_id;
+    const row = db.messageById(params.inReplyToMessageId);
+    if (row && row.account_id === params.accountId && row.rfc_message_id) {
+      inReplyToHeader = row.rfc_message_id;
+    } else {
+      missingReplySource = true;
+    }
   }
   const normalized = {
     accountId: params.accountId,
@@ -227,11 +231,12 @@ async function prepare(ctx) {
   return {
     ...normalized,
     hash: hashPayload(normalized),
-    requestId: ctx.requestId,
+    requestId: ctx.requestId.toLowerCase(),
     clientId: ctx.grant.clientId,
     grant: ctx.grant,
     account: fresh,
     inReplyToHeader,
+    missingReplySource,
     options: {
       from: composeIdentity.mimeFrom(fresh, fromAddress, fromDisplayName),
       to,
@@ -248,7 +253,11 @@ async function prepare(ctx) {
 function claimOrReplay(prepared) {
   assertAuthorized(prepared.grant, prepared.accountId);
   const rows = loadReceipts();
-  const existing = rows.find((row) => row.clientId === prepared.clientId && row.requestId === prepared.requestId);
+  const existing = rows.find((row) => {
+    return row.clientId === prepared.clientId
+      && typeof row.requestId === "string"
+      && row.requestId.toLowerCase() === prepared.requestId;
+  });
   const decision = decideReplay(existing, prepared.hash);
   if (decision.effect === "reject_request") {
     throw coded(decision.code || "INVALID_REQUEST", existing ? { auditId: existing.auditId } : undefined);
@@ -270,6 +279,7 @@ function claimOrReplay(prepared) {
       messageId: existing.messageId,
     });
   }
+  if (prepared.missingReplySource) throw coded("INVALID_REQUEST");
   if (overBudget(rows, prepared.clientId, Date.now())) throw coded("RATE_LIMITED");
   const receipt = {
     auditId: crypto.randomUUID(),

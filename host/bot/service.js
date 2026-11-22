@@ -7,6 +7,7 @@ const reads = require("./reads");
 const catalog = require("./catalog");
 const send = require("./send");
 const mailActions = require("./mail-actions");
+const { trimUtf8 } = require("./text");
 const {
   API_VERSION,
   CALLS_PER_MINUTE,
@@ -102,7 +103,7 @@ function fit(envelope) {
   let guard = 0;
   while (body && typeof body.text === "string" && body.text && encode() > MAX_RESPONSE_BYTES && guard < 16) {
     const next = Math.floor(Buffer.byteLength(body.text, "utf8") / 2);
-    body.text = Buffer.from(body.text, "utf8").subarray(0, Math.max(0, next)).toString("utf8");
+    body.text = trimUtf8(body.text, Math.max(0, next)).text;
     body.truncated = true;
     body.returnedBytes = Buffer.byteLength(body.text, "utf8");
     guard += 1;
