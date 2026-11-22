@@ -64,6 +64,9 @@ test('POST uses exact RFC 8058 body, isolated credentials-free HTTPS, TLS and pi
   assert.deepEqual(await lookupPinned(settings, settings.hostname), PUBLIC[0]);
   assert.deepEqual(await lookupPinned(settings, settings.hostname, true), PUBLIC);
   await assert.rejects(lookupPinned(settings, 'localhost'));
+  const trailingQuery = fixture({ status: 204 });
+  assert.equal((await postUnsubscribe('https://newsletter.example.com/unsubscribe?', trailingQuery.options)).status, 'accepted');
+  assert.equal(trailingQuery.calls[0].settings.path, '/unsubscribe?');
 });
 
 test('DNS pin survives resolver answer mutation and does not resolve again', async () => {

@@ -305,6 +305,48 @@ async function run() {
     await db.close(); await db.open(path.join(directory, 'mail.sqlite'));
     assert.equal(db.messageById('reinsert').list_unsubscribe_json, metadata);
 
+    // IMAP flags-only and sourceless FETCH rows preserve cached unsubscribe metadata and unchecked SQL NULL.
+    const searchClient = {
+      mailbox: { uidValidity: 7 },
+      async getMailboxLock() { return { release() {} }; },
+      async search() { return [stored.uid, 9]; },
+      async *fetch() {
+        yield { uid: stored.uid, envelope: { subject: 'Synthetic newsletter', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, source: raw, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') };
+        yield { uid: stored.uid, flags: new Set(['\\Seen']) };
+        yield { uid: 9, envelope: { subject: 'Envelope only', from: [{ address: 'list@news.example.com', name: 'Newsletter' }] }, flags: new Set(), internalDate: new Date('2026-11-12T00:00:00Z') };
+      },
+    };
+    const searched = await remote.findText(searchClient, 'INBOX', 'Synthetic', 10);
+    assert.equal(searched.messages.length, 2);
+    assert.equal(searched.messages[0].unread, false);
+    assert.equal(searched.messages[1].listUnsubscribe, null);
+    db.applyFolderSync('imap', 'INBOX', { messages: searched.messages, flags: searched.flags, validity: searched.validity, keepOthers: true });
+    assert.deepEqual(JSON.parse(db.messageById(stored.id).list_unsubscribe_json), parsed.listUnsubscribe, 'flags-only FETCH must not erase cached unsubscribe metadata');
+    assert.equal(db.messageById(stored.id).subject, 'Synthetic newsletter');
+    const uncheckedRow = db.messageByUid('imap', 'INBOX', 9, 7);
+    assert.equal(uncheckedRow.list_unsubscribe_json, null, 'sourceless IMAP row stays unchecked SQL NULL');
+    const uncheckedListed = (await ask('mail:listFromCache', { accountId: 'imap', folderId: 'INBOX' })).emails.find(row => row.id === uncheckedRow.id);
+    assert.equal(uncheckedListed.unsubscribeChecked, false);
+
+    // Outgoing mailto text/plain MIME decodes HTML entities and preserves line breaks.
+    let capturedMime = null;
+    engine.setSmtpSenderForTest(async ({ options }) => {
+      capturedMime = options;
+      return { messageId: '<unsub-sent@fixture.invalid>', accepted: ['leave@news.example.com'], rejected: [] };
+    });
+    try {
+      await ask('mail:send', {
+        accountId: 'imap',
+        to: 'leave@news.example.com',
+        subject: '',
+        body: 'remove &lt;literal&gt; &amp; me<br>line 2<br><table><tr><th>2</th><td>500</td></tr><tr><td>3</td><td>100</td></tr></table>',
+        fromAddress: fixture.account.email,
+      });
+    } finally { engine.setSmtpSenderForTest(null); }
+    assert.equal(capturedMime.text, 'remove <literal> & me\nline 2\n2 500\n3 100');
+    const assembled = await require('mailparser').simpleParser(await remote.buildRaw(capturedMime));
+    assert.equal(assembled.text.trim(), 'remove <literal> & me\nline 2\n2 500\n3 100');
+
     // Execute the real preload so a missing bridge allowlist fails this suite.
     let bridge, invoked;
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../renderer/preload.js'), 'utf8'), {

@@ -1541,6 +1541,7 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
     const finished = missing.length <= size;
     await db.applyFolderSyncAsync(account.id, folderPath, {
       messages: fetched.messages,
+      ...(Array.isArray(fetched.flags) && fetched.flags.length ? { flags: fetched.flags } : {}),
       validity: fetched.validity || found.validity,
       exists: found.exists,
       unseen: found.unseen,
@@ -1592,6 +1593,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
     next = Math.max(next, ...page);
     await db.applyFolderSyncAsync(account.id, folder.path, {
       messages: fetched.messages,
+      ...(Array.isArray(fetched.flags) && fetched.flags.length ? { flags: fetched.flags } : {}),
       validity: fetched.validity || found.validity,
       keepOthers: true,
       uidCursor: next,
@@ -2518,7 +2520,7 @@ function addrList(value) {
 }
 
 function plainFromHtml(html) {
-  return String(html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return textEncoding.htmlToPlain(html);
 }
 
 function rfcMessageId(email) {
@@ -2989,7 +2991,7 @@ async function ensureBody(row, options) {
       ...(typeof fetched.from === "string" ? { from_addr: fetched.from } : {}),
       ...(typeof fetched.fromDisplayName === "string" ? { from_display_name: fetched.fromDisplayName } : {}),
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
-      list_unsubscribe_json: JSON.stringify(fetched.listUnsubscribe || null),
+      ...(fetched.listUnsubscribe != null ? { list_unsubscribe_json: JSON.stringify(fetched.listUnsubscribe) } : {}),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
       ...(account.mail_transport === "gmail_api" ? require("./reply-forward-state").patch(fetched) : {}),
@@ -3066,10 +3068,12 @@ function pushRows(into, rows, limit) {
 function storeImapHits(account, folderPath, found) {
   assertAccountCurrent(account);
   const messages = found && Array.isArray(found.messages) ? found.messages : [];
-  if (!messages.length) return [];
+  const flags = found && Array.isArray(found.flags) ? found.flags : [];
+  if (!messages.length && !flags.length) return [];
   if (found.gmail) return messages.map(message => db.gmailCopies(account.id, message.providerId).find(row => row.folder_path === folderPath) || db.gmailCopies(account.id, message.providerId)[0]).filter(Boolean).map(listRow);
   db.applyFolderSync(account.id, folderPath, {
     messages,
+    ...(flags.length ? { flags } : {}),
     validity: found.validity,
     keepOthers: true,
   });
@@ -4196,7 +4200,7 @@ function recoverScheduledDraft(row) {
     hasAttachments: resolved.meta.length > 0,
     attachments: resolved.meta,
     htmlBody: html, textBody: text,
-    snippet: plainFromHtml(html).slice(0, 180), bodyComplete: true,
+    snippet: plainFromHtml(html).replace(/\s+/g, " ").trim().slice(0, 180), bodyComplete: true,
     recipientHeaders: { replyTo: [] },
   });
   const agentTodo = agentTodoOf(payload);
@@ -4249,7 +4253,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       threadId: (extra && extra.threadId) || emailId,
       rfcMessageId: keptId,
       subject: options.subject,
-      snippet: plainFromHtml(options.html).slice(0, 180),
+      snippet: plainFromHtml(options.html).replace(/\s+/g, " ").trim().slice(0, 180),
       from: typeof options.from === "object" ? options.from.address : options.from,
       fromDisplayName: typeof options.from === "object" ? options.from.name || "" : "",
       to: options.to,
@@ -5145,7 +5149,7 @@ function answer(channel, args, event) {
           threadId: (params && params.threadId) || emailId,
           rfcMessageId: messageId,
           subject: presented.subject,
-          snippet: plainFromHtml(html).slice(0, 180),
+          snippet: plainFromHtml(html).replace(/\s+/g, " ").trim().slice(0, 180),
           from: fromAddress,
           fromDisplayName,
           to: addrList(params.to),

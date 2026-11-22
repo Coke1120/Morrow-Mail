@@ -278,6 +278,17 @@ test("stale reader menu and late Google Groups draft stay pinned to the exact so
   await settle();
   assert.equal(f.opened[0].accountId, "alpha");
   assert.equal(f.calls.length, 1);
+
+  // One-click fallback to a Google Groups mailto still shows the leave-group disclosure.
+  const fallback = fixture(t);
+  fallback.answer(async () => ({ status: "draft", draft: { accountId: "alpha", sourceMessageId: "one",
+    to: "synthetic-news+unsubscribe@googlegroups.com", subject: "", text: "" } }));
+  fallback.show({ unsubscribe: { kind: "oneclick", destination: "groups.google.com" } });
+  fallback.click();
+  await settle();
+  assert.equal(fallback.opened.length, 1);
+  assert.equal(fallback.opened[0].subject, "");
+  assert.match(fallback.opened[0].status, /requests to leave the group.*Nothing is sent until you choose Send/);
 });
 
 test("late mailto response waits for the source message and preserves its own mailbox", async t => {

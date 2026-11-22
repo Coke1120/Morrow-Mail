@@ -44,10 +44,19 @@ test('Ed25519/SHA256 can verify, while weak RSA and SHA1 cannot authorize POST',
   assert.equal((await verify(await signed(raw(), { strict: false, algorithm: 'rsa-sha1' }))).verified, false);
 });
 
-test('optional mailto and folded list headers remain eligible', async () => {
-  for (const value of ['<' + url + '>, <mailto:leave@example.net>', '<mailto:leave@example.net>,\r\n\t<' + url + '>']) {
-    assert.equal((await verify(await signed(raw(value)))).verified, true);
+test('optional mailto, RFC 2369 comments and folded list headers remain eligible', async () => {
+  for (const value of [
+    '<' + url + '>, <mailto:leave@example.net>',
+    '<mailto:leave@example.net>,\r\n\t<' + url + '>',
+    '(List options) <' + url + '> (one-click), <mailto:leave@example.net>',
+    '<' + url + '> (nested (comment))',
+  ]) {
+    assert.deepEqual(await verify(await signed(raw(value))), { verified: true, url, domain: 'example.net' });
   }
+  let queries = 0;
+  const noDns = async () => { queries++; return [[record]]; };
+  assert.equal((await verify(await signed(raw('(unclosed <' + url + '>')), { resolver: noDns })).verified, false);
+  assert.equal(queries, 0);
 });
 
 test('tampered body, list destination, post value, From or signature cannot pass', async () => {
