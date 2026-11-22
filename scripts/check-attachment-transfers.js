@@ -182,10 +182,24 @@ async function engineChecks(apiTransport) {
 async function extraChecks() {
   const f = fixture(), owner = f.owner(), held = gate();
   const active = f.exclusive("account", () => held.wait, { background: true }); await tick();
-  const pending = f.invoke("mail:fetchAttachmentBytes", { ...f.params, requestId: "queued" }, owner);
-  await until(() => f.mailQueueForTest("account").user > 0); f.requests.cancel("queued", owner);
-  assert.equal((await pending).error.code, "cancelled"); held.release(); await active;
-  await until(() => f.cache.stats().active === 0); assert.equal(count(f, "connect"), 0, "cancelled queue does not start a connection");
+  const queued = [f.params.attachmentId, "3"].map((attachmentId, index) => f.invoke("mail:fetchAttachmentBytes",
+    { ...f.params, attachmentId, requestId: `queued-${index}` }, owner));
+  await until(() => f.mailQueueForTest("account").user === 2);
+  assert.equal(f.cache.stats().active, 2, "both global download slots are occupied");
+  for (const index of [0, 1]) assert.equal(f.requests.cancel(`queued-${index}`, owner), true);
+  for (const result of await Promise.all(queued)) assert.equal(result.error.code, "cancelled");
+  await until(() => f.cache.stats().active === 0);
+  assert.deepEqual({ ...f.mailQueueForTest("account") }, { user: 0, background: 0, active: true },
+    "cancelled jobs release both global slots while the original mailbox task is still running");
+  assert.equal(count(f, "connect"), 0);
+  const retry = f.invoke("mail:fetchAttachmentBytes", { ...f.params, requestId: "queued-0" }, owner);
+  await until(() => f.mailQueueForTest("account").user === 1);
+  assert.equal(f.cache.stats().active, 1, "retry has a download slot before the original mailbox task finishes");
+  held.release(); await active;
+  assert.equal((await retry).success, true);
+  await until(() => f.cache.stats().active === 0);
+  assert.equal(count(f, "connect"), 1, "only the retry connects");
+  f.cache.clear(); f.events.length = 0;
   f.row.attachments_json = JSON.stringify([{ id: "local", storageUrl: "local:synthetic" }]);
   assert.equal((await f.bytesFor({ emailId: "message", attachmentId: "local" })).data.toString(), "local bytes"); assert.equal(count(f, "connect"), 0);
   f.row.attachments_json = JSON.stringify([{ id: "huge", size: LIMITS.fileBytes + 1 }]);
@@ -234,13 +248,26 @@ async function extraChecks() {
   });
   const secondReady = waiting("second"), thirdReady = waiting("third");
   const second = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "second" }, saver);
-  const third = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "third" }, saver);
+  let thirdResult;
+  const third = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "third" }, saver)
+    .then(result => { thirdResult = result; return result; });
   await Promise.all([secondReady, thirdReady]);
+  const spare = Array.from({ length: 13 }, (_, index) => ordered.requests.begin({ requestId: `spare-${index}` }, saver));
+  assert.equal(ordered.requests.size(), 16);
   assert.equal(count(ordered, "write"), 1, "concurrent saves cannot interleave writes to the same file");
-  ordered.requests.cancel("third", saver); ordered.controls.write.release();
-  assert.equal((await initial).success, true); assert.equal((await second).success, true);
+  assert.equal(ordered.requests.cancel("third", saver), true);
+  await until(() => thirdResult !== undefined);
   assert.equal((await third).error.code, "cancelled");
-  assert.equal(count(ordered, "write"), 2, "cancelled waiting saves do not write");
+  assert.equal(ordered.requests.size(), 15, "queued cancellation releases the window slot before the first write finishes");
+  const replacementReady = waiting("third");
+  const replacement = ordered.invoke("mail:downloadAttachment", { ...ordered.params, requestId: "third" }, saver);
+  await replacementReady;
+  assert.equal(ordered.requests.size(), 16, "a replacement is admitted while the original write is still running");
+  assert.equal(count(ordered, "write"), 1);
+  ordered.controls.write.release();
+  for (const result of await Promise.all([initial, second, replacement])) assert.equal(result.success, true);
+  assert.equal(count(ordered, "write"), 3, "only the non-cancelled saves write");
+  for (const request of spare) request.finish();
   assert.equal(ordered.requests.size(), 0); ordered.cache.clear();
 
   for (const invalidate of [f => f.requests.cancel("packing", f.window), f => f.remove(), f => { f.row.uid++; }]) {

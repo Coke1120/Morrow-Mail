@@ -518,6 +518,9 @@ function exclusive(accountId, fn, options) {
   // call and must wait; awaiting exclusive again on this account deadlocks.
   // Pass { background: true } for the rotating folder walk and for body fills
   // that must wait behind an open. That work yields while user work is queued.
+  // Shared reads have multiple waiters. Queue cancellation is for unshared jobs only.
+  const queueSignal = options?.readKey == null ? options?.queueSignal : undefined;
+  if (queueSignal?.aborted) return Promise.reject(queueSignal.reason);
   const lane = laneFor(accountId);
   const readKey = options?.readKey == null ? null : `${accountEpochs.get(accountId) || 0}:${lane.revision}:${options.readKey}`;
   if (readKey != null && lane.reads.has(readKey)) {
@@ -537,13 +540,22 @@ function exclusive(accountId, fn, options) {
   });
   const epoch = accountEpochs.get(accountId) || 0;
   const job = { fn() {
+    queueSignal?.removeEventListener("abort", cancelQueued);
+    queueSignal?.throwIfAborted();
     if (epoch !== (accountEpochs.get(accountId) || 0)) throw removedAccountError();
     return fn();
   }, settle(value) { if (readKey != null) lane.reads.delete(readKey); settle(value); },
   fail(error) { if (readKey != null) lane.reads.delete(readKey); fail(error); } };
+  const queue = options?.background ? lane.background : lane.user;
+  const cancelQueued = () => {
+    const index = queue.indexOf(job);
+    if (index === -1) return;
+    queue.splice(index, 1);
+    job.fail(queueSignal.reason);
+  };
   if (readKey != null) lane.reads.set(readKey, { done, job });
-  if (options && options.background) lane.background.push(job);
-  else lane.user.push(job);
+  queue.push(job);
+  queueSignal?.addEventListener("abort", cancelQueued, { once: true });
   drainLane(accountId);
   return done;
 }
@@ -3639,7 +3651,7 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
               } catch (error) { entry.fail(entry.signal.aborted ? attachmentTransfers.cancelled() : error); }
             }
           }, { signal: groupSignal });
-        })) });
+        }, { queueSignal: groupSignal })) });
       signal?.throwIfAborted(); assertRemote();
       for (const [index, data] of downloaded.entries()) {
         const selected = batch[index];
@@ -3656,6 +3668,24 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
 // Preserve the old non-overlapping writes, including saves to the same path.
 // Recheck each request when it reaches the front; a failed write must not poison it.
 let attachmentWriteTail = Promise.resolve();
+
+function queueAttachmentWrite(signal, action) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const cancelQueued = () => {
+      // Release the queued action and its attachment bytes without advancing the write tail.
+      action = null;
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", cancelQueued, { once: true });
+    const write = attachmentWriteTail.then(() => {
+      signal.removeEventListener("abort", cancelQueued);
+      return action?.();
+    });
+    attachmentWriteTail = write.catch(() => {});
+    write.then(resolve, reject);
+  });
+}
 
 async function attachmentOperation(channel, params, owner) {
   let request;
@@ -3696,13 +3726,11 @@ async function attachmentOperation(channel, params, owner) {
     // A started write can finish after cancellation; never launch an external
     // application or report a stale request as current after this await.
     request.report({ phase: "waitingToSave" });
-    const write = attachmentWriteTail.then(async () => {
+    await queueAttachmentWrite(request.signal, () => {
       assertCurrent();
       request.report({ phase: "writing" });
-      await fs.promises.writeFile(target, data, { mode: 0o600 });
+      return fs.promises.writeFile(target, data, { mode: 0o600 });
     });
-    attachmentWriteTail = write.catch(() => {});
-    await write;
     assertCurrent();
     if (channel === "mail:openAttachmentExternally") {
       request.report({ phase: "opening" });
