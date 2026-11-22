@@ -16,13 +16,14 @@ function header(part, name) {
   const value = (Array.isArray(part?.headers) ? part.headers : []).find(value => String(value?.name).toLowerCase() === name.toLowerCase())?.value;
   return typeof value === "string" ? value : "";
 }
-function parts(root, malformed = () => {}) {
+function parts(root, malformed = () => {}, parents) {
   const result = [];
-  function visit(part) {
+  function visit(part, parent) {
     if (!part || typeof part !== "object") { malformed(); return; }
+    parents?.set(part, parent);
     result.push(part);
     if (part.parts != null && !Array.isArray(part.parts)) malformed();
-    for (const child of Array.isArray(part.parts) ? part.parts : []) visit(child);
+    for (const child of Array.isArray(part.parts) ? part.parts : []) visit(child, part);
   }
   visit(root); return result;
 }
@@ -91,8 +92,10 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
   async function normalize(data, full = false) {
     alive();
     let complete = true, bodyWarning = "", originalNeeded = false, textSizeMismatch = false;
+    let bodyTreeComplete = true;
     const warn = () => { complete = false; bodyWarning = "Some message content could not be decoded. The available content is shown; reopen the message to retry."; };
-    const list = parts(data.payload, warn);
+    const parents = new Map(), bodyParts = {};
+    const list = parts(data.payload, () => { bodyTreeComplete = false; warn(); }, parents);
     const headers = (Array.isArray(data.payload?.headers) ? data.payload.headers : []).filter(row => row && typeof row.name === "string" && typeof row.value === "string");
     const headerBytes = Buffer.from(headers.map(row => `${row.name}: ${row.value}`).join("\r\n") + "\r\n\r\n");
     let parsed;
@@ -109,7 +112,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       let bytes;
       if (part.body?.data != null) {
         try { bytes = decodePartData(part.body.data); }
-        catch { warn(); continue; }
+        catch { if (!file) bodyTreeComplete = false; warn(); continue; }
         if (Number.isSafeInteger(part.body.size) && part.body.size !== bytes.length) {
           if (file) warn();
           else textSizeMismatch = true;
@@ -117,10 +120,14 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       }
       if (!file) {
         if (!bytes && part.body?.attachmentId && full) bytes = await api.attachment(data.id, part.body.attachmentId);
-        if (!bytes && (part.body?.attachmentId || Number(part.body?.size) > 0)) { complete = false; continue; }
+        if (!bytes && (part.body?.attachmentId || Number(part.body?.size) > 0)) {
+          bodyTreeComplete = complete = false;
+          continue;
+        }
         const value = decoding.decode(bytes || Buffer.alloc(0), decoding.charsetOf(header(part, "content-type")));
         originalNeeded ||= !!bytes && ambiguousBody(bytes, value.text);
         decoding.note(decodedQuality, value, type);
+        bodyParts[type] = part;
         body[type === "text/html" ? "html" : "text"].push(value.text);
       } else {
         const contentId = header(part, "content-id").replace(/^<|>$/g, "");
@@ -187,6 +194,10 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     const inspectedMime = list.every(part => typeof part.mimeType === "string"
       && /^[^/\s;]+\/[^/\s;]+(?:\s*;.*)?$/.test(part.mimeType)
       && (!/^multipart\//i.test(part.mimeType) || Array.isArray(part.parts) && part.parts.length > 0));
+    if (!originalNeeded && bodyTreeComplete && inspectedMime && !textSizeMismatch && !decodedQuality.ambiguousAlternatives) {
+      decodedQuality.provenAlternatives = decoding.proveAlternatives(bodyParts, part => parents.get(part),
+        part => part.mimeType.toLowerCase(), part => part.filename || /attachment/i.test(header(part, "content-disposition")));
+    }
     return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
