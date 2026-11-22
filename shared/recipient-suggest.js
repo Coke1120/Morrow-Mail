@@ -86,29 +86,53 @@
     return sliced.replace(/[\u0000-\u001f]/g, "").slice(0, 200);
   }
 
-  function parts(value) {
-    const text = String(value ?? "");
+  function* recipientRanges(text) {
     let quote = false;
     let angle = false;
-    let cut = -1;
+    let start = 0;
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
       if (quote && ch === "\\") { i += 1; continue; }
       if (ch === '"') { quote = !quote; continue; }
       if (!quote && ch === "<") { angle = true; continue; }
       if (!quote && ch === ">") { angle = false; continue; }
-      if (!quote && !angle && (ch === "," || ch === ";")) cut = i;
+      if (!quote && !angle && (ch === "," || ch === ";")) {
+        yield { start, end: i };
+        start = i + 1;
+      }
     }
-    if (cut < 0) return { head: "", token: text };
-    return { head: text.slice(0, cut + 1), token: text.slice(cut + 1) };
+    yield { start, end: text.length };
   }
 
-  function activeQuery(value) {
-    return queryOf(parts(value).token);
+  function recipientAt(value, selectionStart, selectionEnd = selectionStart) {
+    const text = String(value ?? "");
+    const start = selectionStart ?? text.length;
+    const end = selectionEnd ?? start;
+    for (const range of recipientRanges(text)) {
+      if (start <= range.end) return end <= range.end ? range : null;
+    }
+    return null;
   }
 
-  function usedAddresses(value) {
-    return new Set(policy.addresses(parts(value).head));
+  function parts(value) {
+    const text = String(value ?? "");
+    const { start } = recipientAt(text);
+    return { head: text.slice(0, start), token: text.slice(start) };
+  }
+
+  function activeQuery(value, range = recipientAt(value)) {
+    return range ? queryOf(String(value ?? "").slice(range.start, range.end)) : "";
+  }
+
+  function usedAddresses(value, active = recipientAt(value)) {
+    const text = String(value ?? "");
+    const used = new Set();
+    for (const range of recipientRanges(text)) {
+      if (range.start === active?.start) continue;
+      const email = policy.address(text.slice(range.start, range.end));
+      if (email) used.add(email);
+    }
+    return used;
   }
 
   function matches(row, needle) {
@@ -138,10 +162,17 @@
     return `${clean} <${address}>`;
   }
 
-  function applyChoice(value, choice) {
+  function applyChoice(value, choice, range = recipientAt(value)) {
+    const text = String(value ?? "");
     const label = formatRecipient(choice && choice.email, choice && choice.name);
-    if (!label) return String(value ?? "");
-    const head = parts(value).head;
+    if (!label || !range) return text;
+    const head = text.slice(0, range.start);
+    if (range.end < text.length) {
+      const token = text.slice(range.start, range.end);
+      const leading = token.match(/^\s*/)[0];
+      const trailing = token.slice(leading.length).match(/\s*$/)[0];
+      return head + leading + label + trailing + text.slice(range.end);
+    }
     const gap = head && !/\s$/.test(head) ? " " : "";
     return head + gap + label + ", ";
   }
@@ -160,6 +191,7 @@
     SUGGEST_LIMIT,
     rank,
     filter,
+    recipientAt,
     activeQuery,
     usedAddresses,
     applyChoice,
