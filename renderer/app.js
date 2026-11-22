@@ -20531,11 +20531,12 @@ function aiKeyPlaceholder(cfg) {
   return "sk-…";
 }
 
-let aiBaseline = "";
+let aiBaseline = null;
 let chatgptSettings = null;
 let aiOperation = 0;
 let aiViewRevision = 0;
 let aiSaveBusy = false;
+let aiModelChoicesRevision = 0;
 function aiAuthDraft() { return chatgptSettings ? chatgptSettings.draft() : {}; }
 function mountChatgptSettings() {
   const container = $("ai-account-settings");
@@ -20569,7 +20570,7 @@ function aiRequestCurrent(operation, view, input, context) {
     && context === chatgptSettings?.context?.();
 }
 function aiDirty() {
-  return !!aiBaseline && aiFormState() !== aiBaseline;
+  return !!aiBaseline && aiFormState() !== aiFormState(aiBaseline);
 }
 function paintAiDirty(preserveStatus = false) {
   const note = $("ai-dirty");
@@ -20602,6 +20603,7 @@ async function resumeAiSettings() {
 }
 
 function clearAiModelChoices() {
+  aiModelChoicesRevision++;
   const chooser = $("ai-model-chooser");
   const select = $("ai-model-select");
   if (select) {
@@ -20609,6 +20611,12 @@ function clearAiModelChoices() {
     select.value = "";
   }
   if (chooser) chooser.hidden = true;
+  if (aiAuthDraft().authMode !== "chatgpt" && /^Fetch(?:ing|ed) /.test($("ai-status").textContent)) setAiStatus("", false);
+}
+
+function aiFieldEdited(event) {
+  if (event.target.id !== "ai-model") clearAiModelChoices();
+  paintAiDirty();
 }
 
 function applyFetchedModels(ids) {
@@ -20649,7 +20657,7 @@ function applyFetchedModels(ids) {
 function chooseFetchedModel() {
   const select = $("ai-model-select");
   const input = $("ai-model");
-  if (!select || !input) return;
+  if (!select || !input || $("ai-model-chooser").hidden) return;
   const id = String(select.value || "").trim();
   if (!id || input.value === id) return;
   input.value = id;
@@ -20673,7 +20681,7 @@ async function loadAiSettings() {
     $("ai-key").placeholder = aiKeyPlaceholder(cfg);
     // A later account/permission reply must not replace a newer Save baseline.
     updateAiBaseline = JSON.stringify([cfg?.baseUrl || "", cfg?.model || ""]);
-    aiBaseline = aiFormState(cfg || {});
+    aiBaseline = cfg || {};
     const accountSettings = mountChatgptSettings();
     if (accountSettings) await accountSettings.load(cfg || {});
     if (view !== aiViewRevision) return;
@@ -20686,6 +20694,7 @@ async function loadAiSettings() {
 async function saveAiSettings() {
   if (aiSaveBusy) return;
   const input = aiSettingsDraft();
+  const payload = window.morrowChatgptSettings?.connectionSaveInput(input, aiBaseline) ?? input;
   const operation = ++aiOperation;
   const view = aiViewRevision;
   aiSaveBusy = true;
@@ -20693,16 +20702,26 @@ async function saveAiSettings() {
   $("ai-save").disabled = true;
   setAiStatus("Saving…", false);
   try {
-    const saved = await api.invoke("host:aiSaveConfig", input);
+    const saved = await api.invoke("host:aiSaveConfig", payload);
     if (window.morrowAiIndicator) window.morrowAiIndicator.paint(saved);
     if (view !== aiViewRevision) return;
     // Only reconcile fields still owned by this save. New edits stay in the form.
-    if ($("ai-key").value === input.apiKey) $("ai-key").value = "";
-    if ($("ai-base").value === input.baseUrl) $("ai-base").value = saved.baseUrl;
-    if ($("ai-model").value === input.model) $("ai-model").value = saved.model;
-    $("ai-key").placeholder = aiKeyPlaceholder(saved);
+    const endpointChanged = saved.baseUrl !== input.baseUrl.trim();
+    const modelUnchanged = $("ai-model").value === input.model;
+    const keyUnchanged = $("ai-key").value === input.apiKey;
+    const savedKeyPlaceholder = aiKeyPlaceholder(saved);
+    if (!payload.baseUrl || endpointChanged || input.apiKey || $("ai-key").placeholder !== savedKeyPlaceholder) {
+      clearAiModelChoices();
+    }
+    // Keep a newer model or key edit with the endpoint it was entered for.
+    if ($("ai-base").value === input.baseUrl && (!endpointChanged || (modelUnchanged && keyUnchanged))) {
+      $("ai-base").value = saved.baseUrl;
+      if (modelUnchanged) $("ai-model").value = saved.model;
+    }
+    if (keyUnchanged) $("ai-key").value = "";
+    $("ai-key").placeholder = savedKeyPlaceholder;
     updateAiBaseline = JSON.stringify([saved.baseUrl, saved.model]);
-    aiBaseline = aiFormState(saved);
+    aiBaseline = saved;
     chatgptSettings?.refreshConsent();
     paintAiDirty(true);
     if (operation === aiOperation) setAiStatus(aiDirty() ? "Earlier settings saved. Your newer changes are not saved." : "Saved.", false);
@@ -20720,6 +20739,7 @@ async function fetchAiModels() {
   const view = aiViewRevision;
   const input = aiSettingsDraft();
   const context = chatgptSettings?.context?.();
+  const choicesRevision = aiModelChoicesRevision;
   setAiStatus(aiDirty() ? "Fetching models with the unsaved values in this form…" : "Fetching models…", false);
   try {
     if (aiAuthDraft().authMode === "chatgpt") {
@@ -20734,7 +20754,7 @@ async function fetchAiModels() {
       apiKey: $("ai-key").value,
       authMode: "api_key",
     });
-    if (!aiRequestCurrent(operation, view, input, context)) return;
+    if (choicesRevision !== aiModelChoicesRevision || !aiRequestCurrent(operation, view, input, context)) return;
     if (!result || result.ok !== true) {
       setAiStatus((result && result.message) || "Could not list models.", true);
       return;
@@ -20743,6 +20763,7 @@ async function fetchAiModels() {
     const count = applyFetchedModels(ids);
     setAiStatus(count ? "Fetched " + count + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
   } catch (error) {
+    if (input.authMode !== "chatgpt" && choicesRevision !== aiModelChoicesRevision) return;
     if (aiRequestCurrent(operation, view, input, context)) setAiStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
@@ -29297,8 +29318,8 @@ function wire() {
     testAiConnection().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
   });
   for (const id of ["ai-base", "ai-model", "ai-key"]) {
-    $(id).addEventListener("input", paintAiDirty);
-    $(id).addEventListener("change", paintAiDirty);
+    $(id).addEventListener("input", aiFieldEdited);
+    $(id).addEventListener("change", aiFieldEdited);
   }
   $("ai-model-select").addEventListener("change", chooseFetchedModel);
   for (const id of ["ooo-mode", "ooo-start", "ooo-end", "ooo-subject", "ooo-message", "ooo-external", "ooo-audience", "ooo-domain"]) {

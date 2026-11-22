@@ -65,7 +65,8 @@ async function fixture(kind) {
     run(component);
     await run("loadAiSettings()");
     // Same bindings as wire(); boot itself is deliberately not run in this VM.
-    run('for (const id of ["ai-base", "ai-model", "ai-key"]) { $(id).addEventListener("input", paintAiDirty); $(id).addEventListener("change", paintAiDirty); }');
+    run('for (const id of ["ai-base", "ai-model", "ai-key"]) { $(id).addEventListener("input", aiFieldEdited); $(id).addEventListener("change", aiFieldEdited); }');
+    run('$("ai-model-select").addEventListener("change", chooseFetchedModel);');
   }
   const ids = native ? { base: "baseUrl", model: "model", key: "apiKey", status: "status", save: "save" } : { base: "ai-base", model: "ai-model", key: "ai-key", status: "ai-status", save: "ai-save" };
   return {
@@ -78,13 +79,71 @@ async function fixture(kind) {
     save: () => native ? $("save").onclick() : run("saveAiSettings()"),
     test: () => native ? $("test").onclick() : run("testAiConnection()"),
     fetch: () => native ? $("fetch").onclick() : run("fetchAiModels()"),
-    dirty: () => run(native ? "!!savedBaseline && formState(draft()) !== savedBaseline" : "aiDirty()"),
+    dirty: () => run(native ? "!!savedBaseline && formState(draft()) !== formState(savedBaseline)" : "aiDirty()"),
     settings: () => run(native ? "accountSettings" : "chatgptSettings"),
     close: () => native ? events.pagehide() : run("aiViewRevision++; aiOperation++; chatgptSettings.dispose()"),
     setStatus(value) { status = value; },
     setPermission(value) { permission = { ...permission, ...value }; },
   };
 }
+
+test("Settings and Setup: ChatGPT save includes deliberate API edits with their endpoint", async () => {
+  for (const kind of ["settings", "setup"]) {
+    const f = await fixture(kind);
+    await f.edit("model", "deliberate-api-model");
+    await f.edit("key", "synthetic-new-key");
+    await f.mode("chatgpt");
+    await f.fetch();
+    f.$("chatgpt-model").value = "chat-new";
+    await f.$("chatgpt-model").fire("change");
+    await f.save();
+    const payload = f.calls.find(row => row.channel === "host:aiSaveConfig").input;
+    assert.equal(payload.baseUrl, initialConfig().baseUrl);
+    assert.equal(payload.model, "deliberate-api-model");
+    assert.equal(payload.apiKey, "synthetic-new-key");
+    assert.equal(f.config.chatgptModel, "chat-new");
+    assert.equal(f.dirty(), false);
+    f.close();
+  }
+});
+
+test("Settings: fetched API choices retire on endpoint/key edits and a save that updates the endpoint", async () => {
+  const f = await fixture("settings");
+  const chooser = f.$("ai-model-chooser"), select = f.$("ai-model-select");
+  await f.fetch();
+  await f.edit("model", "manual-model");
+  assert.equal(chooser.hidden, false);
+  select.value = "chat-new";
+  await select.fire("change");
+  assert.equal(f.field("model").value, "chat-new");
+  assert.equal(chooser.hidden, false);
+
+  const firstBase = f.field("base").value;
+  const pending = f.wait("host:aiListModels"), fetching = f.fetch();
+  await f.edit("base", "https://other.synthetic.invalid/v1");
+  assert.equal(chooser.hidden, true);
+  assert.equal(select.options.length, 0);
+  assert.equal(f.field("model").value, "chat-new");
+  await f.edit("base", firstBase);
+  pending.resolve({ ok: true, models: ["obsolete-model"] });
+  await fetching;
+  assert.equal(chooser.hidden, true);
+
+  await f.fetch();
+  await f.edit("key", "synthetic-new-key");
+  assert.equal(chooser.hidden, true);
+  await f.edit("key", "");
+  await f.edit("model", initialConfig().model);
+  await f.fetch();
+  await f.mode("chatgpt");
+  f.saveResult({ baseUrl: "https://saved.synthetic.invalid/v1" });
+  await f.save();
+  await f.mode("api_key");
+  assert.equal(f.field("base").value, f.config.baseUrl);
+  assert.equal(chooser.hidden, true);
+  assert.equal(select.options.length, 0);
+  f.close();
+});
 
 for (const kind of ["settings", "setup"]) {
   test(`${kind}: unsaved connection edits, saves and fresh permission reads require a new review`, async () => {
