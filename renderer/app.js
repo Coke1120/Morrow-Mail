@@ -12409,11 +12409,14 @@ async function loadList(fromNetwork, requestedOffset) {
       state.listCursors.push({ offset: data.nextCursor.offset, cursor: data.nextCursor });
       if (state.listCursors.length > 32) state.listCursors.shift();
     }
-    state.emails = takeEmails((data && data.emails) || []);
+    const rows = data?.emails || [];
+    const pageSize = data?.geometry?.pageSize ?? rows.length;
+    // A trailing held row can confirm membership from outside this page.
+    state.emails = takeEmails(rows.slice(0, pageSize));
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
       state.unreadHold = applyUnreadHold(state.unreadHold, {
         kind: "refresh",
-        ids: state.emails.map((row) => row && row.id),
+        ids: rows.map((row) => row && row.id),
       });
     }
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
@@ -14801,7 +14804,7 @@ function onEmailsUpdated(payload) {
   if (payload?.accountId) {
     if (params.accountId && params.accountId !== payload.accountId) return;
     const paths = payload.folderIds || (payload.folderId ? [payload.folderId] : []);
-    if (paths.length && params.folderId && !paths.includes(params.folderId)) return;
+    if (paths.length && params.folderId && !paths.includes(params.folderId) && !isVirtualMailbox(selectedFolderNode())) return;
     if (params.mailboxes?.length && !params.mailboxes.some(box => box.accountId === payload.accountId && (!paths.length || paths.includes(box.path)))) return;
   }
   if (!payload?.folderId && !payload?.folderIds?.length) snoozeDirty = true;
