@@ -83,6 +83,8 @@ Case capability is bundled separately in `shared/timeline-schema/1.1.0.schema.js
 Their identifiers are `urn:morrow-mail:timeline:1.0.0` and `urn:morrow-mail:timeline:1.1.0`;
 the exact local registry never uses a network resolver.
 JSON exports contain exactly the validated public document, never a local wrapper.
+Exports use two-space indentation and a trailing newline when that fits the 2 MiB
+UTF-8 limit. Otherwise, they use compact JSON without a trailing newline.
 Consumers must select an exact supported `schema_version` from their own bundled
 registry, not resolve the input's `$schema` over the network.
 

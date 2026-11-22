@@ -433,6 +433,28 @@ test("export requires fresh confirmation and an exact saved revision", async con
   assert.equal(fixture.calls.length, 0);
 });
 
+test("JSON export keeps pretty formatting when it fits and compacts recipient-heavy timelines", () => {
+  const small = documentFixture();
+  assert.equal(exporters.json(small), JSON.stringify(small, null, 2) + "\n");
+
+  const to = Array.from({ length: 96 }, (_, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    return { address: `recipient-${number}@example.org`, name: `陳大文 專案參與者 ${number}` };
+  });
+  const source_thread_id = uuid();
+  const events = Array.from({ length: 192 }, () => ({
+    ...metadata({ source_thread_id, to }), summary: "Planning notes shared.", open_actions: [], unclear: [],
+  }));
+  const document = documentFixture(events);
+  const pretty = JSON.stringify(document, null, 2) + "\n";
+  assert.ok(pretty.length <= MAX_BYTES);
+  assert.ok(Buffer.byteLength(pretty) > MAX_BYTES);
+
+  const output = exporters.json(document);
+  assert.equal(output, JSON.stringify(document));
+  assert.deepEqual(validateDocument(parseJson(Buffer.from(output, "utf8"))), document);
+});
+
 test("exporters keep generated markup inert and preserve CJK, uncertainty and coverage", () => {
   const document = documentFixture();
   document.title = '<img src="https://example.org/track"> 繁體中文';
@@ -872,7 +894,11 @@ test("Features catalog, CLI tab, format asset and reduced-motion claims stay ali
   fixture.window.motionApi = () => null;
   fixture.window.eval(read("renderer/features-catalog.js"));
   fixture.window.eval(app.slice(app.indexOf("function normalizeFeatureCatalog("), app.indexOf("function wireFeaturesTabs(")) + '\npaintFeatureCatalog(); showFeaturesTab("cli");');
-  assert.ok([...fixture.document.querySelectorAll(".feature-card")].some(card => /Selected-mail timeline/.test(card.textContent) && /No URL\/webhook export/.test(card.textContent) && /Preflight includes the complete request/.test(card.textContent)));
+  const timelineCard = [...fixture.document.querySelectorAll(".feature-card")].find(card => /Selected-mail timeline/.test(card.textContent));
+  assert.ok(timelineCard);
+  assert.match(timelineCard.textContent, /No URL\/webhook export/);
+  assert.match(timelineCard.textContent, /Preflight includes the complete request/);
+  assert.match(timelineCard.textContent, /If indentation would exceed 2 MiB, JSON keeps all fields in compact form/);
   assert.equal(fixture.document.getElementById("features-tab-cli").getAttribute("aria-selected"), "true");
   assert.equal(fixture.document.getElementById("features-pane-cli").hidden, false);
   fixture.dom.window.close();
