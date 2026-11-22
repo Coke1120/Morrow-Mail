@@ -15,7 +15,7 @@
       <select id="chatgpt-account"><option value="">Add a new ChatGPT account or workspace</option></select>
       <p id="chatgpt-active" class="hint"></p>
       <div class="row">
-        <button id="chatgpt-login" type="button" class="primary">Sign in with ChatGPT</button>
+        <button id="chatgpt-login" type="button" class="primary">Continue with ChatGPT</button>
         <button id="chatgpt-select" type="button" class="ghost">Use selected account</button>
         <button id="chatgpt-signout" type="button" class="ghost">Sign out active account</button>
         <button id="chatgpt-refresh" type="button" class="ghost">Refresh connection status</button>
@@ -23,7 +23,7 @@
       </div>
       <p id="chatgpt-status" role="status" aria-live="polite"></p>
       <details id="chatgpt-manual"><summary>Browser callback did not return to Morrow Mail?</summary>
-        <p class="hint">After browser approval, copy the complete 127.0.0.1 callback URL from its address bar and paste it here while this attempt is waiting. Do not share that URL. After cancellation finishes, Sign in with ChatGPT starts a fresh attempt immediately; an earlier attempt cannot change it.</p>
+        <p class="hint">After browser approval, copy the complete 127.0.0.1 callback URL from its address bar and paste it here while this attempt is waiting. Do not share that URL. After cancellation finishes, Continue with ChatGPT starts a fresh attempt immediately; an earlier attempt cannot change it.</p>
         <label for="chatgpt-callback">Callback URL (one-time use)</label>
         <input id="chatgpt-callback" type="password" autocomplete="off" spellcheck="false" />
         <button id="chatgpt-submit" type="button" class="ghost">Complete sign-in</button>

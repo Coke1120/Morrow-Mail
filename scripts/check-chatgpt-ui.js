@@ -91,7 +91,7 @@ async function run() {
   assert.equal(ui.run("aiDirty()"), false);
   $("ai-auth-mode").value = "chatgpt"; await $("ai-auth-mode").fire("change");
   assert.equal($("chatgpt-panel").hidden, false);
-  assert.equal($("chatgpt-login").textContent, "Sign in with ChatGPT");
+  assert.equal($("chatgpt-login").textContent, "Continue with ChatGPT");
   assert.equal(calls.filter(row => row.channel === "host:chatgptStart").length, 0, "selecting the option never opens the browser");
   assert.equal($("ai-api-key-field").hidden, true);
   assert.equal($("ai-consent-manual").checked, false);
