@@ -32,3 +32,9 @@ focus are explicitly included in all host Timeline disclosures. Consent version 
 invalidates earlier grants through the existing version-bound fingerprint; reading
 status never rewrites consent. A fresh manual choice does not restore background
 permission, and generation still requires a newly prepared snapshot and Generate.
+
+Keep long correspondence reports readable in HTML and print. List an identical
+multi-person recipient list once in an appendix and cite its number for each
+To or Cc use. Match ordered names and addresses exactly. Print distinct lists
+inline, keep all events and source references, and use the same presentation
+for older saved timelines.

@@ -451,8 +451,9 @@ test("exporters keep generated markup inert and preserve CJK, uncertainty and co
 });
 test("PDF loads large CJK documents in an isolated, scriptless session and cleans up", async context => {
   const recipients = Array.from({ length: 96 }, (_, index) => ({ name: "繁體中文收件人姓名", address: `recipient${index}@example.org` }));
-  const large = documentFixture(Array.from({ length: 192 }, () => ({
-    ...metadata({ to: recipients, attachments: ["發票 & 報告.pdf"] }),
+  // Distinct lists keep this transport fixture large even when repeated lists are shared.
+  const large = documentFixture(Array.from({ length: 192 }, (_, index) => ({
+    ...metadata({ to: [{ ...recipients[0], name: `繁體中文收件人姓名 ${index}` }, ...recipients.slice(1)], attachments: ["發票 & 報告.pdf"] }),
     summary: "繁體中文 <img src=x>", open_actions: [], unclear: [],
   })));
   const partitions = new Set();
@@ -1124,6 +1125,33 @@ test("readable HTML has escaped evidence, no active content and responsive chron
   assert.match(body.querySelector('meta[http-equiv]').content, /script-src 'none'/);
   assert.match(body.querySelector('style').textContent, /max-width:480px/);
   assert.equal(body.querySelectorAll('ol.sequence > li').length, 1);
+  dom.window.close();
+});
+test("print reports list repeated recipients once and keep each event's To and Cc evidence", () => {
+  const people = [{ name: "小組 <A>", address: "a@example.org" }, { name: "小組 B", address: "b@example.org" }];
+  const changed = [{ ...people[0], name: "New label" }, people[1]];
+  const events = [
+    { to: people, cc: [] }, { to: [], cc: copy(people) },
+    { to: [...people].reverse(), cc: [] }, { to: changed, cc: [] },
+    { to: [people[1]], cc: [] },
+  ].map((fields, i) => ({ ...metadata(fields), occurred_at: new Date(Date.UTC(2026, 10, 1, i)).toISOString(),
+    summary: `Update ${i + 1}`, open_actions: [], unclear: [] }));
+  const document = documentFixture(events);
+  const original = copy(document);
+  const dom = new JSDOM(exporters.printHtml(document));
+  const page = dom.window.document;
+  const rows = [...page.querySelectorAll(".event")];
+  assert.deepEqual(rows.map(row => row.querySelector(".summary").textContent), events.map(event => event.summary));
+  const evidence = rows.map(row => row.querySelector(".evidence").textContent);
+  assert.match(evidence[0], /To: Recipient list 1 \(2\)/);
+  assert.match(evidence[1], /Cc: Recipient list 1 \(2\)/);
+  assert.match(evidence[2], /To: 小組 B <b@example.org>, 小組 <A> <a@example.org>/);
+  assert.match(evidence[3], /To: New label <a@example.org>/);
+  assert.match(evidence[4], /To: 小組 B <b@example.org>/);
+  for (const [i, text] of evidence.entries()) assert.ok(text.includes(events[i].source_message_id));
+  assert.equal(page.querySelectorAll(".recipient-lists h3").length, 1);
+  assert.equal(page.querySelector(".recipient-lists p").textContent, "小組 <A> <a@example.org>, 小組 B <b@example.org>");
+  assert.deepEqual(document, original);
   dom.window.close();
 });
 test("HTML export uses native save and checks the revision again after file selection", async context => {

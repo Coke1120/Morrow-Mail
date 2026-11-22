@@ -55,27 +55,53 @@ function markdown(document) {
   return lines(document).map((line, index) => `${index === 0 ? "# " : ""}${markdownEscape(line)}`).join("\n\n") + "\n";
 }
 
+// Compare the ordered (name, address) pairs. A change of label or order is evidence too.
+const recipientKey = recipients => JSON.stringify(recipients.map(({ name, address }) => [name || "", address]));
+
+function sharedRecipientLists(events) {
+  const lists = new Map();
+  for (const { to, cc } of events) {
+    for (const recipients of [to, cc]) {
+      if (recipients.length < 2) continue;
+      const key = recipientKey(recipients);
+      const list = lists.get(key);
+      if (list) list.uses++;
+      else lists.set(key, { recipients, uses: 1 });
+    }
+  }
+  const shared = new Map();
+  for (const [key, list] of lists) {
+    if (list.uses > 1) shared.set(key, { number: shared.size + 1, recipients: list.recipients });
+  }
+  return shared;
+}
+
 function printHtml(document) {
   validateDocument(document);
   const escape = htmlEscape;
   const coverage = document.coverage;
   const events = [...document.events].sort((a, b) => (a.occurred_at === null) - (b.occurred_at === null)
     || (Date.parse(a.occurred_at) - Date.parse(b.occurred_at)) || a.source_message_id.localeCompare(b.source_message_id));
+  const shared = sharedRecipientLists(events);
+  const recipientText = recipients => {
+    const list = recipients.length > 1 && shared.get(recipientKey(recipients));
+    return list ? `Recipient list ${list.number} (${recipients.length})` : recipients.map(mailbox).join(", ");
+  };
+  const appendix = shared.size ? `<section class="recipient-lists"><h2>Recipient lists</h2>${[...shared.values()].map(({ number, recipients }) =>
+    `<h3>Recipient list ${number} (${recipients.length})</h3><p>${escape(recipients.map(mailbox).join(", "))}</p>`).join("")}</section>` : "";
   let day = null;
   const content = events.map((event, index) => {
     const nextDay = event.occurred_at === null ? "Undated correspondence" : new Intl.DateTimeFormat(undefined, { timeZone: document.display_timezone, dateStyle: "long" }).format(new Date(event.occurred_at));
     const heading = nextDay === day ? "" : `<h2>${escape(nextDay)}</h2>`;
     day = nextDay;
     const list = (title, items) => items.length ? `<h3>${title}</h3><ul>${items.map(text => `<li>${escape(text)}</li>`).join("")}</ul>` : "";
+    const recipients = [event.to.length && `To: ${recipientText(event.to)}`, event.cc.length && `Cc: ${recipientText(event.cc)}`].filter(Boolean).join(" · ");
     return [
       `<li class="event">${heading}`,
-      event.phase ? `<p>Phase: ${event.phase === "main" ? "Main" : "Background"}</p>` : "",
-      `<p class="date"><time${event.occurred_at ? ` datetime="${escape(event.occurred_at)}"` : ""}>${index + 1}. ${escape(when(event, document.display_timezone))}</time> · ${escape(event.date_source)}</p>`,
-      `<p class="summary">${escape(event.summary)}</p><p>From: ${escape(mailbox(event.from))}</p>`,
+      `<p class="date"><time${event.occurred_at ? ` datetime="${escape(event.occurred_at)}"` : ""}>${index + 1}. ${escape(when(event, document.display_timezone))}</time> · ${escape(event.date_source)} · From: ${escape(mailbox(event.from))}${event.phase ? ` · Phase: ${event.phase === "main" ? "Main" : "Background"}` : ""}</p>`,
+      `<p class="summary">${escape(event.summary)}</p>`,
       list("For review", event.open_actions), list("Uncertainty", event.unclear),
-      `<div class="evidence"><h3>Source evidence</h3>`,
-      `<p>To: ${escape(event.to.map(mailbox).join(", ") || "None recorded")}</p>`,
-      `<p>Cc: ${escape(event.cc.map(mailbox).join(", ") || "None recorded")}</p>`,
+      `<div class="evidence"><p>${escape(recipients || "No To or Cc recorded")}</p>`,
       event.via_alias ? `<p>Via alias: ${escape(event.via_alias)}</p>` : "",
       list("Attachment names", event.attachments),
       `<p>Source: ${escape(event.source_thread_id)} / ${escape(event.source_message_id)}</p></div></li>`,
@@ -85,15 +111,29 @@ function printHtml(document) {
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">`,
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'none'; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">`,
     `<title>${escape(document.title)}</title>`,
-    `<style>@page{size:A4;margin:18mm}*{box-sizing:border-box}body{margin:0 auto;padding:24px;max-width:900px;font:16px system-ui,sans-serif;color:#172b25;background:#fff;line-height:1.55}h1{font-size:28px}h2{font-size:20px}h3{font-size:15px}p,li{white-space:pre-wrap;overflow-wrap:anywhere;orphans:3;widows:3}h1,h2,h3{break-after:avoid}.sequence{list-style:none;padding:0 0 0 14px}.event{position:relative;border-left:2px solid #547568;padding:0 0 28px 22px}.event:before{content:"";position:absolute;width:10px;height:10px;border-radius:50%;background:#547568;left:-6px;top:8px}.summary{font-size:18px;font-weight:600}.date,.evidence{font-size:14px;color:#40564e}.evidence{border-top:1px solid #ccc;margin-top:18px}header{margin-bottom:32px}header p{margin:8px 0}@media(max-width:480px){body{padding:16px}.event{padding-left:16px}.sequence{padding-left:6px}}@media print{body{padding:0;font-size:11pt}.summary{font-size:12pt}}`,
-    `</style></head>`,
+    `<style>@page{size:A4;margin:18mm}*{box-sizing:border-box}body{margin:0 auto;padding:24px;max-width:900px;font:16px system-ui,sans-serif;color:#172b25;background:#fff;line-height:1.55}h1{font-size:28px}h2{font-size:20px}h3{font-size:15px}p,li{white-space:pre-wrap;overflow-wrap:anywhere;orphans:3;widows:3}h1,h2,h3{break-after:avoid}.sequence{list-style:none;padding:0 0 0 14px}.event{position:relative;border-left:2px solid #547568;padding:0 0 28px 22px}.event:before{content:"";position:absolute;width:10px;height:10px;border-radius:50%;background:#547568;left:-6px;top:8px}.summary{font-size:18px;font-weight:600}.date,.evidence{font-size:14px;color:#40564e}.evidence{border-top:1px solid #ccc;margin-top:18px}header{margin-bottom:32px}header p{margin:8px 0}@media(max-width:480px){body{padding:16px}.event{padding-left:16px}.sequence{padding-left:6px}}`,
+    `@media print {
+      body { padding:0; font-size:11pt; line-height:1.35 }
+      header { margin-bottom:12pt }
+      .sequence { padding-left:5pt }
+      .event { padding:0 0 5pt 10pt; margin:0 0 3pt; break-inside:avoid }
+      .event:before { width:5pt; height:5pt; left:-3pt; top:5pt }
+      .event p, .event ul, .recipient-lists p { margin:1pt 0 }
+      .event h2, .recipient-lists h2 { margin:7pt 0 2pt }
+      .event h3, .recipient-lists h3 { font-size:10pt; margin:2pt 0 }
+      .date, .evidence { font-size:9.5pt }
+      .evidence { border:0; margin:0 }
+      .summary { font-size:11pt }
+      .recipient-lists { font-size:10pt }
+    }</style></head>`,
     `<body><header><h1>${escape(document.title)}</h1>`,
     `<p>Correspondence timeline · oldest first · ${events.length} entries</p>`,
     `<p>Display timezone: ${escape(document.display_timezone)} · Generated: ${escape(document.generated_at)}</p>`,
     `<p>${coverage.included_message_count} included / ${coverage.selected_message_count} selected / ${coverage.omitted_message_count} omitted. Selection truncated: ${coverage.selection_truncated ? "yes" : "no"}. Downloaded mail only; not proof of a complete mailbox.</p>`,
     `<p>AI-generated; verify against source mail. Dates are mail timestamps, not dates of events mentioned in the text. Unknown and older cached timestamps are not reliable date evidence. This file contains personal information.</p>`,
+    shared.size ? "<p>Repeated recipient lists are printed once at the end. Each entry identifies its To and Cc lists.</p>" : "",
     `</header>`,
-    `<main>${document.case_report ? `<section class="case-report">${caseLines(document).map(line => `<p>${escape(line)}</p>`).join("")}</section><h2>Correspondence · Main / Background</h2>` : ""}<ol class="sequence" aria-label="Correspondence, oldest first; undated mail last">${content}</ol></main></body></html>`,
+    `<main>${document.case_report ? `<section class="case-report">${caseLines(document).map(line => `<p>${escape(line)}</p>`).join("")}</section><h2>Correspondence · Main / Background</h2>` : ""}<ol class="sequence" aria-label="Correspondence, oldest first; undated mail last">${content}</ol>${appendix}</main></body></html>`,
   ].join("");
 }
 
