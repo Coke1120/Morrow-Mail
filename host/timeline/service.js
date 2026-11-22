@@ -2,9 +2,9 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { failure } = require("./validate");
-const { freezeSources, assertSources, hash, fingerprint, dedupeRows, messagePreview, messageIdentity } = require("./sources");
+const { freezeSources, planCapturedSources, assertSources, hash, fingerprint, dedupeRows, messagePreview, messageIdentity } = require("./sources");
 const { htmlToPlain } = require("../mail/text-encoding");
-const { LIMITS, LANGUAGES, PROMPT_VERSION, preparePlan, extract } = require("./extract");
+const { LIMITS, LANGUAGES, PROMPT_VERSION, extract } = require("./extract");
 const { budget, budgetDetails } = require("./budget");
 const { validationDetails } = require("./validation-feedback");
 
@@ -84,11 +84,12 @@ function createService(dependencies) {
     if (input.options.mode === "case" && (!previous?.rootAccountId || input.selection.search || input.selection.expandThreads
         || input.selection.messages.some(reference => reference.accountId !== previous.rootAccountId || !reference.phase)
         || new Set(input.selection.messages.map(reference => reference.messageId)).size !== input.selection.messages.length)) throw failure("timeline-input");
-    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection, input.contextOnly ? "context" : input.options.mode));
+    const htmlForQuotes = new Map();
+    const snapshot = db.transaction(() => freezeSources(sourceDependencies, input.selection, input.contextOnly ? "context" : input.options.mode, htmlForQuotes));
     if (input.options.mode === "case") snapshot.caseScope = { local_only: true, account_count: 1,
       search_count: previous.searchStats.count, limited_search_count: previous.searchStats.limited, mailbox_complete: false, search_is_exhaustive: false };
     let plan, blocked;
-    try { plan = preparePlan(snapshot.sources, { language: input.options.language, caseMode: !!snapshot.caseScope,
+    try { plan = planCapturedSources(snapshot, htmlForQuotes, { language: input.options.language, caseMode: !!snapshot.caseScope,
       focus: { keywords: input.options.keywords || "", contact_emails: input.options.contactEmails || [] } }); }
     catch (error) {
       if (!budgetDetails(error)) throw error;
