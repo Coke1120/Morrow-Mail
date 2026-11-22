@@ -40,14 +40,14 @@ function oneClickHeaders(source) {
       fields.get('list-unsubscribe-post')[0].value !== 'List-Unsubscribe=One-Click') return null;
   const signatures = fields.get('dkim-signature');
   if (!signatures?.length || signatures.length > MAX_SIGNATURES) return null;
-  // Conservative RFC 2369 subset: one HTTPS URI and, optionally, one mailto URI.
-  // Unsupported syntax keeps the existing manual fallback, never a guessed POST.
+  // Conservative RFC 2369 subset: one HTTPS URI and, optionally, one mailto URI,
+  // sharing comment handling with parseHeaders. Unsupported syntax keeps manual fallback.
   const value = fields.get('list-unsubscribe')[0].value;
-  const match = /^<([^<>]+)>(?:\s*,\s*<([^<>]+)>)?$/.exec(value);
-  if (!match) return null;
   // Loaded only when invoked, avoiding a cycle with the action module.
-  const { safeUri } = require('./list-unsubscribe');
-  const uris = match.slice(1).filter(Boolean).map(uri => safeUri(uri));
+  const { listUris, safeUri } = require('./list-unsubscribe');
+  const candidates = listUris(value);
+  if (!candidates || !candidates.length || candidates.length > 2) return null;
+  const uris = candidates.map(uri => safeUri(uri));
   if (uris.some(uri => !uri)) return null;
   const https = uris.filter(uri => uri.kind === 'web' && uri.url.startsWith('https:'));
   if (https.length !== 1 || uris.some(uri => uri !== https[0] && uri.kind !== 'mailto')) return null;

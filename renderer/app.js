@@ -9757,7 +9757,7 @@ async function reviewUnsubscribeDraft(receipt) {
   await presentCompose({ title: "Review unsubscribe email", kind: "new", unsubscribeDraft: true,
     accountId: draft.accountId, sourceMessageId: draft.sourceMessageId,
     to: draft.to, cc: "", bcc: "", subject: draft.subject || "", body: draft.text || "",
-    status: receipt.googleGroup && isGoogleGroupLeaveOffer({ kind: "mailto", destination: draft.to })
+    status: isGoogleGroupLeaveOffer({ kind: "mailto", destination: draft.to })
       ? googleGroupLeaveNotice : "Review this unsubscribe email. Nothing is sent until you choose Send." });
   receipt.draft = null;
   receipt.retired = true;

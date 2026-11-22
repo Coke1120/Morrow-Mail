@@ -81,7 +81,7 @@ function parseMailto(raw) {
   if (url.length > MAX_URL) return null;
   return { url,
     kind: 'mailto', destination: recipient, to: recipient,
-    subject: fields.subject || 'Unsubscribe', text: fields.body || '' };
+    subject: Object.hasOwn(fields, 'subject') ? fields.subject : 'Unsubscribe', text: fields.body || '' };
 }
 
 function safeUri(raw) {
@@ -290,4 +290,4 @@ function createUnsubscriber({ resolve, confirm, openExternal, lookup = dns.looku
   };
 }
 
-module.exports = { parseHeaders, descriptor, createUnsubscriber, safeUri, publicAddress, checkPublicDns };
+module.exports = { parseHeaders, listUris, descriptor, createUnsubscriber, safeUri, publicAddress, checkPublicDns };
