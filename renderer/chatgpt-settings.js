@@ -6,9 +6,10 @@
 })(typeof window === "object" ? window : globalThis, function mount({ container, consentContainer = container, compact = false, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {}, onSave = () => {}, onReviewConnection = () => {} }) {
   container.innerHTML = `
     <label for="ai-auth-mode">AI authentication</label>
-    <select id="ai-auth-mode"><option value="api_key">API key / custom endpoint</option><option value="chatgpt">ChatGPT account</option></select>
-    <section id="chatgpt-panel" hidden aria-label="ChatGPT connection">
-      ${compact ? "" : '<p class="hint">Use your eligible ChatGPT plan for Morrow Mail AI. Plan, app and workspace limits apply. This feature is free in Morrow Mail.</p>'}
+    <select id="ai-auth-mode" aria-describedby="ai-auth-mode-help"><option value="api_key">API key / custom endpoint</option><option value="chatgpt">Sign in with ChatGPT</option></select>
+    <p id="ai-auth-mode-help" class="hint">Use a compatible API endpoint, or use an eligible ChatGPT plan without an API key.</p>
+    <section id="chatgpt-panel" hidden aria-label="Sign in with ChatGPT">
+      ${compact ? "" : '<p class="hint">Use your eligible ChatGPT plan for Morrow Mail AI. Plan, app and workspace limits apply.</p>'}
       <p class="hint">Review the <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">OpenAI privacy policy</a> and <a href="https://openai.com/policies/sign-in-with-chatgpt-terms/" target="_blank" rel="noreferrer">sign-in terms</a>. ${compact ? "Signing in does not grant AI data access." : "Sign-in connects this account. AI data permission below is a separate choice."}</p>
       <label for="chatgpt-account">ChatGPT account registration</label>
       <select id="chatgpt-account"><option value="">Add a new ChatGPT account or workspace</option></select>
@@ -30,7 +31,7 @@
       <button id="chatgpt-enable" type="button" class="ghost" hidden>Enable ChatGPT plan usage</button>
       <label for="chatgpt-model">ChatGPT model</label>
       <select id="chatgpt-model"><option value="">Fetch models and choose one</option></select>
-      ${compact ? "" : `<p class="hint">Only models returned for this account are offered. Use Fetch models below. Save AI applies the authentication choice and model.</p>
+      ${compact ? "" : `<p class="hint">After browser sign-in, use Fetch models, choose a model available to this ChatGPT account, then select Save AI.</p>
       <p class="hint">Use AI data permission below to separately allow background processing for this saved connection. No automatic API billing fallback or account rotation.</p>`}
       <p><a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage in ChatGPT</a></p>
       <button id="chatgpt-resume" type="button" class="ghost" hidden>Retry after checking usage</button>
