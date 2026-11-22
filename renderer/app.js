@@ -26515,16 +26515,16 @@ function calendarBuckets(events, year, month) {
   for (const event of events) {
     const start = eventDay(event);
     if (!start) continue;
-    const at = new Date(Math.max(first.getTime(), new Date(start + "T00:00:00").getTime()));
+    let dayStart = new Date(Math.max(first.getTime(), new Date(start + "T00:00:00").getTime()));
     const end = event.allDay ? new Date(String(event.end || start).slice(0, 10) + "T00:00:00").getTime() : Date.parse(event.end);
-    const until = Number.isFinite(end) ? Math.min(after.getTime(), Math.max(end, at.getTime())) : at.getTime();
-    while (at < after && at.getTime() <= until) {
-      const key = dayKey(year, month, at.getDate());
+    const until = Number.isFinite(end) ? Math.min(after.getTime(), Math.max(end, dayStart.getTime())) : dayStart.getTime();
+    while (dayStart < after && dayStart.getTime() <= until) {
+      const key = dayKey(year, month, dayStart.getDate());
       if (eventCoversDay(event, key)) {
         if (!buckets.has(key)) buckets.set(key, []);
         buckets.get(key).push(event);
       }
-      at.setDate(at.getDate() + 1);
+      dayStart = new Date(year, month, dayStart.getDate() + 1);
     }
   }
   for (const rows of buckets.values()) rows.sort((left, right) => {
