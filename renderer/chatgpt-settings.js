@@ -1,8 +1,14 @@
-/* Shared by the first-party settings panel and the native AI Setup window.
- * The only secret accepted here is a transient manual callback URL. */
+/* Shared by the first-party settings panel and the native AI Setup window. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory;
-  else root.morrowChatgptSettings = { mount: factory };
+  else root.morrowChatgptSettings = { mount: factory, connectionSaveInput };
+
+  function connectionSaveInput(input, baseline) {
+    if (input.authMode !== "chatgpt" || !baseline) return input;
+    if (input.apiKey || input.baseUrl.trim() !== baseline.baseUrl || input.model.trim() !== baseline.model) return input;
+    // Send the API connection as a group when edited. Otherwise keep the host's current values.
+    return { authMode: input.authMode, chatgptModel: input.chatgptModel };
+  }
 })(typeof window === "object" ? window : globalThis, function mount({ container, consentContainer = container, compact = false, invoke, onChange = () => {}, onMode = () => {}, onContext = () => {}, onSave = () => {}, onReviewConnection = () => {} }) {
   container.innerHTML = `
     <label for="ai-auth-mode">AI authentication</label>
