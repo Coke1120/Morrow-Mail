@@ -709,11 +709,13 @@ const quitController = quitScheduled.createQuitController({
   listRows: listScheduledRows,
   requestChoice: requestQuitChoice,
   quitApp: () => app.quit(),
-  cleanup: async () => {
-    mailNotifications.stop();
+  cleanup: async ({ forUpdate = false } = {}) => {
+    if (!forUpdate) mailNotifications.stop();
     try { await require("./mail/engine").stopLocalImports(); } catch { /* durable import receipts recover after restart */ }
     if (!bootFinished && !bootFailed) bootCancelled = true;
-    try { require("./bot/proactive").stop(); } catch { /* no scheduler */ }
+    if (!forUpdate) {
+      try { require("./bot/proactive").stop(); } catch { /* no scheduler */ }
+    }
     try { await require("./bot/server").stop(); } catch { /* the bridge is already stopped */ }
     try { await require("./mail/engine").stopIdle(); } catch { /* mail is not open */ }
     if (!bootFinished) {
@@ -731,6 +733,14 @@ function requestAppQuit(event) {
 }
 
 app.on("before-quit", requestAppQuit);
+
+app.on("quit", () => {
+  // Update cleanup can leave the app open. Keep the pending notification
+  // batch and the paused digest timer until Electron confirms final exit.
+  if (!quitController.updateReady) return;
+  mailNotifications.stop();
+  try { require("./bot/proactive").stop(); } catch { /* no scheduler */ }
+});
 
 app.on("will-quit", () => {
   try { require("./chatgpt-auth").getAuth().dispose(); } catch { /* no active AI connection */ }
@@ -837,6 +847,7 @@ app.whenReady().then(async () => {
       }
       const resumeRenderer = await requestRendererQuiescence(shellWindow, ipcMain);
       const resume = () => {
+        quitController.resumeAfterUpdateQuit();
         require("./bot/proactive").resume();
         updateGate.resume(); resumeRenderer();
         try { startBackgroundSync(); } catch { /* normal sync can resume */ }

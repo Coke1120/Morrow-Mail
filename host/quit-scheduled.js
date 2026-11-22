@@ -130,7 +130,7 @@ function hidesWindowOnClose(platform) {
 function createQuitController({ listRows, requestChoice, quitApp, cleanup, platform, format }) {
   let confirmed = false;
   let cleaning = false;
-  let cleaned = false;
+  let cleaned = null;
   let prompting = null;
   let updateQuit = false;
 
@@ -140,7 +140,7 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
     Promise.resolve()
       .then(() => cleanup())
       .catch(() => {})
-      .finally(() => { cleaned = true; quitApp(); });
+      .finally(() => { cleaned = "ordinary"; quitApp(); });
   }
 
   async function requestUpdateQuit({ beforeExit, signal }) {
@@ -163,18 +163,24 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
       }
       signal.throwIfAborted();
       cleaning = true;
-      await cleanup();
+      await cleanup({ forUpdate: true });
       signal.throwIfAborted();
       await beforeExit();
       signal.throwIfAborted();
-      cleaned = true;
+      cleaned = "update";
       try { quitApp(); }
-      catch (error) { cleaned = false; throw error; }
+      catch (error) { cleaned = null; throw error; }
       return true;
     } finally {
       if (!cleaned) cleaning = false;
       updateQuit = false;
     }
+  }
+
+  function resumeAfterUpdateQuit() {
+    if (cleaned !== "update") return;
+    cleaned = null;
+    cleaning = false;
   }
 
   function startPrompt(prompt) {
@@ -232,6 +238,8 @@ function createQuitController({ listRows, requestChoice, quitApp, cleanup, platf
     onClose,
     onBeforeQuit,
     requestUpdateQuit,
+    resumeAfterUpdateQuit,
+    get updateReady() { return cleaned === "update"; },
     get confirmed() { return confirmed; },
     get cleaning() { return cleaning; },
   };
