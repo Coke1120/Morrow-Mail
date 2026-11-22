@@ -43,7 +43,7 @@ function fixture(t) {
       if(deferCalls)return new Promise(resolve=>pending.push(()=>resolve(result)));return result;};
     renderAccounts();`);
   const input = value => { document.getElementById('list-filter').value = value; document.getElementById('list-filter').dispatchEvent(new window.Event('input')); };
-  const flush = async () => { for (const [id, item] of [...timers]) if (item.delay === 180) { timers.delete(id); item.fn(); } await tick(); };
+  const flush = async (delay = 180) => { for (const [id, item] of [...timers]) if (item.delay === delay) { timers.delete(id); item.fn(); } await tick(); };
   return { run, json, document, input, flush, timers };
 }
 test('whole selected view: beyond first page, exact totals, paging, sort, zero, literal Unicode and clear', async t => {
@@ -59,6 +59,84 @@ test('whole selected view: beyond first page, exact totals, paging, sort, zero, 
   f.input('absent'); await f.flush(); assert.equal(f.run('state.listTotal'),0);
   assert.match(f.document.querySelector('#message-list .empty').textContent,/No downloaded messages.*match/);
   f.document.getElementById('filter-chip').click(); await f.flush(); assert.equal(f.run('state.listTotal'),650); assert.equal(f.run('state.listOffset'),0);
+});
+test('filtered All Account Mail Unread pages retain the open reader and show each match once', async t => {
+  const f = fixture(t);
+  f.run(`state.allInbox=true; state.allInboxUnreadOnly=true;
+    storeRows=storeRows.slice(0,401).map(row=>({...row,subject:'Weekly update '+row.subject,unread:true}));
+    const originalAnswer=answer;
+    answer=(channel,p)=>{
+      if(channel==='mail:openEmail') return {email:{...storeRows.find(row=>row.id===p.emailId),textBody:'Weekly body'}};
+      if(channel==='mail:markRead') { storeRows.find(row=>row.id===p.emailId).unread=!p.isRead; return {}; }
+      if(p?.aggregateView!=='unread') return originalAnswer(channel,p);
+      const held=p.retainIds?.[0];
+      const rows=filteredEmails(storeRows,p.listFilter).filter(row=>row.unread||row.id===held);
+      const page=rows.slice(p.offset,p.offset+p.limit);
+      const extra=rows.find(row=>row.id===held&&!page.includes(row));
+      const emails=(extra?[...page,extra]:page).map(row=>({...row}));
+      return {emails,total:rows.length,geometry:{pageSize:page.length}};
+    };`);
+  f.input('Weekly update'); await f.flush();
+  await f.run("openMessage('m0',false)");
+  assert.equal(f.run('state.email.unread'),false);
+  const visibleIds = () => Array.from(f.document.querySelectorAll('#message-list .message-row'), row => row.dataset.emailId);
+  const first = visibleIds();
+  assert.equal(first.length,200); assert.equal(first[0],'m0');
+  await f.run('changeListPage(1)');
+  const second = visibleIds();
+  assert.equal(second.length,200);
+  assert.equal(f.document.getElementById('list-page-status').textContent,'201–400 / 401 downloaded');
+  assert.equal(f.document.getElementById('list-next').disabled,false);
+  await f.run('loadList(false)');
+  assert.deepEqual(visibleIds(),second);
+  assert.equal(f.run('state.unreadHold.id'),'m0');
+  await f.run('changeListPage(1)');
+  const third = visibleIds();
+  assert.deepEqual(third,['m400']);
+  assert.equal(new Set([...first,...second,...third]).size,401);
+  assert.equal(f.document.getElementById('list-next').disabled,true);
+  assert.equal(f.run('state.email.id'),'m0');
+  assert.match(f.document.querySelector('#reader h2').textContent,/Weekly update 000/);
+  await f.run('changeListPage(-1)'); await f.run('changeListPage(-1)');
+  assert.deepEqual(visibleIds(),first);
+  f.input('Weekly update 001'); await f.flush();
+  assert.equal(f.run('state.unreadHold'),null);
+});
+test('physical draft notifications reload same-account Starred without widening other views', async t => {
+  const f = fixture(t);
+  await f.run(`state.folderId='__morrow_starred__';
+    state.accounts[0].folders.primary.push({id:state.folderId,name:'Starred',type:'virtual',view:{flagged:true},syncs:false});
+    storeRows=[{...storeRows[0],folderId:'Drafts',subject:'Budget review',isDraft:true}];
+    const originalAnswer=answer;
+    answer=(channel,p)=>originalAnswer(channel,p.folderId==='__morrow_starred__'?{...p,folderId:null}:p);
+    loadList(false);`);
+  f.input('Budget review'); await f.flush();
+  assert.equal(f.run('state.listTotal'),1);
+  const loads = () => f.run("calls.filter(({channel})=>channel==='mail:listFromCache'||channel==='mail:searchLocal').length");
+  const before = loads();
+  f.run("storeRows[0].subject='Planning notes'; onEmailsUpdated({accountId:'beta',folderId:'Drafts'})");
+  await f.flush(150);
+  assert.equal(loads(),before);
+  f.run("onEmailsUpdated({accountId:'alpha',folderId:'Drafts'}); onEmailsUpdated({accountId:'alpha',folderIds:['Drafts']})");
+  await f.flush(150);
+  assert.equal(loads(),before+1);
+  assert.equal(f.run('state.listTotal'),0);
+  assert.match(f.document.querySelector('#message-list .empty').textContent,/No downloaded messages.*match/);
+
+  f.run("state.folderId='INBOX'; onEmailsUpdated({accountId:'alpha',folderId:'Drafts'})");
+  await f.flush(150);
+  assert.equal(loads(),before+1);
+  f.run("state.folderId='__morrow_starred__'; state.allInbox=true; onEmailsUpdated({accountId:'beta',folderId:'Drafts'})");
+  await f.flush(150);
+  assert.equal(loads(),before+1);
+  f.run("onEmailsUpdated({accountId:'beta',folderId:'INBOX'})"); await f.flush(150);
+  assert.equal(loads(),before+2);
+  f.run("state.query='Planning'; state.searchAccountId='beta'; onEmailsUpdated({accountId:'alpha',folderId:'Drafts'})");
+  await f.flush(150);
+  assert.equal(loads(),before+2);
+  f.run("onEmailsUpdated({accountId:'beta',folderId:'Drafts'})"); await f.flush(150);
+  assert.equal(loads(),before+3);
+  assert.equal(f.run('calls.at(-1).params.accountId'),'beta');
 });
 test('request contract preserves scope and flags and suppresses filtered cursors without changing toolbar search', t => {
   const f=fixture(t);
@@ -155,6 +233,8 @@ test('rendered Features and filter help describe downloaded-view and bounded-mod
   assert.match(catalog,/Ordinary selections remain only for rows on that page; selections retained when filtering also stay selected across later sorts, even when outside that page/);
   assert.doesNotMatch(catalog,/selection remains only for rows on that page/);
   assert.match(catalog,/Search filters only its returned results \(up to 100\); Outbox filters its loaded rows/);
+  assert.match(catalog,/A read message held open in Unread appears only on its ordered page/);
+  assert.match(catalog,/Per-account Starred and Unread refresh when downloaded mail changes in that account’s folders/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/across all downloaded messages in the selected folder or view/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/Settings → Mail & Sync controls sync history/);
 });

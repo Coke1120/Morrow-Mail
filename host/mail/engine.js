@@ -981,6 +981,7 @@ function listPayload(params) {
   const cursorValid = cursorEligible && cursor && cursor.version === summary.version && cursor.offset === offset
     && Number.isSafeInteger(cursor.ts) && typeof cursor.id === "string" && cursor.id.length > 0 && cursor.id.length <= 200;
   let stored = db.selectMessages(cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query, { headersOnly: true, now });
+  const pageSize = stored.length;
   const retainId = query.retainIds && query.retainIds[0];
   // A read row can fall outside this page and still belong in the Unread list.
   if (retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
@@ -998,7 +999,7 @@ function listPayload(params) {
   const total = summary.total;
   const days = syncHorizonDays();
   const oldest = summary.oldest;
-  const moreInCache = offset + rows.length < total;
+  const moreInCache = offset + pageSize < total;
   const more = moreInCache || serverHasMore(query, days);
   return {
     emails: rows,
@@ -1014,7 +1015,7 @@ function listPayload(params) {
     syncedOldestDateTs: oldest,
     initialSyncDone: synced(query, days),
     pageToken: more ? String(oldest || offset) : null,
-    geometry: { total, aboveTop: offset },
+    geometry: { total, aboveTop: offset, pageSize },
   };
 }
 
