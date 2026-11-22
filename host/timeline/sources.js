@@ -3,9 +3,9 @@ const addressParser = require("nodemailer/lib/addressparser");
 const sender = require("../mail/sender-header");
 const { htmlToPlain } = require("../mail/text-encoding");
 const { validateMetadata, failure } = require("./validate");
-const { LIMITS } = require("./extract");
+const { LIMITS, preparePlan } = require("./extract");
 const { budget } = require("./budget");
-const { reduceRepeatedQuotes } = require("./quotes");
+const { reduceRepeatedQuotes, reduceHtmlQuotes } = require("./quotes");
 
 const hash = value => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function fingerprint(row) {
@@ -33,7 +33,7 @@ function dedupeRows(rows) {
   return [...result.values()].sort((left, right) => String(left.date_iso || "").localeCompare(String(right.date_iso || "")) || left.id.localeCompare(right.id));
 }
 
-function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
+function freezeSources({ db, stamp, identities }, selection, mode = "thread", htmlForQuotes = new Map()) {
   let matched = 0;
   const seeds = (selection.messages || []).map(reference => {
     const row = db.timelineMessage(reference.messageId);
@@ -62,7 +62,7 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
   const rows = dedupeRows([...collected.values()]);
   const accounts = new Map(), sourceThreads = new Map(), records = [], omitted = [];
   let sources = [];
-  let missingBodies = 0, invalidMetadata = 0, bodyBytes = 0;
+  let missingBodies = 0, invalidMetadata = 0, bodyBytes = 0, htmlScanLeft = LIMITS.captureBytes;
   for (const selected of rows) {
     const row = db.messageById(selected.id);
     if (!row || row.account_id !== selected.account_id) throw failure("timeline-source-changed");
@@ -85,17 +85,27 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
       omitted.push({ accountId: row.account_id, messageId: row.id });
       continue;
     }
+    let source;
     try {
       const metadata = metadataOf(row, account, db.timeline, threadId);
       validateMetadata(metadata);
       if ((row.subject || "").length > 500) throw failure("timeline-metadata");
-      bodyBytes += Buffer.byteLength(text);
-      sources.push({ ...metadata, ...(phase ? { phase } : {}), subject: row.subject || "", text });
-    } catch { invalidMetadata++; }
+      source = { ...metadata, ...(phase ? { phase } : {}), subject: row.subject || "", text };
+    } catch { invalidMetadata++; continue; }
+    bodyBytes += Buffer.byteLength(text);
     if (bodyBytes > LIMITS.captureBytes) throw budget("capture-bytes", bodyBytes, LIMITS.captureBytes);
+    sources.push(source);
+
+    // Scan raw markup separately from the existing flattened capture budget.
+    // Keep it local to this capture, keyed by the included source's identity.
+    const html = row.html_body;
+    if (typeof html !== "string" || !html || html.length > htmlScanLeft) continue;
+    htmlScanLeft -= Buffer.byteLength(html);
+    if (htmlScanLeft >= 0 && /<blockquote\b|\bgmail_quote(?:_container)?\b/i.test(html)) htmlForQuotes.set(source.source_message_id, html);
   }
   if (bodyBytes > LIMITS.sourceBytes) {
     sources = reduceRepeatedQuotes(sources);
+    if (htmlForQuotes.size) sources = reduceHtmlQuotes(sources, htmlForQuotes);
     const literalBytes = sources.reduce((sum, source) => sum + Buffer.byteLength(source.extractionText ?? source.text), 0);
     if (literalBytes > LIMITS.sourceBytes) throw budget("source-bytes", literalBytes, LIMITS.sourceBytes);
   }
@@ -106,6 +116,20 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread") {
     search: selection.search ? { matched, expanded: selection.expandThreads, localOnly: true, ordinaryDisplayCap: 100 } : null, missingBodies, invalidMetadata };
   snapshot.digest = hash([snapshot.accounts, records, coverage]);
   return snapshot;
+}
+
+// Only retry an actual size-limited plan. The selected language, focus and Case
+// reservation must be identical on both attempts. Raw HTML stays out of the manifest.
+function planCapturedSources(snapshot, htmlForQuotes, options) {
+  try { return preparePlan(snapshot.sources, options); }
+  catch (error) {
+    if (snapshot.bodyBytes > LIMITS.sourceBytes || !htmlForQuotes.size
+        || !["chunk-count", "planned-input-bytes"].includes(error.budget?.kind)) throw error;
+    const reduced = reduceHtmlQuotes(snapshot.sources, htmlForQuotes);
+    if (!reduced.some((source, i) => source !== snapshot.sources[i])) throw error;
+    snapshot.sources = reduced;
+    return preparePlan(reduced, options);
+  }
 }
 
 function metadataOf(row, account, store, threadId) {
@@ -149,4 +173,4 @@ function messagePreview(row) {
     ...dateEvidence(row), complete: row.body_complete === 1 && !row.body_warning };
 }
 
-module.exports = { hash, fingerprint, dedupeRows, mailboxes, freezeSources, assertSources, messageIdentity, messagePreview };
+module.exports = { hash, fingerprint, dedupeRows, mailboxes, freezeSources, planCapturedSources, assertSources, messageIdentity, messagePreview };

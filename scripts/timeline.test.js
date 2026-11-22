@@ -2025,3 +2025,155 @@ test("source invalidation during generation hides the obsolete processing previe
   assert.equal(fixture.node("timeline-processing").hidden, true);
   assert.equal(fixture.artifacts.size, 0);
 });
+
+test("nested HTML history from SQLite prepares and generates within existing Timeline budgets", async context => {
+  const { htmlToPlain } = require("../host/mail/text-encoding");
+  const db = require("../host/mail/db");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-timeline-html-"));
+  context.after(async () => { await db.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await db.open(path.join(directory, "mail.sqlite"));
+  const account = { id: "mailbox-1", email: "owner@example.org", username: "owner", profile: "custom", createdAt: 1,
+    imapHost: "imap.example.org", imapPort: 993, imapTls: true, smtpHost: "smtp.example.org", smtpPort: 465, smtpTls: true };
+  db.insertAccount(account);
+  db.replaceFolders(account.id, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }]);
+
+  const markers = [], contributions = [];
+  let previous = "";
+  const messages = Array.from({ length: 30 }, (_, index) => {
+    const ordinal = String(index).padStart(2, "0");
+    const marker = `Unique HTML contribution ${ordinal}.`;
+    const contribution = `${marker} ${"Review the requested plan, terms and budget on 14 November, retaining the agreed scope. ".repeat(18).trimEnd()}`;
+    markers.push(marker);
+    contributions.push(contribution);
+    let quote = "";
+    if (previous) {
+      const block = `<blockquote cite="https://fixtures.invalid/private-html">${previous}</blockquote>`;
+      const attribution = `<div class="gmail_attr">Mail ${ordinal} attribution:<br></div>`;
+      if (index % 3 === 0) quote = `<div class="gmail_quote gmail_quote_container">${attribution}${block}</div>`;
+      else if (index % 3 === 1) quote = block;
+      else quote = `<div class="gmail_quote">${attribution}${previous}</div>`;
+    }
+    const htmlBody = `<div dir="ltr">${contribution}</div>${quote}`;
+    previous = htmlBody;
+    return { id: `html-mail-${ordinal}`, uid: index + 1, threadId: "html-thread", subject: `HTML reply ${ordinal}`, from: `author-${ordinal}@example.org`,
+      to: [account.email], date: `2026-11-01T10:${ordinal}:00.000Z`, dateSource: "header", listSortTs: index + 1,
+      htmlBody, textBody: index % 2 ? htmlToPlain(htmlBody) : null, bodyComplete: true, unread: true };
+  });
+  db.applyFolderSync(account.id, "INBOX", { validity: 7, exists: messages.length, keepOthers: true, messages });
+
+  const fixture = memory(context);
+  const dependencies = { ...fixture.dependencies, db };
+  const service = createService(dependencies);
+  const selection = { messages: [{ accountId: account.id, messageId: messages[0].id }], expandThreads: true };
+  const fingerprints = () => messages.map(message => fingerprint(db.messageById(message.id)));
+  const originalFingerprints = fingerprints();
+  const snapshot = freezeSources(dependencies, selection);
+  assert.deepEqual(snapshot.records.map(record => record.fingerprint), originalFingerprints);
+  assert.deepEqual(snapshot.sources.map(source => source.text), messages.map(message => htmlToPlain(message.htmlBody)));
+  assert.ok(snapshot.bodyBytes > LIMITS.sourceBytes && snapshot.bodyBytes < LIMITS.captureBytes);
+
+  const prepared = await service.invoke(1, "timeline:prepare", { selection, options });
+  assert.equal(prepared.budget, undefined);
+  assert.equal(prepared.coverage.included_message_count, messages.length);
+  assert.equal(prepared.processing.omittedRepeatBlocks, messages.length - 1);
+  assert.ok(prepared.estimatedInputBytes < LIMITS.inputBytes && prepared.chunks < LIMITS.calls);
+  assert.equal(fixture.calls.length, 0);
+  const run = await generation({ service }, prepared);
+  const terminal = await run.terminal;
+  assert.equal(terminal.phase, "completed");
+  assert.equal(terminal.calls, prepared.chunks);
+  const requests = fixture.calls.map(({ messages }) => Buffer.byteLength(JSON.stringify(messages)));
+  assert.ok(requests.every(bytes => bytes <= LIMITS.requestBytes));
+  assert.equal(requests.reduce((sum, bytes) => sum + bytes, 0), prepared.estimatedInputBytes);
+  const payloads = fixture.calls.flatMap(call => JSON.parse(call.messages[1].content));
+  assert.equal(payloads.length, messages.length);
+  for (const [index, part] of payloads.entries()) {
+    assert.equal(part.source_token, `${snapshot.sources[index].source_message_id}:0`);
+    assert.ok(part.text.includes(contributions[index]));
+    assert.deepEqual(part.text.match(/Unique HTML contribution \d\d\./g), [markers[index]]);
+    assert.equal(part.repeated_quote_blocks_not_sent, index ? 1 : undefined);
+  }
+  const { document } = db.timeline.get(terminal.timelineId);
+  assert.deepEqual(document.events.map(event => [event.from.address, event.occurred_at]), messages.map(message => [message.from, message.date]));
+  assert.doesNotMatch(JSON.stringify([payloads, prepared, document]), /<blockquote|gmail_quote|private-html|quoted_source_token/);
+  assert.deepEqual(fingerprints(), originalFingerprints);
+});
+
+test("HTML history also recovers a body-driven batch budget below the source byte limit", async context => {
+  const { htmlToPlain } = require("../host/mail/text-encoding");
+  const original = `Original fictional evidence. ${"x".repeat(20_000)}`;
+  const rows = [row("base", { text_body: original }), ...Array.from({ length: 20 }, (_, index) => {
+    const html = `<div>New note ${index}.</div><blockquote>${original}</blockquote>`;
+    return row(`reply-${index}`, { html_body: html, text_body: htmlToPlain(html), date_iso: "2026-11-02T10:00:00Z" });
+  })];
+  const fixture = memory(context, { rows });
+  const snapshot = freezeSources(fixture.dependencies, fixture.selection);
+  assert.ok(snapshot.bodyBytes < LIMITS.sourceBytes);
+  const unreduced = snapshot.sources.map(({ extractionText, repeatedQuoteBlocks, ...source }) => source);
+  assert.throws(() => preparePlan(unreduced), error => error.budget?.kind === "chunk-count");
+  const prepared = await fixture.prepare();
+  assert.equal(prepared.budget, undefined);
+  assert.equal(prepared.processing.omittedRepeatBlocks, 20);
+  assert.ok(prepared.estimatedInputBytes < LIMITS.inputBytes && prepared.chunks < LIMITS.calls);
+  const selection = { expandThreads: false, messages: rows.slice(0, 12).map(value => ({ accountId: value.account_id, messageId: value.id })) };
+  const ordinary = await fixture.prepare(2, selection);
+  assert.equal(ordinary.budget, undefined);
+  assert.equal(ordinary.processing.omittedRepeatBlocks, 0);
+  const focusedOptions = { ...options, keywords: "項".repeat(900),
+    contactEmails: Array.from({ length: 30 }, (_, i) => "contact" + i + "@example.invalid") };
+  const focused = await fixture.service.invoke(2, "timeline:prepare", { selection, options: focusedOptions });
+  assert.equal(focused.budget, undefined);
+  assert.equal(focused.processing.omittedRepeatBlocks, selection.messages.length - 1);
+  assert.equal(fixture.calls.length, 0);
+});
+
+test("HTML quote reuse preserves positions, distinct plain MIME and uncertain history", context => {
+  const { htmlToPlain } = require("../host/mail/text-encoding");
+  const quotedHtml = `Fictional total is $125.00, due 14 November. ${"Keep the approved payment plan &amp; exact dates. ".repeat(4).trim()}`;
+  const original = htmlToPlain(quotedHtml);
+  const exactQuote = `<blockquote>${quotedHtml}</blockquote>`;
+  const duplicates = quote => `<div>${quotedHtml}</div><blockquote cite="https://fixtures.invalid/raw-proof">${quote}</blockquote><div>New date is 2 December.</div><blockquote>${quote}</blockquote><div>${quotedHtml}</div>`;
+  const earlier = "2026-11-01T10:00:00.000Z", later = "2026-11-02T10:00:00.000Z";
+  const replies = [
+    ["duplicates", duplicates(quotedHtml)],
+    ["edited", `<div>New note.</div><blockquote>${quotedHtml.replace("$125.00", "$12,500.00").replace("14 November", "15 November")}</blockquote>`],
+    ["plain-mime", `<div>New note.</div>${exactQuote}`, { text_body: `Plain MIME states $13,000 by 20 November.\n${original}` }],
+    ["unmarked", `<div>New note.</div><div class="not_gmail_quote">${quotedHtml}</div>`],
+    ["quote-only", `<div class="gmail_quote"><div class="gmail_attr">On a date, Ada wrote:<br></div>${exactQuote}</div>`],
+    ["malformed", `<div>New note.</div><blockquote><div>${quotedHtml}</blockquote>`],
+    ["projection-disagreement", `<div>New note.</div>&<blockquote>amp; ${quotedHtml}</blockquote>`],
+    ["timestamp-tie", `<div>New note.</div>${exactQuote}`, { date_iso: earlier }],
+    ["unknown-date", `<div>New note.</div>${exactQuote}`, { date_source: "unknown" }],
+    ["other-thread", `<div>New note.</div>${exactQuote}`, { thread_id: "other-thread" }],
+    ["incomplete-evidence", `<div>New note.</div>${exactQuote}`, { thread_id: "incomplete-thread" }],
+    ["short-quote", "<div>New note.</div><blockquote>Short fictional approval.</blockquote>"],
+    ["depth-bound", `<div>New note.</div>${"<div>".repeat(128)}${exactQuote}${"</div>".repeat(128)}`],
+    ["raw-bound", `<div>New note.</div><blockquote cite="${"x".repeat(LIMITS.captureBytes)}">${quotedHtml}</blockquote>`],
+  ].map(([id, html_body, extra]) => row(id, { subject: id, html_body, text_body: null, date_iso: later, ...extra }));
+  const rows = [
+    row("canonical", { text_body: original, date_iso: earlier }),
+    row("entity-canonical", { text_body: `amp; ${original}`, date_iso: earlier }),
+    row("short-canonical", { text_body: "Short fictional approval.", date_iso: earlier }),
+    row("incomplete", { text_body: original, date_iso: earlier, thread_id: "incomplete-thread", body_complete: 0 }),
+    ...replies,
+  ];
+  const capturedBytes = rows.filter(value => value.body_complete === 1)
+    .reduce((sum, value) => sum + Buffer.byteLength(value.text_body || htmlToPlain(value.html_body)), 0);
+  rows.push(row("padding", { text_body: "x".repeat(LIMITS.sourceBytes - capturedBytes + 1), thread_id: "padding" }));
+  const fixture = memory(context, { rows });
+  const selection = { expandThreads: false, messages: rows.map(value => ({ accountId: value.account_id, messageId: value.id })) };
+  const snapshot = freezeSources(fixture.dependencies, selection);
+  assert.equal(snapshot.bodyBytes, LIMITS.sourceBytes + 1);
+  assert.equal(snapshot.missingBodies, 1);
+  const bySubject = new Map(snapshot.sources.map(source => [source.subject, source]));
+  for (const reply of replies) {
+    const source = bySubject.get(reply.id);
+    assert.equal(source.text, reply.text_body || htmlToPlain(reply.html_body), reply.id);
+    assert.equal(source.repeatedQuoteBlocks, reply.id === "duplicates" ? 2 : undefined, reply.id);
+    assert.equal(source.extractionText, reply.id === "duplicates" ? htmlToPlain(duplicates("")) : undefined, reply.id);
+  }
+  const changed = fixture.rows.get("duplicates");
+  changed.html_body = changed.html_body.replace("raw-proof", "changed-proof");
+  assert.equal(htmlToPlain(changed.html_body), bySubject.get("duplicates").text);
+  assert.throws(() => assertSources(fixture.dependencies, snapshot), { code: "timeline-source-changed" });
+});
