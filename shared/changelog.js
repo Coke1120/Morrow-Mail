@@ -7,6 +7,14 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "0.4.18": [
+      "Large Case Timelines can export compact JSON when formatted output exceeds the size limit, print long reports to PDF without repeating the same recipient list on every item, and reuse exact quoted history from HTML replies.",
+      "Settings → AI and AI Setup make Continue with ChatGPT easier to find, preserve newer API model settings across open windows, and clear stale fetched model lists when you change the API endpoint.",
+      "The message reader keeps independent HTML sections available instead of hiding them behind plain-text fallbacks, and Unread and filtered virtual views such as Starred stay complete and up to date as you read or edit drafts.",
+      "Widening a wide responsive mail column no longer shrinks it, and failed column-width saves stay reported after a canceled resize.",
+      "Editing an earlier recipient in Compose To, Cc, or Bcc autocompletes only that address and dismisses suggestions when you move to another field.",
+      "Calendar month view keeps overnight events visible across midnight clock changes.",
+    ],
     "0.4.17": [
       "If an Outbox message fails before it is sent, you can recover it from Drafts even if the compose window cannot reopen. If the draft cannot be saved, the message stays in Scheduled mail.",
       "Marking an already-read message as read in Agent leaves it read. Undo is available for messages that actually changed, and batch results identify messages the Agent did not attempt.",
