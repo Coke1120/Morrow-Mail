@@ -81,12 +81,18 @@ async function run() {
   });
   ui.run(component);
   await ui.run("loadAiSettings()");
+  assert.deepEqual($("ai-auth-mode").options.map(option => [option.value, option.textContent]),
+    [["api_key", "API key / custom endpoint"], ["chatgpt", "Sign in with ChatGPT"]]);
+  assert.equal($("ai-auth-mode").getAttribute("aria-describedby"), "ai-auth-mode-help");
+  assert.match($("ai-auth-mode-help").textContent, /eligible ChatGPT plan without an API key/);
   assert.equal($("ai-auth-mode").value, "api_key");
   assert.equal($("chatgpt-panel").hidden, true);
   assert.equal($("ai-base").value, config.baseUrl);
   assert.equal(ui.run("aiDirty()"), false);
   $("ai-auth-mode").value = "chatgpt"; await $("ai-auth-mode").fire("change");
   assert.equal($("chatgpt-panel").hidden, false);
+  assert.equal($("chatgpt-login").textContent, "Sign in with ChatGPT");
+  assert.equal(calls.filter(row => row.channel === "host:chatgptStart").length, 0, "selecting the option never opens the browser");
   assert.equal($("ai-api-key-field").hidden, true);
   assert.equal($("ai-consent-manual").checked, false);
   assert.equal($("ai-consent-background").checked, false);
@@ -152,7 +158,7 @@ async function run() {
   assert.equal(config.authMode, "api_key");
   const feature = require("../renderer/features-catalog").items.find(row => row.id === "ai-connection");
   assert.ok(feature);
-  for (const claim of ["Continue with ChatGPT", "Cancel", "paste-back", "separate background opt-in", "Native and live", "newer edits unsaved", "fresh retry", "current settings", "AI data permission"]) assert.ok(feature.blurb.includes(claim), claim);
+  for (const claim of ["Sign in with ChatGPT", "Cancel", "paste-back", "separate background opt-in", "Native and live", "newer edits unsaved", "fresh retry", "current settings", "AI data permission"]) assert.ok(feature.blurb.includes(claim), claim);
   for (const claim of ["ChatGPT", "credentials are not exposed", "API key/custom endpoint", "no general-purpose"]) assert.ok($("cli-ai-connection").textContent.includes(claim), claim);
   ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   ui.run("paintFeatureCatalog()");
@@ -179,6 +185,7 @@ async function run() {
   vm.runInContext(fs.readFileSync(require.resolve("../host/ai-setup.js"), "utf8"), setupContext);
   await new Promise(done => setImmediate(done));
   assert.equal(setupDoc.getElementById("ai-auth-mode").value, "api_key");
+  assert.equal(setupDoc.getElementById("ai-auth-mode").options.find(row => row.value === "chatgpt").textContent, "Sign in with ChatGPT");
   setupDoc.getElementById("ai-auth-mode").value = "chatgpt";
   await setupDoc.getElementById("ai-auth-mode").fire("change");
   assert.equal(setupDoc.getElementById("api-fields").hidden, true);
