@@ -1046,11 +1046,23 @@
           <button type="button" data-command="insertOrderedList" aria-label="Numbered list" aria-pressed="false" title="Numbered list">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="10" x2="21" y1="6" y2="6"></line><line x1="10" x2="21" y1="12" y2="12"></line><line x1="10" x2="21" y1="18" y2="18"></line><path d="M4 6h1v4"></path><path d="M4 10h2"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></svg>
           </button>
-          <label class="compose-color is-ink" title="Text color">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 8-16 8 16"></path><path d="M7.5 14h9"></path></svg>
-            <span class="compose-swatch" aria-hidden="true"></span>
-            <input type="color" data-command="foreColor" value="#102822" aria-label="Text color" />
-          </label>
+          <button type="button" class="compose-font-step" data-font-step="-1" aria-label="Decrease font size" title="Decrease font size">A−</button>
+          <button type="button" class="compose-font-step" data-font-step="1" aria-label="Increase font size" title="Increase font size">A+</button>
+          <div class="compose-color-tools">
+            <button type="button" id="compose-text-color" aria-label="Text color" title="Text color" aria-haspopup="dialog" aria-expanded="false" aria-controls="compose-color-palette">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 16 8-12 8 12M8 12h8M4 20h16"></path></svg>
+            </button>
+            <div id="compose-color-palette" class="compose-color-palette" role="dialog" aria-label="Text colors" hidden>
+              <button type="button" data-text-color value="currentcolor" aria-pressed="false" aria-label="Default text color" title="Default text color"><span aria-hidden="true">A</span></button>
+              <button type="button" data-text-color value="#cf4148" aria-pressed="false" aria-label="Red" title="Red"><span aria-hidden="true"></span></button>
+              <button type="button" data-text-color value="#b45309" aria-pressed="false" aria-label="Orange" title="Orange"><span aria-hidden="true"></span></button>
+              <button type="button" data-text-color value="#168052" aria-pressed="false" aria-label="Green" title="Green"><span aria-hidden="true"></span></button>
+              <button type="button" data-text-color value="#2867bd" aria-pressed="false" aria-label="Blue" title="Blue"><span aria-hidden="true"></span></button>
+              <button type="button" data-text-color value="#8054b5" aria-pressed="false" aria-label="Purple" title="Purple"><span aria-hidden="true"></span></button>
+              <button type="button" id="compose-color-custom">Custom…</button>
+            </div>
+            <input type="color" id="compose-color-picker" value="#102822" aria-label="Custom text color" hidden />
+          </div>
           <label class="compose-color is-highlight" title="Highlight">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 11-6 6v3h9l3-3"></path><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"></path></svg>
             <span class="compose-swatch" aria-hidden="true"></span>
@@ -1098,6 +1110,7 @@
           <ul id="compose-attachments" class="compose-attachments" hidden></ul>
           <p id="compose-attach-error" class="error" role="status" hidden></p>
         <details id="compose-editing-help"><summary>Editing and attachment help</summary>
+          <p class="hint">Use A− and A+ to change font size one step at a time. Text color opens common colors, Default text color, and Custom…. Formatting applies to selected text or the next text you type. Use Command+Z on Mac or Ctrl+Z on Windows to undo an edit.</p>
           <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
           <p class="hint">Forward includes the original files after preparation. Review or remove them here before sending. Preparation failures keep the original unchanged; retry from the message.</p>
           <p class="hint">Wait for Preparing attachment to finish before Save, preview, Send or Schedule. Closing Compose abandons unfinished file preparation. Undo saves an inert recovery draft before reopening; if the window fails, resume from local Drafts. Recovered recipients and signatures stay exactly as queued.</p>

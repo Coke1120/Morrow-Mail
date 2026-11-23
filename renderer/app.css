@@ -5305,7 +5305,7 @@ label.check input { width: auto; accent-color: var(--accent-ink); }
 textarea { min-height: 140px; resize: vertical; }
 
 #compose textarea,
-#compose .compose-editor { min-height: 180px; margin-top: 8px; }
+#compose .compose-editor { min-height: 180px; margin-top: 8px; font-size: medium; }
 
 #compose textarea.compose-body-source {
   position: absolute;
@@ -5360,6 +5360,63 @@ textarea { min-height: 140px; resize: vertical; }
 .compose-format .compose-color:has(input:disabled) {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.compose-format .compose-font-step { font-size: 13px; font-weight: 600; }
+.compose-color-tools { position: relative; }
+
+.compose-color-palette:not([hidden]) {
+  position: absolute;
+  z-index: 3;
+  inset: calc(100% + 4px) auto auto 0;
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--shadow-card);
+}
+
+.compose-format .compose-color-palette button { position: relative; width: 34px; height: 34px; }
+
+.compose-color-palette [data-text-color] span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: var(--preset-color, var(--paper));
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.compose-format .compose-color-palette [aria-pressed="true"] { border-color: var(--accent-ink); }
+
+.compose-color-palette [aria-pressed="true"]::after {
+  position: absolute;
+  inset: auto 1px 0 auto;
+  content: "✓" / "";
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.compose-format #compose-color-custom {
+  grid-column: 1 / -1;
+  width: auto;
+  height: 26px;
+  border-color: transparent;
+  font-size: 12px;
+}
+
+.compose-format :is(.compose-font-step, #compose-text-color, .compose-color-palette button):focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
 }
 
 .compose-format .compose-color {

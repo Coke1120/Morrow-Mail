@@ -15068,7 +15068,14 @@ function readComposeEditorHtml() {
   const html = typeof editor.innerHTML === "string" ? editor.innerHTML.trim() : "";
   if (blankComposeHtml(html)) return "";
   if (typeof sanitizeComposeHtml !== "function") return "";
-  try { return sanitizeComposeHtml(html); } catch { return ""; }
+  try {
+    if (!editor.querySelector("[data-mail-style]")) return sanitizeComposeHtml(html);
+    // Chromium needs inert style attributes to retain paste formatting in
+    // its Undo history. Serialize the live CSSOM styles after later edits.
+    const copy = editor.cloneNode(true);
+    for (const node of copy.querySelectorAll("[data-mail-style]")) node.removeAttribute("data-mail-style");
+    return sanitizeComposeHtml(copy.innerHTML);
+  } catch { return ""; }
 }
 
 function composeEditorSnapshot() {
@@ -15286,7 +15293,9 @@ function revealEditorStyles(root) {
   try { nodes = root.querySelectorAll("[style], [data-mail-style], font[color], [bgcolor]"); } catch { return; }
   for (const el of nodes) {
     if (!el || el === root) continue;
-    const css = mailInlineStyle(el);
+    // An empty live style in Compose can also mean that Undo or a format
+    // command cleared it. Only a missing style needs the parked paste value.
+    const css = root.id === "compose-editor" ? (el.getAttribute("style") ?? mailInlineStyle(el)) : mailInlineStyle(el);
     if (css) mailApplyCss(el, css, false, false);
     if (typeof el.getAttribute !== "function" || !el.style || typeof el.style.setProperty !== "function") continue;
     if (String(el.tagName || "").toLowerCase() === "font") {
@@ -15375,27 +15384,32 @@ function applyComposeCommand(command, editor, value) {
   const target = activeRichEditor(editor);
   if (!target) return;
   if (typeof target.focus === "function") target.focus();
+  const fontSize = command === "fontSize";
+  if (fontSize && !/^[1-7]$/.test(value)) return;
   const colored = command === "foreColor" || command === "hiliteColor" || command === "backColor";
   const color = colored ? mailColor(value) : "";
   if (colored && !color) return;
   let applied = false;
+  // CSS keeps a chosen size inside pasted styles and avoids a legacy
+  // font[color] that CSSOM could leave behind after Undo.
+  const useCss = fontSize || (colored && (command !== "foreColor" || target.id === "compose-editor"));
   try {
-    if (command === "foreColor") {
+    if (command === "foreColor" && !useCss) {
       try { document.execCommand("styleWithCSS", false, false); } catch { /* font color stays visible without a style attribute */ }
-    } else if (colored) {
-      try { document.execCommand("styleWithCSS", false, true); } catch { /* highlight uses a background color */ }
+    } else if (useCss) {
+      try { document.execCommand("styleWithCSS", false, true); } catch { /* leave the native default */ }
     }
-    try { applied = document.execCommand(command, false, colored ? color : null) === true; } catch { applied = false; }
+    try { applied = document.execCommand(command, false, fontSize ? String(value) : color || null) === true; } catch { applied = false; }
     if (!applied && command === "hiliteColor") {
       try { applied = document.execCommand("backColor", false, color) === true; } catch { applied = false; }
     }
   } finally {
-    if (colored && command !== "foreColor") {
+    if (useCss) {
       try { document.execCommand("styleWithCSS", false, false); } catch { /* bold and italic stay on tags */ }
     }
   }
-  if (!applied && !colored) insertComposeFallback(command);
-  if (!applied && command === "foreColor") wrapRichStyle(target, "color", color);
+  if (!applied && !colored && !fontSize) insertComposeFallback(command);
+  if (!applied && command === "foreColor" && target.id !== "compose-editor") wrapRichStyle(target, "color", color);
   if (!applied && (command === "hiliteColor" || command === "backColor")) wrapRichStyle(target, "background-color", color);
   if (colored) revealEditorStyles(target);
 }
@@ -15404,6 +15418,14 @@ function insertComposeMarkup(markup, editor) {
   const target = activeRichEditor(editor);
   if (!target) return;
   if (typeof target.focus === "function") target.focus();
+  // Paste uses sanitized markup. Insert it through Chromium so Undo can restore
+  // both the previous text and selection, and normal input updates the draft.
+  if (target.id === "compose-editor" && typeof document.execCommand === "function") {
+    if (!document.execCommand("insertHTML", false, parkMailStyleAttributes(markup))) {
+      document.execCommand("insertText", false, plainFromComposeHtml(markup));
+    }
+    return;
+  }
   const holder = document.createElement("div");
   appendSafeMailHtml(holder, markup, false);
   const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
@@ -15454,9 +15476,105 @@ function focusComposeBody() {
   if (typeof body.scrollTop === "number") body.scrollTop = 0;
 }
 
+function bindComposeTextColor(editor, applyColor) {
+  const trigger = $("compose-text-color");
+  const palette = $("compose-color-palette");
+  const custom = $("compose-color-custom");
+  const picker = $("compose-color-picker");
+  if (!trigger || !palette || !custom || !picker) return;
+  const colors = [...palette.querySelectorAll("[data-text-color]")];
+  const choices = [...colors, custom];
+  for (const button of colors) {
+    if (button.value !== "currentcolor") button.style.setProperty("--preset-color", button.value);
+  }
+  function close() {
+    if (palette.hidden) return;
+    palette.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  }
+  trigger.addEventListener("click", () => {
+    if (!palette.hidden) return close();
+    const value = document.queryCommandValue?.("foreColor");
+    const rgb = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(value);
+    const hex = rgb ? "#" + rgb.slice(1).map(part => Number(part).toString(16).padStart(2, "0")).join("") : value;
+    const current = !value || value === getComputedStyle(editor).color ? "currentcolor" : hex;
+    let active = null;
+    for (const button of colors) {
+      const selected = button.value === current;
+      button.setAttribute("aria-pressed", String(selected));
+      if (selected) active = button;
+    }
+    palette.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    (active || colors[0]).focus();
+  });
+  for (const button of colors) button.addEventListener("click", () => {
+    close();
+    applyColor(button.value);
+  });
+  custom.addEventListener("click", () => {
+    trigger.focus();
+    close();
+    picker.click();
+  });
+  picker.addEventListener("change", () => applyColor(picker.value));
+  palette.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      trigger.focus();
+      close();
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const index = choices.indexOf(event.target);
+      const step = { ArrowRight: 1, ArrowDown: 3, ArrowLeft: -1, ArrowUp: -3 }[event.key];
+      choices[(index + step + choices.length) % choices.length].focus();
+    }
+  });
+  trigger.parentElement.addEventListener("focusout", (event) => {
+    if (!trigger.parentElement.contains(event.relatedTarget)) close();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!trigger.parentElement.contains(event.target)) close();
+  });
+}
+
+function steppedComposeFontSize(editor, direction) {
+  const selection = document.getSelection();
+  const editingSize = Number(document.queryCommandValue?.("fontSize"));
+  if (selection?.isCollapsed && editingSize) return editingSize + direction;
+  const start = selection?.rangeCount ? selection.getRangeAt(0).startContainer : editor;
+  const element = start.nodeType === 1 ? start : start.parentElement;
+  const current = parseFloat(getComputedStyle(editor.contains(element) ? element : editor).fontSize);
+  // Chromium's legacy HTML font sizes, in the order passed to fontSize.
+  const sizes = [10, 13, 16, 18, 24, 32, 48];
+  const next = direction > 0 ? sizes.findIndex(size => size > current) : sizes.findLastIndex(size => size < current);
+  return next + 1;
+}
+
 function bindRichEditor(bar, editor, onInput) {
   if (!bar && !editor) return;
   let saved = null;
+  let savedSession = null;
+  const steps = bar?.querySelectorAll?.("[data-font-step]");
+  if (steps?.length && editor) {
+    editor.addEventListener("focusout", () => {
+      saved = rememberEditorRange(editor);
+      savedSession = state.composeSession;
+    });
+    function applyFormat(command, value) {
+      if (steps[0].disabled) return;
+      if (document.activeElement !== editor && saved && savedSession === state.composeSession
+          && editor.contains(saved.commonAncestorContainer)) restoreEditorRange(editor, saved);
+      editor.focus();
+      const argument = command === "fontSize" ? steppedComposeFontSize(editor, value) : value;
+      applyComposeCommand(command, editor, argument);
+      if (onInput) onInput();
+      paintFormatState(bar);
+    }
+    for (const button of steps) button.addEventListener("click", () => applyFormat("fontSize", Number(button.dataset.fontStep)));
+    bindComposeTextColor(editor, color => applyFormat("foreColor", color));
+  }
   if (bar && typeof bar.addEventListener === "function") {
     if (typeof bar.querySelectorAll === "function") {
       for (const input of bar.querySelectorAll("input[data-command]")) paintColorSwatch(input);
@@ -15465,7 +15583,10 @@ function bindRichEditor(bar, editor, onInput) {
       const button = event.target && event.target.closest && event.target.closest("button");
       if (button && button.id === "compose-ai-open") return;
       if (button) event.preventDefault();
-      saved = rememberEditorRange(editor);
+      if (!steps?.length || document.activeElement === editor) {
+        saved = rememberEditorRange(editor);
+        savedSession = state.composeSession;
+      }
     });
     bar.addEventListener("click", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button[data-command]");
