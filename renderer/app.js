@@ -10697,7 +10697,37 @@ function clearPdfPreviewPages() {
   pages.removeAttribute("aria-busy");
 }
 
+function updatePdfPreviewHeader(email) {
+  const source = $("attachment-preview-from");
+  if (source) {
+    source.textContent = email ? "From: " + (email.from || email.fromAddress || "Unknown sender") : "";
+    source.hidden = !email;
+  }
+  const arrange = $("attachment-preview-arrange");
+  if (arrange) arrange.hidden = !email || !isReaderWindow() || typeof api?.arrangeReaderPair !== "function";
+  const notice = $("attachment-preview-arrange-status");
+  if (notice) {
+    notice.textContent = "";
+    notice.hidden = true;
+  }
+}
+
+async function arrangePdfReaders() {
+  const token = attachmentPreviewToken;
+  const notice = $("attachment-preview-arrange-status");
+  try {
+    const result = await api.arrangeReaderPair();
+    if (!result?.ok) throw new Error(result?.message || "Could not place the reader windows side by side.");
+    if (token === attachmentPreviewToken) notice.hidden = true;
+  } catch (error) {
+    if (token !== attachmentPreviewToken) return;
+    notice.textContent = error.message || "Could not place the reader windows side by side.";
+    notice.hidden = false;
+  }
+}
+
 function clearAttachmentPreview() {
+  updatePdfPreviewHeader(null);
   attachmentPreviewToken += 1;
   attachmentPreviewEmailId = "";
   attachmentPreviewFileId = "";
@@ -10743,7 +10773,8 @@ function syncAttachmentPreview(email) {
   closeAttachmentPreview();
 }
 
-function showAttachmentPreviewShell(file, kind) {
+function showAttachmentPreviewShell(file, kind, email) {
+  updatePdfPreviewHeader(kind === "pdf" ? email : null);
   const dialog = $("attachment-preview");
   const title = $("attachment-preview-title");
   const status = $("attachment-preview-status");
@@ -10820,7 +10851,7 @@ async function previewAttachment(email, file) {
   attachmentPreviewAbort = controller;
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   attachmentPreviewFileId = file.id;
-  showAttachmentPreviewShell(file, kind);
+  showAttachmentPreviewShell(file, kind, email);
   const label = file.filename || "attachment";
   let data;
   try {
@@ -29437,6 +29468,7 @@ function wire() {
     $("confirm-validation").hidden = true;
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
+  $("attachment-preview-arrange").addEventListener("click", arrangePdfReaders);
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
   window.addEventListener("beforeunload", () => { cancelCrossMailboxMoveIntent(localTransfer, "Window closing. Remaining Gmail Trash actions are cancelled; a started request cannot be recalled."); clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
   $("attachment-preview").addEventListener("close", clearAttachmentPreview);

@@ -337,6 +337,9 @@ contextBridge.exposeInMainWorld("morrow", {
   pullReaderSeed() {
     return ipcRenderer.invoke("reader:pullSeed");
   },
+  arrangeReaderPair() {
+    return ipcRenderer.invoke("reader:arrangePair");
+  },
   openTranslateWindow(seed) {
     return ipcRenderer.invoke("translate:open", seed);
   },

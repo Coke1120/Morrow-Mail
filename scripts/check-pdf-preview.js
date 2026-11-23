@@ -260,12 +260,18 @@ async function cancellationAndIntegration() {
   assert.equal(calls.length, 0, "unknown channels never reach IPC");
   const ui = renderer({ ...integration.globals, crypto: require("node:crypto").webcrypto });
   ui.run("openDialog=()=>{$('attachment-preview').open=true;};");
-  const opened = ui.run("previewAttachment({id:'synthetic-message'}, {id:'synthetic-pdf',filename:'fixture.pdf',mimeType:'application/pdf'})");
+  const opened = ui.run("previewAttachment({id:'synthetic-message',from:'Alder Paper <alder@example.invalid>'}, {id:'synthetic-pdf',filename:'fixture.pdf',mimeType:'application/pdf'})");
   await until(() => integration.paints.length === 1);
   assert.equal(calls.length, 1); assert.equal(integration.node("attachment-preview-status").hidden, true);
   assert.equal(calls[0].params.emailId, "synthetic-message"); assert.equal(calls[0].params.attachmentId, "synthetic-pdf");
+  const sender = integration.node("attachment-preview-from");
+  assert.equal(sender.hidden, false);
+  assert.match(sender.textContent, /Alder Paper <alder@example[.]invalid>/);
+  assert.equal(integration.node("attachment-preview-arrange").hidden, true, "arrangement belongs to separate readers");
   ui.run("clearAttachmentPreview()"); texts.resolve({ items: [{ str: "late integration text" }] }); await opened;
   assert.ok(integration.tasks[0].destroyed); assert.equal(integration.pages.childNodes.length, 0); assert.equal(integration.pages.hidden, true);
+  assert.equal(sender.textContent, "", "closing the preview clears its source");
+  assert.equal(sender.hidden, true);
   assert.equal(listeners.size, 0, "attachment progress subscription is released");
   assert.equal(integration.stage.contains(integration.document.activeElement), false);
 }

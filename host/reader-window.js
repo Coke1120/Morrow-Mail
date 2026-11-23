@@ -2,8 +2,9 @@
 const windowState = require("./window-state");
 const readerState = require("./reader-window-state");
 
-const CHANNELS = ["reader:open", "reader:pullSeed"];
+const CHANNELS = ["reader:open", "reader:pullSeed", "reader:arrangePair"];
 const OPEN_FAILED = "That message could not be opened.";
+const ARRANGE_FAILED = "Could not place the reader windows side by side.";
 const READER_WIDTH = 960;
 const READER_HEIGHT = 760;
 const READER_MIN_WIDTH = 640;
@@ -102,37 +103,145 @@ function canonicalReaderBounds(bounds, originShift) {
   };
 }
 
+function sameReaderBounds(a, b) {
+  return a != null && b != null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+function readerPairBounds(left, right, area) {
+  if (area.width < 2 * READER_MIN_WIDTH || area.height < READER_MIN_HEIGHT) return null;
+  // If both widths cannot fit, keep any narrower reader and share the space otherwise.
+  const preferredRight = Math.max(right.width, READER_MIN_WIDTH);
+  const leftLimit = Math.max(Math.floor(area.width / 2), area.width - preferredRight);
+  const leftWidth = Math.min(Math.max(left.width, READER_MIN_WIDTH), leftLimit);
+  const rightWidth = Math.min(preferredRight, area.width - leftWidth);
+  const leftHeight = Math.min(Math.max(left.height, READER_MIN_HEIGHT), area.height);
+  const rightHeight = Math.min(Math.max(right.height, READER_MIN_HEIGHT), area.height);
+  const x = Math.max(area.x, Math.min(left.x, right.x, area.x + area.width - leftWidth - rightWidth));
+  const y = Math.max(area.y, Math.min(left.y, right.y, area.y + area.height - Math.max(leftHeight, rightHeight)));
+  return [
+    { x, y, width: leftWidth, height: leftHeight },
+    { x: x + leftWidth, y, width: rightWidth, height: rightHeight },
+  ];
+}
+
+function isVisibleReader(win) {
+  return !win.isDestroyed() && win.isVisible() && !win.isMinimized();
+}
+
+function isNormalReader(win) {
+  return !win.isMaximized() && !win.isFullScreen() && !win.isSimpleFullScreen?.();
+}
+
 function createReaderHost(options) {
   const { BrowserWindow, ipcMain, shell, screen } = require("electron");
   const opts = options || {};
   const records = new Map();
+  let boundsChangeOrder = 0;
 
-  function rememberReader(win, originShift) {
-    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return;
-    let bounds;
-    try {
-      bounds = typeof win.getNormalBounds === "function" ? win.getNormalBounds() : win.getBounds();
-    } catch {
-      return;
-    }
-    const patch = canonicalReaderBounds(bounds, originShift);
-    if (!patch) return;
-    try { readerState.update(patch); } catch { /* a failed write keeps the previous file */ }
-  }
-
-  function trackReaderBounds(win, originShift) {
-    let timer = null;
-    const write = () => rememberReader(win, originShift);
+  function trackReaderBounds(record, originShift) {
+    const { win } = record;
+    const write = () => {
+      record.boundsTimer = null;
+      if (record.arranging || win.isDestroyed()) return;
+      let bounds;
+      try {
+        bounds = typeof win.getNormalBounds === "function" ? win.getNormalBounds() : win.getBounds();
+      } catch {
+        return;
+      }
+      if (sameReaderBounds(bounds, record.temporaryBounds)) return;
+      const patch = canonicalReaderBounds(bounds, originShift);
+      if (!patch) return;
+      record.temporaryBounds = null;
+      try { readerState.update(patch); } catch { /* a failed write keeps the previous file */ }
+    };
     const schedule = () => {
-      clearTimeout(timer);
-      timer = setTimeout(write, 250);
+      if (record.arranging) return;
+      record.boundsChangeOrder = ++boundsChangeOrder;
+      clearTimeout(record.boundsTimer);
+      record.boundsTimer = setTimeout(write, 250);
     };
     win.on("resize", schedule);
     win.on("move", schedule);
-    win.on("close", () => {
-      clearTimeout(timer);
+    record.flushBounds = () => {
+      clearTimeout(record.boundsTimer);
       write();
-    });
+    };
+    win.on("close", record.flushBounds);
+  }
+
+  function placeReaderPair(pair, bounds, current) {
+    // Both readers share one saved frame. Flush the latest ordinary move before tiling.
+    const pending = pair.filter(({ record, before }) =>
+      record.boundsTimer && !sameReaderBounds(before, record.temporaryBounds));
+    pending.sort((a, b) => b.record.boundsChangeOrder - a.record.boundsChangeOrder);
+    if (pending.length) pending[0].record.flushBounds();
+    for (const { record } of pair) {
+      clearTimeout(record.boundsTimer);
+      record.boundsTimer = null;
+      record.arranging = true;
+    }
+    try {
+      for (const [index, { record, before }] of pair.entries()) {
+        if (!sameReaderBounds(before, bounds[index])) record.win.setBounds(bounds[index]);
+      }
+      if (!pair.every(({ record }, index) => sameReaderBounds(record.win.getBounds(), bounds[index]))) {
+        throw new Error(ARRANGE_FAILED);
+      }
+      // The Inbox may cover the earlier reader. Keep the invoking window foremost.
+      const peer = pair[0].record === current ? pair[1].record : pair[0].record;
+      peer.win.moveTop();
+      current.win.moveTop();
+    } catch (error) {
+      for (const { record, before } of pair) {
+        const { win } = record;
+        try {
+          if (!win.isDestroyed() && !sameReaderBounds(win.getBounds(), before)) win.setBounds(before);
+        } catch { /* Still attempt to restore the other reader. */ }
+      }
+      throw error;
+    } finally {
+      // Delayed move/resize events and close must also skip the temporary frames.
+      for (const { record, before } of pair) {
+        try { record.temporaryBounds = record.win.getBounds(); } catch { record.temporaryBounds = before; }
+        record.arranging = false;
+      }
+    }
+  }
+
+  function arrangePair(event) {
+    try {
+      const sender = event.sender;
+      const current = records.get(sender.id);
+      const frame = event.senderFrame;
+      if (!current || !isVisibleReader(current.win) || current.win.webContents !== sender ||
+          !frame || frame !== sender.mainFrame) {
+        return { ok: false, message: "Use this action from a visible detached message reader." };
+      }
+      const currentBounds = current.win.getBounds();
+      const display = screen.getDisplayMatching(currentBounds);
+      const pair = [];
+      // Map iteration keeps the first-opened reader on the left.
+      for (const record of records.values()) {
+        if (record !== current && !isVisibleReader(record.win)) continue;
+        const before = record === current ? currentBounds : record.win.getBounds();
+        if (record === current || screen.getDisplayMatching(before).id === display.id) pair.push({ record, before });
+      }
+      if (pair.length !== 2) {
+        return { ok: false, message: "Keep exactly two message readers visible on this display to place them side by side." };
+      }
+      if (pair.some(({ record }) => !isNormalReader(record.win))) {
+        return { ok: false, message: "Restore both reader windows to normal size to place them side by side." };
+      }
+      const bounds = readerPairBounds(pair[0].before, pair[1].before, display.workArea);
+      if (!bounds) {
+        return { ok: false, message: "This display needs at least 1280 × 480 usable pixels to place two readers side by side." };
+      }
+      placeReaderPair(pair, bounds, current);
+      return { ok: true };
+    } catch {
+      return { ok: false, message: ARRANGE_FAILED };
+    }
   }
 
   function parentBounds() {
@@ -189,10 +298,10 @@ function createReaderHost(options) {
       },
     });
     try { win.webContents.setZoomLevel(0); } catch { /* the page still opens at the default zoom */ }
-    trackReaderBounds(win, originShift);
     const id = win.webContents.id;
-    const record = { win, seed: clean };
+    const record = { win, seed: clean, boundsTimer: null, temporaryBounds: null, arranging: false };
     records.set(id, record);
+    trackReaderBounds(record, originShift);
     let failed = false;
     const fail = () => {
       if (failed) return;
@@ -232,6 +341,7 @@ function createReaderHost(options) {
       if (!record) return null;
       return { accountId: record.seed.accountId, messageId: record.seed.messageId };
     });
+    ipcMain.handle("reader:arrangePair", arrangePair);
     return { open: open, records: records };
   }
 

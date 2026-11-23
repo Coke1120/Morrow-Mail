@@ -4994,11 +4994,12 @@ dialog h2 {
 
 .attachment-preview-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
   gap: 12px;
   flex: none;
 }
+
+.attachment-preview-heading { flex: 1; min-width: 0; }
 
 .attachment-preview-bar h2 {
   margin: 0;
@@ -5008,7 +5009,21 @@ dialog h2 {
   white-space: nowrap;
 }
 
-#attachment-preview-status { margin: 0; flex: none; }
+#attachment-preview-from { margin: 4px 0 0; overflow-wrap: anywhere; }
+
+.attachment-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 50%;
+}
+
+#attachment-preview-arrange { max-width: 100%; min-height: 32px; height: auto; overflow-wrap: anywhere; }
+#attachment-preview-close { flex: none; }
+
+#attachment-preview-status,
+#attachment-preview-arrange-status { margin: 0; flex: none; }
 
 #attachment-preview-stage {
   position: relative;
