@@ -1,5 +1,5 @@
 // Compose opens in its own window. The mail shell stays usable.
-// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js
+// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing]
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -68,6 +68,7 @@ const composeContext = {
 
 const sentChannels = [];
 const sentPayloads = [];
+let savedDraft = null;
 
 function envelope(data) {
   return { success: true, data };
@@ -95,7 +96,10 @@ function answer(channel, payload) {
 function mailData(channel, payload) {
   if (channel === "mail:listAccounts") return [account];
   if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") return { emails: [message], total: 1, initialSyncDone: true };
-  if (channel === "mail:openEmail") return { email: message, threadMessages: [message] };
+  if (channel === "mail:openEmail") {
+    if (savedDraft && payload?.emailId === savedDraft.id) return { email: savedDraft };
+    return { email: message, threadMessages: [message] };
+  }
   if (channel === "mail:listThreadMessages") return [earlierMessage, message].map(({ textBody, htmlBody, ...row }) => ({ ...row, hasBody: true }));
   if (channel === "mail:readCachedBody") return { email: payload.emailId === earlierMessage.id ? earlierMessage : message };
   if (channel === "mail:getComposeContext") return composeContext;
@@ -115,7 +119,11 @@ function mailData(channel, payload) {
       mimeType: (payload && payload.mimeType) || "text/plain",
     };
   }
-  if (channel === "mail:upsertDraft") return { emailId: "draft-1", remoteSaved: true };
+  if (channel === "mail:upsertDraft") {
+    savedDraft = { id: "draft-1", isDraft: true, bodyComplete: true, ...payload,
+      htmlBody: payload.body, textBody: "Format fixture", attachments: [] };
+    return { emailId: savedDraft.id, remoteSaved: true };
+  }
   if (channel === "mail:send" || channel === "mail:scheduleSend") return { ok: true };
   if (channel === "aiDraftWrite:replySuggestions") return { suggestions: [] };
   if (channel === "aiDraftWrite:start") return { reqId: payload && payload.reqId };
@@ -213,12 +221,124 @@ async function assertComposeGeometry(win) {
   return geometry;
 }
 
+async function assertComposeFormatting(win) {
+  const contents = win.webContents;
+  await contents.executeJavaScript(`(() => {
+    const editor = document.getElementById("compose-editor");
+    editor.focus();
+    placeComposeCaret(editor);
+    const data = new DataTransfer();
+    data.setData("text/html", '<b><span style="font-size:20px">Format fixture</span></b><img src="https://example.invalid/no-download">');
+    editor.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  })()`);
+  const body = 'composePayload(composeAccount()).body';
+  const plain = 'document.getElementById("compose-body").value';
+  const pasted = await contents.executeJavaScript(body);
+  assert.match(pasted, /font-size: 20px/);
+  assert.doesNotMatch(pasted, /example\.invalid/);
+  assert.match(await contents.executeJavaScript(plain), /Format fixture/);
+  contents.undo();
+  await waitFor(win, `!${plain}.includes("Format fixture")`, "undo paste syncs plain draft");
+  assert.match(await contents.executeJavaScript(body), /Earlier conversation: preserve the original table/);
+  contents.redo();
+  await waitFor(win, `${plain}.includes("Format fixture")`, "redo paste syncs plain draft");
+  assert.match(await contents.executeJavaScript(body), /font-size: 20px/, "redo paste restores HTML style");
+
+  const selectFixture = `(() => {
+    const editor = document.getElementById("compose-editor");
+    editor.focus();
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      if (walker.currentNode.data !== "Format fixture") continue;
+      const range = document.createRange();
+      range.selectNodeContents(walker.currentNode);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      return true;
+    }
+    return false;
+  })()`;
+  assert.equal(await contents.executeJavaScript(selectFixture), true);
+  const stepSize = direction => contents.executeJavaScript(`(() => {
+    const button = document.querySelector('[data-font-step="${direction}"]');
+    button.focus();
+    button.click();
+    return { selected: getSelection().toString(), focus: document.activeElement.id,
+      rendered: getComputedStyle(getSelection().anchorNode.parentElement).fontSize };
+  })()`);
+  const sized = rendered => ({ selected: "Format fixture", focus: "compose-editor", rendered });
+  assert.deepEqual(await stepSize(1), sized("24px"));
+  assert.match(await contents.executeJavaScript(body), /size="5"|font-size: x-large/);
+  assert.deepEqual(await stepSize(-1), sized("18px"));
+  assert.deepEqual(await stepSize(-1), sized("16px"));
+  contents.undo();
+  await waitFor(win, `/size="4"|font-size: large/.test(${body})`, "undo one size step");
+  contents.undo();
+  await waitFor(win, `/size="5"|font-size: x-large/.test(${body})`, "undo next size step");
+
+  await contents.executeJavaScript(`document.getElementById("compose-text-color").click()`);
+  assert.equal(await contents.executeJavaScript(`document.querySelector('#compose-color-palette [value="currentcolor"]').getAttribute("aria-pressed")`), "true");
+  await contents.executeJavaScript(`document.querySelector('#compose-color-palette [value="#2867bd"]').click()`);
+  const formatted = await contents.executeJavaScript(body);
+  assert.match(formatted, /color="#2867bd"|color: rgb\(40, 103, 189\)/);
+  assert.match(formatted, /size="5"|font-size: x-large/);
+  assert.equal(await contents.executeJavaScript(`document.activeElement.id`), "compose-editor");
+  contents.undo();
+  await waitFor(win, `!${body}.includes("rgb(40, 103, 189)")`, "undo preset preserves size");
+  assert.match(await contents.executeJavaScript(body), /size="5"|font-size: x-large/);
+  contents.redo();
+  await waitFor(win, `${body}.includes("rgb(40, 103, 189)")`, "redo preset reapplies color");
+
+  await contents.executeJavaScript(`document.getElementById("compose-text-color").click()`);
+  assert.equal(await contents.executeJavaScript(`document.querySelector('#compose-color-palette [value="#2867bd"]').getAttribute("aria-pressed")`), "true");
+  await contents.executeJavaScript(`document.querySelector('#compose-color-palette [value="currentcolor"]').click()`);
+  assert.doesNotMatch(await contents.executeJavaScript(body), /rgb\(40, 103, 189\)/);
+  assert.match(await contents.executeJavaScript(body), /size="5"|font-size: x-large/);
+  contents.undo();
+  await waitFor(win, `${body}.includes("rgb(40, 103, 189)")`, "undo default restores color");
+}
+
+async function checkEditing(host) {
+  app.on("window-all-closed", () => {});
+  const { id } = host.open({ title: "Editing smoke", kind: "reply", quoteEmail: message,
+    accountId: account.id, to: message.from, subject: "Re: " + message.subject,
+    sourceMessageId: message.id, threadId: message.threadId });
+  const win = host.records.get(id).win;
+  const ready = '!state.composeInitializing && document.getElementById("compose").open';
+  await waitFor(win, ready, "editing compose ready");
+  await assertComposeFormatting(win);
+  await win.webContents.executeJavaScript(`document.getElementById("compose-save").click()`);
+  await waitFor(win, `document.getElementById("compose-status").textContent.includes("Draft saved.")`, "saved formatted draft");
+  assert.match(savedDraft.htmlBody, /size="5"|font-size: x-large/);
+  assert.match(savedDraft.htmlBody, /color="#2867bd"|color: rgb\(40, 103, 189\)/);
+  await win.webContents.executeJavaScript(`resumeDraft({ id: "draft-1", accountId: "acct-ada" })`);
+  const reopened = [...host.records.values()].find(record => record.win !== win)?.win;
+  assert.ok(reopened, "saved draft opens a new Compose window");
+  await waitFor(reopened, ready, "reopened formatted draft");
+  await closeClean(win);
+  const html = await reopened.webContents.executeJavaScript(`composePayload(composeAccount()).body`);
+  assert.match(html, /size="5"|font-size: x-large/);
+  assert.match(html, /color="#2867bd"|color: rgb\(40, 103, 189\)/);
+  await reopened.webContents.executeJavaScript(`document.getElementById("compose-send").click()`);
+  await waitFor(reopened, `document.getElementById("compose-preview").open`, "formatted send preview");
+  await reopened.webContents.executeJavaScript(`document.getElementById("compose-preview-confirm").click()`);
+  const start = Date.now();
+  while (!sentChannels.includes("mail:scheduleSend") && Date.now() - start < 5000) await sleep(50);
+  const queued = sentPayloads.find(item => item.channel === "mail:scheduleSend");
+  assert.equal(queued?.payload.outbox, true);
+  assert.match(queued.payload.body, /size="5"|font-size: x-large/);
+  assert.match(queued.payload.body, /color="#2867bd"|color: rgb\(40, 103, 189\)/);
+  assert.equal(sentChannels.includes("mail:send"), false);
+  console.log("compose-editing-ok: paste Undo/Redo and quote, font size steps, preset/default text color Undo/Redo, saved/reopened draft, simulated Outbox");
+}
+
 app.disableHardwareAcceleration();
-app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "morrow-compose-window-")));
+app.setPath("userData", fs.mkdtempSync(path.join(process.env.MORROW_SMOKE_TMP || os.tmpdir(), "morrow-compose-window-")));
 
 const consoleNotes = [];
 
 app.whenReady().then(async () => {
+  let shellWin;
   const host = composeWindows.createComposeHost({
     getParent: () => shellWin,
     preloadFile: () => preloadFile,
@@ -235,7 +355,12 @@ app.whenReady().then(async () => {
     ipcMain.handle(channel, (_event, payload) => answer(channel, payload));
   }
 
-  const shellWin = new BrowserWindow({
+  if (process.argv.includes("--editing")) {
+    await checkEditing(host);
+    app.exit(0);
+    return;
+  }
+  shellWin = new BrowserWindow({
     width: 1200,
     height: 800,
     show: true,
