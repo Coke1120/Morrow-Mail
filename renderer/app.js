@@ -40,6 +40,8 @@ const state = {
   agentReplySource: null,
   agentLearning: null,
   composeAttachments: [],
+  composePdfBytes: new Map(),
+  composePdfPreview: null,
   composeFileJobs: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -10731,6 +10733,7 @@ function clearAttachmentPreview() {
   attachmentPreviewToken += 1;
   attachmentPreviewEmailId = "";
   attachmentPreviewFileId = "";
+  state.composePdfPreview = null;
   cancelAttachmentTask(attachmentPreviewRequest);
   attachmentPreviewRequest = null;
   if (attachmentPreviewAbort) {
@@ -10765,9 +10768,21 @@ function closeAttachmentPreview() {
   dialog.close();
 }
 
+function finishAttachmentPreview() {
+  // A queued close event may arrive after another preview has already opened.
+  if ($("attachment-preview").open) return;
+  const origin = state.composePdfPreview;
+  clearAttachmentPreview();
+  if (!origin || origin.session !== state.composeSession || !state.composePdfBytes.has(origin.storageUrl)
+      || topOpenDialog()?.id !== "compose") return;
+  const button = [...$("compose-attachments").querySelectorAll("[data-compose-pdf]")]
+    .find((node) => node.dataset.composePdf === origin.storageUrl);
+  button?.focus();
+}
+
 function syncAttachmentPreview(email) {
   const dialog = $("attachment-preview");
-  if (!dialog || !dialog.open) return;
+  if (!dialog || !dialog.open || state.composePdfPreview) return;
   const id = email && email.id;
   if (id && id === attachmentPreviewEmailId) return;
   closeAttachmentPreview();
@@ -10830,33 +10845,37 @@ function loadPdfPreview() {
   return pdfPreviewLoader;
 }
 
-function pdfPreviewError(error) {
+function pdfPreviewError(error, inCompose) {
   const name = error && error.name;
-  if (name === "PasswordException") return "This PDF is password-protected. Save or Open it instead.";
   if (name === "AbortError") return "";
-  return "This PDF could not be previewed. Save or Open it instead.";
+  const message = name === "PasswordException" ? "This PDF is password-protected." : "This PDF could not be previewed.";
+  return inCompose ? message : message + " Save or Open it instead.";
 }
 
-async function previewAttachment(email, file) {
-  const kind = attachmentPreviewKind(file);
+async function previewAttachment(email, file, composeBytes) {
+  const kind = composeBytes ? "pdf" : attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
-  if (attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
+  if (email && attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
   const gen = ++attachmentPreviewToken;
   if (attachmentPreviewAbort) {
     attachmentPreviewAbort.abort();
     attachmentPreviewAbort = null;
   }
   cancelAttachmentTask(attachmentPreviewRequest);
+  attachmentPreviewRequest = null;
   const controller = new AbortController();
   attachmentPreviewAbort = controller;
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   attachmentPreviewFileId = file.id;
+  state.composePdfPreview = composeBytes ? { session: state.composeSession, storageUrl: file.storageUrl } : null;
   showAttachmentPreviewShell(file, kind, email);
   const label = file.filename || "attachment";
   let data;
   try {
-    attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
-    data = await attachmentPreviewRequest.promise;
+    if (!composeBytes) {
+      attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
+      data = await attachmentPreviewRequest.promise;
+    }
   } catch (error) {
     if (gen !== attachmentPreviewToken) return;
     attachmentPreviewFileId = "";
@@ -10874,7 +10893,7 @@ async function previewAttachment(email, file) {
     throw error;
   }
   if (gen !== attachmentPreviewToken) return;
-  const bytes = attachmentBytes(data);
+  const bytes = composeBytes || attachmentBytes(data);
   const status = $("attachment-preview-status");
   if (!bytes.byteLength) {
     if (status) {
@@ -10933,7 +10952,7 @@ async function previewAttachment(email, file) {
   } catch (error) {
     if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
     attachmentPreviewFileId = "";
-    const message = pdfPreviewError(error);
+    const message = pdfPreviewError(error, !!composeBytes);
     if (!message || !status) return;
     status.hidden = false;
     status.textContent = message;
@@ -15814,7 +15833,8 @@ function paintComposeAttachments() {
     list.appendChild(item);
   }
   const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
-  for (const row of rows) {
+  const session = state.composeSession;
+  for (const [index, row] of rows.entries()) {
     const item = typeof document.createElement === "function" ? document.createElement("li") : null;
     if (!item) continue;
     item.className = "compose-file";
@@ -15835,11 +15855,24 @@ function paintComposeAttachments() {
     if (typeof remove.addEventListener === "function") {
       remove.addEventListener("click", () => removeComposeAttachment(row.storageUrl));
     }
-    if (typeof item.append === "function") item.append(name, size, remove);
+    const controls = [name, size];
+    if (state.composePdfBytes?.has(row.storageUrl)) {
+      const actionLabel = rows.some((other) => other !== row && other.filename === row.filename)
+        ? `${row.filename}, attachment ${index + 1} of ${rows.length}` : row.filename;
+      const preview = attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => {
+        if (session !== state.composeSession || state.composePending || state.composeQueued || state.composeInitializing || !$("compose").open
+            || $("attachment-preview").open) return;
+        const bytes = state.composePdfBytes.get(row.storageUrl);
+        if (bytes) return previewAttachment(null, row, bytes);
+      }));
+      preview.dataset.composePdf = row.storageUrl;
+      preview.disabled = locked;
+      controls.push(preview);
+    }
+    controls.push(remove);
+    if (typeof item.append === "function") item.append(...controls);
     else if (typeof item.appendChild === "function") {
-      item.appendChild(name);
-      item.appendChild(size);
-      item.appendChild(remove);
+      for (const control of controls) item.appendChild(control);
     }
     if (typeof list.appendChild === "function") list.appendChild(item);
   }
@@ -15848,6 +15881,8 @@ function paintComposeAttachments() {
 function removeComposeAttachment(storageUrl) {
   if (state.composePending || state.composeQueued || state.composeInitializing) return;
   state.composeAttachments = composeAttachmentList(state.composeAttachments).filter((row) => row.storageUrl !== storageUrl);
+  state.composePdfBytes?.delete(storageUrl);
+  if (state.composePdfPreview?.storageUrl === storageUrl) closeAttachmentPreview();
   setComposeAttachError("");
   paintComposeAttachments();
   paintComposeNote();
@@ -15900,6 +15935,10 @@ async function addComposeFiles(list) {
         if (over) {
           errors.push(over);
           continue;
+        }
+        if (meta.size === bytes.byteLength && !state.composeAttachments.some((item) => item.storageUrl === meta.storageUrl)
+            && attachmentPreviewKind(meta) === "pdf") {
+          state.composePdfBytes.set(meta.storageUrl, bytes);
         }
         state.composeAttachments = next;
         paintComposeAttachments();
@@ -17936,6 +17975,7 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  state.composePdfBytes?.clear();
   state.composeInputVersions = { to: 0, cc: 0, bcc: 0, subject: 0, body: 0 };
   state.composeFileJobs = [];
   const replySession = state.composeSession;
@@ -18082,6 +18122,7 @@ async function requestComposeClose() {
   const preview = $("compose-preview");
   if (preview && preview.open) return false;
   if (state.composePending) return false;
+  if (state.composePdfPreview) closeAttachmentPreview();
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
     const choice = await new Promise((resolve) => {
       const dialog = $("compose-close-review");
@@ -18095,6 +18136,7 @@ async function requestComposeClose() {
   }
   // Await the exit before another composition reuses this dialog.
   state.composeSession += 1;
+  state.composePdfBytes?.clear();
   state.composeInitializing = false;
   signatureGen += 1;
   await closeDialog("compose");
@@ -18489,6 +18531,7 @@ async function scheduleMail(whenOverride, reviewedPayload) {
     state.agentReplyTodo = null;
     state.agentReplySource = null;
     state.composeQueued = true;
+    state.composePdfBytes?.clear();
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
     if (typeof publishComposeTitle === "function") publishComposeTitle("Scheduled receipt");
@@ -18705,6 +18748,7 @@ async function deliverMail(payload, session = state.composeSession) {
         return;
       }
       state.composeQueued = true;
+      state.composePdfBytes?.clear();
       state.composePartialReceipt = true;
       state.draftId = null;
       state.draftRevision = null;
@@ -18724,6 +18768,7 @@ async function deliverMail(payload, session = state.composeSession) {
     state.draftRevision = null;
     state.composeBaseline = composeSnapshot();
     await closeDialog("compose");
+    if (ownsCompose()) state.composePdfBytes?.clear();
     showStatus(result?.warning || "Sent.", !!result?.warning);
   } catch (error) {
     const message = "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying. " + (error.message || String(error));
@@ -18801,6 +18846,7 @@ async function sendMail(reviewedPayload) {
     state.agentReplyTodo = null;
     state.agentReplySource = null;
     state.composeQueued = true;
+    state.composePdfBytes?.clear();
     state.composeBaseline = composeSnapshot();
   } catch (error) {
     if (!queued) {
@@ -29127,6 +29173,10 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (state.composePdfPreview && $("attachment-preview").open) {
+          closeAttachmentPreview();
+          return;
+        }
         if (takeRecipientSuggestEscape()) return;
         if (composeAiOpen()) {
           dismissComposeAi().catch(() => {});
@@ -29471,7 +29521,7 @@ function wire() {
   $("attachment-preview-arrange").addEventListener("click", arrangePdfReaders);
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
   window.addEventListener("beforeunload", () => { cancelCrossMailboxMoveIntent(localTransfer, "Window closing. Remaining Gmail Trash actions are cancelled; a started request cannot be recalled."); clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
-  $("attachment-preview").addEventListener("close", clearAttachmentPreview);
+  $("attachment-preview").addEventListener("close", finishAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
     openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
