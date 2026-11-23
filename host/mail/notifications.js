@@ -12,7 +12,7 @@ const RECENT_MS = 5 * 60 * 1000;
 const id = value => typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
 const digest = value => crypto.createHash("sha256").update(value).digest("hex");
 function text(value, bytes) {
-  const plain = String(value || "").replace(/<[^>]*>/g, "").replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
+  const plain = String(value || "").replace(/<[^>]*>/g, "").replace(/[\p{Cc}\p{Bidi_Control}]/gu, " ").replace(/\s+/g, " ").trim();
   let result = "";
   for (const char of plain) { if (Buffer.byteLength(result + char) > bytes) break; result += char; }
   return result;
