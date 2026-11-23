@@ -1,12 +1,23 @@
 // Production sync/cache integration. All transports and native notices are synthetic.
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
+const { createRequire } = require("node:module");
+const { compileFunction } = require("node:vm");
 const { test } = require("node:test");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const { EventEmitter } = require("node:events");
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-notification-sync-"));
 Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_MAIL_SECRETS: "memory", MORROW_PAGE_DELAY_MS: "0", MORROW_GMAIL_PACE: "0" });
-const db = require("../host/mail/db"), engine = require("../host/mail/engine"), remote = require("../host/mail/remote");
+// Expose the real epoch invalidation hook only on this test's engine instance.
+const engineFile = require.resolve("../host/mail/engine");
+const engineModule = { exports: {} };
+const engineSource = fs.readFileSync(engineFile, "utf8") + "\nmodule.exports.invalidateAttachmentAccount = invalidateAttachmentAccount;";
+compileFunction(engineSource, ["module", "exports", "require", "__filename", "__dirname"], { filename: engineFile })(
+  engineModule, engineModule.exports, createRequire(engineFile), engineFile, path.dirname(engineFile));
+const engine = engineModule.exports;
+const db = require("../host/mail/db"), remote = require("../host/mail/remote");
 const notifications = require("../host/mail/notifications");
+const inboxRules = require("../host/mail/inbox-rules");
 const { server, message } = require("./gmail-fixture");
 const { createSession } = require("../host/mail/gmail-session");
 const { before, after } = require("node:test");
@@ -19,7 +30,7 @@ function account(id, profile = "custom") {
   require("../host/mail/secrets").setPassword(id, "synthetic-secret");
   return db.accountById(id);
 }
-function delivery() {
+function delivery(now = Date.now) {
   let timer;
   const shown = [];
   class Native extends EventEmitter {
@@ -27,7 +38,7 @@ function delivery() {
     constructor(options) { super(); this.options = options; }
     show() { shown.push(this); this.emit("show"); } close() {}
   }
-  const controller = notifications.createNotifications({ setTimer: work => { timer = work; return 1; }, clearTimer: () => { timer = null; },
+  const controller = notifications.createNotifications({ now, setTimer: work => { timer = work; return 1; }, clearTimer: () => { timer = null; },
     preferences: () => ({ enabled: true, preview: "hidden" }) });
   controller.configure({ Notification: Native, platform: "darwin", open() {} });
   return { controller, shown, flush() { const fn = timer; timer = null; fn?.(); } };
@@ -63,6 +74,68 @@ test("Outlook and password IMAP: bootstrap/history/flags suppress; committed rec
       assert.ok(db.notificationState(a.id).seen.length);
     }
   } finally { Object.assign(remote, { withClient: original.withClient, searchUids: original.searchUids, fetchMessages: original.fetchMessages }); notifications.enqueue = original.enqueue; d.controller.stop(); }
+});
+
+test("IMAP: invalidating an account during Inbox rules suppresses its stale arrival", async () => {
+  const originalRemote = { withClient: remote.withClient, searchUids: remote.searchUids, fetchMessages: remote.fetchMessages };
+  const originalNotifications = { enqueue: notifications.enqueue, invalidate: notifications.invalidate };
+  const originalRunImapPlan = inboxRules.runImapPlan;
+  const now = Date.now(), d = delivery(() => now);
+  const a = account("imap-notification-epoch"), rows = new Map();
+  // The server clock is ahead within accepted skew, so the invalidation timestamp cannot hide the bug.
+  const receivedAt = now + 15000;
+  const add = uid => rows.set(uid, { uid, rfcMessageId: `<${a.id}-${uid}@fixture.invalid>`, threadId: `${a.id}-${uid}`,
+    subject: "Synthetic", from: "sender@fixture.invalid", to: [], cc: [], bcc: [], unread: true,
+    date: new Date(now).toISOString(), receivedAt, textBody: "Synthetic", bodyComplete: true });
+  const sync = () => engine.answer("mail:listFromNetwork", [{ accountId: a.id, folderId: "INBOX" }]);
+  let enterRules, releaseRules, incremental, deadline;
+  const entered = new Promise(resolve => { enterRules = resolve; });
+  const held = new Promise(resolve => { releaseRules = resolve; });
+  try {
+    remote.withClient = async (_account, _secret, work) => work({});
+    remote.searchUids = async (_client, _folder, query) => ({ validity: 1, exists: rows.size, unseen: rows.size, flags: [],
+      uids: [...rows.keys()].filter(uid => !query.uid || uid >= Number(query.uid.split(":")[0])) });
+    remote.fetchMessages = async (_client, _folder, uids) => ({ validity: 1, messages: uids.map(uid => rows.get(uid)) });
+    notifications.enqueue = d.controller.enqueue;
+    notifications.invalidate = d.controller.invalidate;
+
+    add(1);
+    assert.equal((await sync()).success, true);
+    inboxRules.runImapPlan = async () => { enterRules(); await held; return {}; };
+    add(2);
+    incremental = sync();
+    await Promise.race([
+      entered,
+      incremental.then(() => { throw new Error("Incremental sync ended before Inbox rules ran"); }),
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Timed out waiting for Inbox rules")), 5000); }),
+    ]);
+    assert.equal(db.messageByUid(a.id, "INBOX", 2, 1, { headersOnly: true })?.unread, 1, "the Inbox row committed before rules finished");
+    engine.invalidateAttachmentAccount(a.id);
+    releaseRules();
+    await incremental;
+    d.flush();
+    assert.deepEqual(db.notificationState(a.id), {}, "the stale arrival has no durable reservation");
+    assert.equal(d.shown.length, 0, "the stale arrival never reaches native show");
+
+    inboxRules.runImapPlan = originalRunImapPlan;
+    add(3);
+    assert.equal((await sync()).success, true);
+    const key = createHash("sha256").update("imap:INBOX:1:3").digest("hex");
+    assert.deepEqual(db.notificationState(a.id).seen, [[key, receivedAt]], "the current arrival is durably reserved before show");
+    d.flush();
+    assert.equal(d.shown.length, 1, "the current arrival reaches native show once");
+  } finally {
+    clearTimeout(deadline);
+    releaseRules();
+    try {
+      await incremental?.catch(() => {});
+    } finally {
+      Object.assign(remote, originalRemote);
+      Object.assign(notifications, originalNotifications);
+      inboxRules.runImapPlan = originalRunImapPlan;
+      d.controller.stop();
+    }
+  }
 });
 
 test("Gmail: only messagesAdded with current Inbox membership emit arrivals; persisted pending pages resume without duplicate or history alerts", async () => {
