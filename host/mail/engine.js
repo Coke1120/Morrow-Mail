@@ -1621,6 +1621,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
         messages: fetched.messages,
         validity: fetched.validity || found.validity,
       });
+      assertAccountCurrent(account);
       if (ruled.failed) {
         emitSync("error", {
           accountId: account.id,
