@@ -29,6 +29,7 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
   return { calls, rest: { repos, git: { getRef: async () => ({ data: { object: { type: 'commit', sha: wrongTag ? 'b'.repeat(40) : sha } } }) } },
     paginate: async () => calls.filter(call => call[0] === 'upload').map((call, i) => ({ id: i + 1, name: call[1] })) };
 }
+
 (async () => {
   const pkg = require('../package.json');
   const expand = (pattern, values) => Object.entries(values).reduce((name, [key, value]) => name.split('${' + key + '}').join(value), pattern);
@@ -76,7 +77,32 @@ function mock({ failUpload = false, corruptDownload = false, existing = false, w
     for (const issue of [{ existing: true }, { wrongTag: true }]) {
       const api = mock(issue); await assert.rejects(publish({ ...args, github: api })); assert.equal(api.calls.length, 0);
     }
-    const wrongRun = mock(); await assert.rejects(publish({ ...args, runAttempt: '2', github: wrongRun }), /provenance/); assert.equal(wrongRun.calls.length, 0);
+    const nextAttempt = '2';
+    const wrongAttempt = mock();
+    await assert.rejects(publish({ ...args, runAttempt: nextAttempt, github: wrongAttempt }), /provenance/);
+    assert.equal(wrongAttempt.calls.length, 0);
+
+    for (const platform of ['windows', 'macos']) {
+      const directory = path.join(staging, `release-${platform}`);
+      const provenanceFile = path.join(directory, `release-provenance-${platform}.json`);
+      const omitted = path.join(root, `omitted-${platform}`);
+      await fs.rename(directory, omitted);
+      const onePlatform = mock();
+      await assert.rejects(publish({ ...args, github: onePlatform }), {
+        code: 'ENOENT', path: provenanceFile,
+      });
+      assert.equal(onePlatform.calls.length, 0, `missing ${platform} must block release writes`);
+      await fs.rename(omitted, directory);
+
+      const originalProvenance = await fs.readFile(provenanceFile, 'utf8');
+      const provenance = { ...JSON.parse(originalProvenance), runAttempt: nextAttempt };
+      await fs.writeFile(provenanceFile, JSON.stringify(provenance));
+      const mixedAttempts = mock();
+      await assert.rejects(publish({ ...args, runAttempt: nextAttempt, github: mixedAttempts }), /provenance/);
+      assert.equal(mixedAttempts.calls.length, 0, `mixing ${platform} with a previous attempt must block release writes`);
+      await fs.writeFile(provenanceFile, originalProvenance);
+    }
+
     const noKey = mock(); await assert.rejects(publish({ ...args, publicKey: '', github: noKey }), /public key/); assert.equal(noKey.calls.length, 0);
     const wrongRef = mock(); await assert.rejects(publish({ ...args, context: { ...args.context, ref: 'refs/heads/feature' }, github: wrongRef }), /context/);
     const file = path.join(staging, 'release-macos', namesFor('macos', version)[0]); await fs.appendFile(file, 'tamper');
