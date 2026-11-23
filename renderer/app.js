@@ -11487,7 +11487,8 @@ function paintUndoControls() {
     undo.hidden = !count;
     undo.disabled = !!undoBusy || pending;
     undo.setAttribute?.("aria-busy", undoBusy || pending ? "true" : "false");
-    undo.textContent = pending ? "Restoring " + undoPending.size + " changes…" : "Undo " + count + " completed changes";
+    const noun = (pending ? undoPending.size : count) === 1 ? "change" : "changes";
+    undo.textContent = pending ? `Restoring ${undoPending.size} ${noun}…` : `Undo ${count} completed ${noun}`;
   }
   if (details) {
     details.hidden = !count;
@@ -11984,9 +11985,11 @@ async function requestUndoRemoval(requested) {
   if (!count) return;
   const opener = document.activeElement;
   const actions = new Map();
-  for (const item of undoItems || []) {
-    if (ids.includes(item.opId)) actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
+  const reviewedItems = (undoItems || []).filter(item => ids.includes(item.opId));
+  for (const item of reviewedItems) {
+    actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
   }
+  const single = ids.length === 1 ? reviewedItems[0] : null;
   undoConfirmationPending = true;
   clearStatusTimer();
   try {
@@ -11994,8 +11997,12 @@ async function requestUndoRemoval(requested) {
       title: "Undo " + count + (count === 1 ? " change?" : " changes?"),
       body: kind === "read"
         ? "Restore the previous read state of " + count + (count === 1 ? " message?" : " messages?")
-        : "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
-          " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+        : [
+          "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
+            " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+          single?.from && "From: " + single.from.replace(/\s+/g, " ").trim(),
+          single?.subject && "Subject: " + single.subject.replace(/\s+/g, " ").trim(),
+        ].filter(Boolean).join("\n"),
       confirm: "Undo " + count + (count === 1 ? " change" : " changes"),
     });
     await confirmSettled();

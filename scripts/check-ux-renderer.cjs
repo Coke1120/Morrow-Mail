@@ -166,7 +166,7 @@ app.whenReady().then(async()=>{
  assert.equal(await run(`$('undo').textContent`),'Undo 2 completed changes');
  assert.equal(await run(`undoKind`),'removal');
  await run(`(async()=>{undoMode='partial'; await undoRemoval();})()`);
- assert.equal(await run(`$('undo').textContent`),'Undo 1 completed changes');
+ assert.equal(await run(`$('undo').textContent`),'Undo 1 completed change');
  assert.match(await run(`$('status').textContent`),/Restore.*unknown.*kept/);
  await run(`openUndoDetails()`);
  assert.match(await run(`$('undo-details-list').textContent`),/Beta report/);
