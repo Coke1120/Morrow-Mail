@@ -286,7 +286,7 @@ async function undoDetails() {
   assert.equal(get("undo-details-selected").disabled, true);
   await ui.run("undoRemoval(['op-a'])");
   assert.deepEqual(JSON.parse(ui.run("JSON.stringify(undoCalls[0].payload)")), { opIds: ["op-a"], kind: "move" });
-  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo").textContent, "Undo 1 completed change");
   assert.equal(get("undo-details-popover").hidden, true);
   ui.run("openUndoDetails()");
   assert.match(get("undo-details-list").textContent, /Beta report/);
@@ -295,7 +295,7 @@ async function undoDetails() {
   await ui.run(archive);
   await ui.run("undoRemoval()");
   assert.deepEqual(JSON.parse(ui.run("JSON.stringify(undoCalls[0].payload.opIds)")), ["op-a", "op-b"]);
-  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo").textContent, "Undo 1 completed change");
   assert.match(get("status").textContent, /Restore/);
   assert.match(get("status").textContent, /unknown/);
   assert.match(get("status").textContent, /kept/);
@@ -313,7 +313,7 @@ async function undoDetails() {
   assert.equal(get("undo-details").hidden, false);
   assert.match(get("status").textContent, /Marked read/);
   await ui.run(`finishBulkRemoval('Move', { opIds: ['op-m'], outcomes: [{ id: 'one', status: 'completed', opId: 'op-m' }] }, ['one'], { messages: state.emails, action: 'move', destinationLabel: 'Projects' })`);
-  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo").textContent, "Undo 1 completed change");
   ui.run("openUndoDetails()");
   assert.match(get("undo-details-list").textContent, /Alpha report/);
   assert.match(get("undo-details-list").textContent, /move/);
@@ -365,7 +365,7 @@ async function undoDetails() {
   await ui.run(archive);
   ui.run("settleOnLoad = true;");
   await ui.run("undoRemoval()");
-  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo").textContent, "Undo 1 completed change");
   assert.equal(get("undo").disabled, false);
   ui.run("openUndoDetails()");
   assert.match(get("undo-details-list").textContent, /Beta report/);
@@ -381,7 +381,7 @@ async function undoDetails() {
   await ui.run(`finishBulkRemoval('Archive', { opIds: ['op-new'], outcomes: [{ id: 'two', status: 'completed', opId: 'op-new' }] }, ['two'])`);
   assert.notEqual(ui.run("undoEpoch"), epoch);
   ui.run(`applyActionSettlement({ outcomes: [{ id: 'one', kind: 'undo', status: 'failed', retryOpId: 'op-m', error: 'old removal' }], opIds: ['op-m'] })`);
-  assert.equal(get("undo").textContent, "Undo 1 completed changes");
+  assert.equal(get("undo").textContent, "Undo 1 completed change");
   ui.run("openUndoDetails()");
   assert.match(get("undo-details-list").textContent, /Beta report/);
   assert.doesNotMatch(get("undo-details-list").textContent, /Alpha report/);
