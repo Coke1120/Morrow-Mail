@@ -29235,11 +29235,12 @@ function wire() {
     event.preventDefault();
     applySearch();
   });
-  $("search-query").addEventListener("search", () => {
-    if ($("search-query").value.trim()) return;
-    if (!state.query) return;
-    applySearch();
-  });
+  const searchQuery = $("search-query");
+  const restoreListIfCleared = (event) => {
+    if (!event.isComposing && !searchQuery.value.trim() && state.query) applySearch();
+  };
+  searchQuery.addEventListener("input", restoreListIfCleared);
+  searchQuery.addEventListener("search", restoreListIfCleared);
   const listFilter = $("list-filter");
   if (listFilter) {
     listFilter.addEventListener("input", applyListFilter);
