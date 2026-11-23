@@ -136,6 +136,7 @@ function createReaderHost(options) {
   const { BrowserWindow, ipcMain, shell, screen } = require("electron");
   const opts = options || {};
   const records = new Map();
+  let boundsChangeOrder = 0;
 
   function trackReaderBounds(record, originShift) {
     const { win } = record;
@@ -156,18 +157,25 @@ function createReaderHost(options) {
     };
     const schedule = () => {
       if (record.arranging) return;
+      record.boundsChangeOrder = ++boundsChangeOrder;
       clearTimeout(record.boundsTimer);
       record.boundsTimer = setTimeout(write, 250);
     };
     win.on("resize", schedule);
     win.on("move", schedule);
-    win.on("close", () => {
+    record.flushBounds = () => {
       clearTimeout(record.boundsTimer);
       write();
-    });
+    };
+    win.on("close", record.flushBounds);
   }
 
   function placeReaderPair(pair, bounds, current) {
+    // Both readers share one saved frame. Flush the latest ordinary move before tiling.
+    const pending = pair.filter(({ record, before }) =>
+      record.boundsTimer && !sameReaderBounds(before, record.temporaryBounds));
+    pending.sort((a, b) => b.record.boundsChangeOrder - a.record.boundsChangeOrder);
+    if (pending.length) pending[0].record.flushBounds();
     for (const { record } of pair) {
       clearTimeout(record.boundsTimer);
       record.boundsTimer = null;

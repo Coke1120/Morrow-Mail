@@ -923,15 +923,21 @@ assert.strictEqual(readerHeadless.width, 1000);
   } finally { Module._load = load; }
 
   const frontOrder = [];
-  function addReader(id, x) {
-    let bounds = { x, y: 80, width: 960, height: 760 };
-    const webContents = { id, mainFrame: {} };
-    const win = {
-      webContents, getBounds: () => bounds, setBounds: value => { bounds = value; },
-      moveTop: () => { frontOrder.push(id); },
+  const { EventEmitter } = require("node:events");
+  function testReader(id, bounds) {
+    const win = new EventEmitter();
+    const webContents = Object.assign(new EventEmitter(), { id, mainFrame: {}, setZoomLevel() {}, setWindowOpenHandler() {} });
+    return Object.assign(win, {
+      webContents, getBounds: () => ({ ...bounds }),
+      setBounds(value) { bounds = value; win.emit("move"); win.emit("resize"); },
+      moveTop: () => { frontOrder.push(id); }, loadFile: () => Promise.resolve(),
+      close() { win.emit("close"); win.emit("closed"); },
       isDestroyed: () => false, isVisible: () => true, isMinimized: () => false,
       isMaximized: () => false, isFullScreen: () => false,
-    };
+    });
+  }
+  function addReader(id, x) {
+    const win = testReader(id, { x, y: 80, width: 960, height: 760 });
     readers.set(id, { win });
     return win;
   }
@@ -953,6 +959,53 @@ assert.strictEqual(readerHeadless.width, 1000);
   primary.workArea.width = 1200;
   assert.match(arrange(event).message, /1280/);
   assert.deepEqual([first.getBounds(), second.getBounds()], previous, "a refused arrangement leaves both readers in place");
+
+  function reopenAfterResize(delay, last, useArrange) {
+    const clock = new Set(), frames = [], actions = new Map(), writes = [];
+    let now = 0, saved = { x: 80, y: 70, width: 960, height: 760 };
+    function advance(ms) {
+      now += ms;
+      for (const timer of clock) if (timer.due <= now) { clock.delete(timer); timer.fn(); }
+    }
+    const dependencies = {
+      electron: {
+        BrowserWindow: function (options) {
+          const { x, y, width, height } = options;
+          const win = testReader(frames.length + 1, { x, y, width, height }); frames.push(win); return win;
+        },
+        ipcMain: { handle: (channel, callback) => actions.set(channel, callback) },
+        screen: { getAllDisplays: () => [other], getDisplayMatching: () => other },
+      },
+      "./window-state": require("../host/window-state"),
+      "./reader-window-state": { read: () => saved, update(frame) { saved = { ...frame }; writes.push(saved.width); } },
+    };
+    const script = { module: { exports: {} }, require: name => dependencies[name],
+      setTimeout(fn, ms) { const timer = { fn, due: now + ms }; clock.add(timer); return timer; },
+      clearTimeout: timer => clock.delete(timer),
+    };
+    require("node:vm").runInNewContext(fs.readFileSync(path.join(root, "host/reader-window.js"), "utf8"), script);
+    const host = script.module.exports.createReaderHost().register();
+    const open = messageId => host.open({ accountId: "fixture", messageId });
+    open("alder"); open("birch");
+    const otherReader = frames[1 - last], latestReader = frames[last];
+    if (useArrange && delay === 100) {
+      otherReader.setBounds({ ...otherReader.getBounds(), width: 890 }); advance(10);
+    }
+    latestReader.setBounds({ ...latestReader.getBounds(), width: 820 }); advance(delay);
+    if (useArrange) {
+      const sender = frames[1].webContents;
+      assert.equal(actions.get("reader:arrangePair")({ sender, senderFrame: sender.mainFrame }).ok, true);
+      advance(300);
+      assert.deepEqual(writes, [820], "only the newest ordinary frame is written");
+    }
+    otherReader.close(); latestReader.close(); open("next");
+    const { x, y, width, height } = frames[2].getBounds();
+    assert.deepEqual({ x, y, width, height }, { x: 80, y: 70, width: 820, height: 760 });
+  }
+  reopenAfterResize(100, 1, true);
+  reopenAfterResize(100, 0, true);
+  reopenAfterResize(300, 1, true);
+  reopenAfterResize(100, 1, false);
 }
 const readerState = require("../host/reader-window-state");
 {
