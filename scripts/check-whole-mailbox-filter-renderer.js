@@ -60,6 +60,35 @@ test('whole selected view: beyond first page, exact totals, paging, sort, zero, 
   assert.match(f.document.querySelector('#message-list .empty').textContent,/No downloaded messages.*match/);
   f.document.getElementById('filter-chip').click(); await f.flush(); assert.equal(f.run('state.listTotal'),650); assert.equal(f.run('state.listOffset'),0);
 });
+test('erasing a toolbar search restores the filtered Inbox even when a search reply arrives late', async t => {
+  const f = fixture(t);
+  f.run("state.searchAccountId='alpha'; storeRows=storeRows.slice(-2)");
+  f.input('649');
+  await f.flush();
+  const search = f.document.getElementById('search-query');
+  const edit = value => {
+    search.value = value;
+    search.dispatchEvent(new f.document.defaultView.Event('input', { bubbles: true }));
+  };
+  search.focus();
+  edit('needle');
+  f.run("calls.length=0; deferCalls=true; $('search-form').requestSubmit()");
+  edit('need');
+  assert.equal(f.run('state.query'), 'needle', 'nonempty revisions wait for Enter');
+  f.run('deferCalls=false');
+  edit('');
+  assert.equal(f.run('state.query'), '', 'erasing the field alone leaves search');
+  search.dispatchEvent(new f.document.defaultView.Event('search'));
+  await tick();
+  assert.deepEqual(f.json('calls.map(call => call.channel)'), ['mail:searchLocal', 'mail:listFromCache']);
+  assert.equal(f.run('state.searchAccountId'), 'alpha');
+  assert.equal(f.document.getElementById('list-filter').value, '649');
+  assert.equal(f.document.activeElement, search);
+  f.run('pending.shift()()');
+  await tick();
+  assert.equal(f.document.getElementById('list-title').textContent, 'Inbox');
+  assert.deepEqual(f.json('state.emails.map(row => row.id)'), ['m649']);
+});
 test('filtered All Account Mail Unread pages retain the open reader and show each match once', async t => {
   const f = fixture(t);
   f.run(`state.allInbox=true; state.allInboxUnreadOnly=true;
