@@ -118,14 +118,18 @@ test("failed, throwing, unsupported and OS-suppressed notifications never retry 
 
 test("privacy modes sanitize and bound text; settings changes close old previews and clear pending", () => {
   const f = fixture();
+  const controls = "\u061c\u200e\u200f\u0085\u009f";
+  const from_addr = `مرحبا${controls}שלום <private@example.invalid>`;
   f.changePrefs({ preview: "sender" });
-  f.controller.enqueue(f.accounts.get("a"), [f.arrival(1)]); f.advance();
-  assert.match(f.notices[0].options.body, /Private sender/); assert.doesNotMatch(f.notices[0].options.body, /subject|preview/);
+  f.controller.enqueue(f.accounts.get("a"), [f.arrival(1, "a", { from_addr })]); f.advance();
+  assert.equal(f.notices[0].options.body, "New email from مرحبا שלום.");
   f.changePrefs({ preview: "message" }); assert.equal(f.notices[0].closed, true);
-  f.controller.enqueue(f.accounts.get("a"), [f.arrival(2, "a", { subject: "<b>題</b>\r\n".repeat(100), snippet: "<img src='https://evil.invalid'>\u202eSecret".repeat(100) })]);
+  f.controller.enqueue(f.accounts.get("a"), [f.arrival(2, "a", { from_addr, subject: `<b>題</b>\r\n${controls}`.repeat(100),
+    snippet: `<img src='https://evil.invalid'>\u202e${controls}Secret`.repeat(100) })]);
   f.advance(INTERVAL_MS);
   const notice = f.notices.at(-1);
-  assert.doesNotMatch(notice.options.body, /[<>\r\n\u202e]|https:/);
+  assert.equal(notice.options.title, "مرحبا שלום");
+  assert.doesNotMatch(notice.options.body, /[<>\r\n\u061c\u200e\u200f\u202e\u0085\u009f]|https:/);
   assert.ok(Buffer.byteLength(notice.options.title + notice.options.body) < 256);
   f.controller.enqueue(f.accounts.get("a"), [f.arrival(3)]);
   f.changePrefs({ enabled: false }); f.advance(INTERVAL_MS); assert.equal(f.notices.length, 2);
