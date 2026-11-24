@@ -355,6 +355,121 @@ async function composeReplacementPreview() {
   assert.equal(ui.run("state.composePdfBytes.size"), 0, "an upload finishing after close cannot retain its bytes");
 }
 
+async function resumedDraftPdfPreview() {
+  const f = fixture(true);
+  const revised = syntheticPdf(2, 595, 842, "HKD 1,340");
+  const original = syntheticPdf(2, 595, 842, "HKD 1,240");
+  assert.equal(revised.byteLength, original.byteLength);
+  const files = ["revised", "original"].map(key => ({
+    id: "legacy-" + key, storageUrl: "local:" + key, filename: "quote.pdf",
+    mimeType: "application/pdf", size: original.byteLength,
+  }));
+  const provider = { ...files[0], id: "revised", storageUrl: undefined };
+  let saved = { id: "draft", accountId: "box", bodyEpoch: 7, draftRevision: "before-save", isDraft: true,
+    bodyComplete: true, fromAddress: "owner@example.invalid", textBody: "Saved text", attachments: [...files, provider] };
+  const calls = [];
+  let pendingRead, composeSeed;
+  f.window.morrow = { openComposeWindow(seed) { composeSeed = seed; }, async invoke(channel, params) {
+    calls.push({ channel, params });
+    const ok = data => ({ success: true, data });
+    if (channel === "mail:openEmail") return ok({ email: saved });
+    if (channel === "mail:prepareDraft") {
+      return ok({ email: { ...saved, attachments: [...files, { ...provider, id: "hydrated", storageUrl: "local:hydrated" }] } });
+    }
+    if (channel === "mail:readCachedBody") {
+      assert.deepEqual({ ...params }, { emailId: "draft", accountId: "box", bodyEpoch: 7 });
+      return ok({ email: saved });
+    }
+    if (channel === "mail:fetchAttachmentBytes") {
+      assert.equal(params.messageId, "draft");
+      assert.equal(params.accountId, "box");
+      const file = saved.attachments.find(file => file.id === params.attachmentId);
+      assert.ok(file?.storageUrl, "fetch uses the saved attachment ID, even if a provider ID equals its blob ID");
+      if (pendingRead) await pendingRead.promise;
+      return ok(file.storageUrl === "local:revised" ? revised : original);
+    }
+    if (channel === "mail:upsertDraft") {
+      assert.equal(params.draftRevision, saved.draftRevision);
+      saved = { ...saved, draftRevision: "after-save",
+        attachments: params.attachments.map(file => ({ ...file, id: file.storageUrl.slice(6) })) };
+      return ok({ emailId: saved.id, draftRevision: saved.draftRevision });
+    }
+    assert.equal(channel, "mail:cancelAttachmentRequest");
+    return ok(true);
+  } };
+  const ui = renderer({ ...f.globals, crypto: require("node:crypto").webcrypto });
+  const compose = f.node("compose"), dialog = f.node("attachment-preview"), list = f.node("compose-attachments");
+  compose.id = "compose"; dialog.id = "attachment-preview";
+  dialog.close = () => { dialog.open = false; dialog.listeners.close(); };
+  f.document.querySelectorAll = selector => selector === "dialog[open]" ? [compose, dialog].filter(node => node.open) : [];
+  const buttons = prefix => descendants(list, "ghost").filter(button => button.getAttribute("aria-label").startsWith(prefix));
+  const previews = () => buttons("Preview ");
+  list.querySelectorAll = previews;
+  ui.run(`
+    state.accounts = [{id:'box', email:'owner@example.invalid', platform:'imap'}];
+    openDialog = id => { $(id).open = true; };
+    initializeComposeIdentity = async () => {}; fillSignatures = async () => {}; showComposeSuggestions = async () => {};
+    syncCompose = paintComposeAttachments; paintComposeNote = () => {}; paintComposeEditor = () => {};
+    paintComposeChrome = () => {}; paintQuoteBody = () => {}; scheduleComposeLayout = () => {};
+    syncScheduleFields = () => {}; setAiMode = () => {}; showStatus = () => {};
+    $('attachment-preview').addEventListener('close', finishAttachmentPreview);
+  `);
+  await ui.run("resumeDraft({id:'draft',accountId:'box'})");
+  assert.deepEqual(JSON.parse(JSON.stringify(composeSeed.draftPdf)), {
+    id: "draft", accountId: "box", bodyEpoch: 7, draftRevision: "before-save",
+    files: files.map(({ id, storageUrl }) => ({ id, storageUrl })),
+  });
+  ui.context.resumedSeed = composeSeed;
+  await ui.run("openCompose(resumedSeed)");
+  assert.deepEqual(calls.map(call => call.channel), ["mail:openEmail", "mail:prepareDraft"]);
+  assert.deepEqual(previews().map(button => button.getAttribute("aria-label")), [
+    "Preview quote.pdf, attachment 1 of 3", "Preview quote.pdf, attachment 2 of 3",
+  ], "a prepared provider-only PDF is excluded");
+  assert.equal(new Set(buttons("Remove ").map(button => button.getAttribute("aria-label"))).size, 3);
+  f.node("compose-body").value = "Unsaved recommendation";
+  const dirty = ui.run("composeSnapshot()");
+  const fetchIds = () => calls.filter(call => call.channel === "mail:fetchAttachmentBytes").map(call => call.params.attachmentId);
+  async function inspect(index, amount) {
+    previews()[index].click();
+    await until(() => f.pages.childNodes[1]?.textContent.includes(amount));
+    assert.equal(f.node("attachment-preview-arrange").hidden, true);
+    ui.run("paintComposeAttachments(); closeAttachmentPreview()");
+    assert.equal(f.document.activeElement, previews()[index]);
+    assert.equal(ui.run("composeSnapshot()"), dirty);
+  }
+  await inspect(0, "HKD 1,340");
+  await inspect(1, "HKD 1,240");
+  assert.deepEqual(fetchIds(), ["legacy-revised", "legacy-original"]);
+  assert.equal(calls.some(call => call.channel === "mail:upsertDraft"), false, "preview never saves the dirty editor");
+  assert.equal(await ui.run("saveDraft()"), true);
+  await inspect(0, "HKD 1,340");
+  assert.equal(fetchIds().at(-1), "revised", "after Save the confirmed revision supplies the normalized ID");
+
+  pendingRead = gate();
+  previews()[1].click();
+  await until(() => fetchIds().length === 4);
+  const request = calls.at(-1).params;
+  ui.run("closeAttachmentPreview()");
+  assert.equal(calls.at(-1).params.requestId, request.requestId);
+  assert.equal(calls.at(-1).channel, "mail:cancelAttachmentRequest");
+  pendingRead.resolve();
+  await tick();
+  assert.equal(f.pages.childNodes.length, 0, "late bytes cannot reopen a closed preview");
+  assert.equal(f.document.activeElement, previews()[1]);
+
+  pendingRead = gate();
+  previews()[1].click();
+  await until(() => fetchIds().length === 5);
+  saved = { ...saved, draftRevision: "changed-elsewhere" };
+  pendingRead.resolve();
+  await until(() => /saved draft or attachment changed/.test(f.node("attachment-preview-status").textContent));
+  assert.equal(f.pages.childNodes.length, 0, "a newer saved revision blocks stale bytes");
+  ui.run("closeAttachmentPreview()");
+  buttons("Remove ")[1].click();
+  assert.deepEqual(previews().map(button => button.dataset.composePdf), ["local:revised"]);
+  assert.equal(f.node("compose-body").value, "Unsaved recommendation");
+}
+
 async function shippedBundle() {
   const f = fixture(true); await f.render({ data: syntheticPdf() });
   assert.match(f.pages.textContent, /Synthetic accessible PDF body/, "shipped PDF.js bundle parses and exposes actual PDF text");
@@ -397,7 +512,7 @@ function contractAndHelp() {
   assert.equal(bitmap(100, 100, 10000, 2).bitmapHeight, 4096);
   f.window.morrowFeaturesCatalog = require("../renderer/features-catalog"); ui.run("paintFeatureCatalog()");
   const help = f.node("features-catalog").textContent;
-  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/]) assert.match(help, claim);
+  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/, /verified local PDF in a resumed draft/]) assert.match(help, claim);
 }
 
 async function run() {
@@ -405,7 +520,7 @@ async function run() {
   assert.equal(crlfSource, source, "Windows CRLF checkouts strip module imports identically");
   new vm.Script(crlfSource, { filename: "pdf-preview-crlf.js" });
   const hostWithResolvers = Promise.withResolvers;
-  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await shippedBundle(); contractAndHelp();
+  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await resumedDraftPdfPreview(); await shippedBundle(); contractAndHelp();
   assert.equal(Promise.withResolvers, hostWithResolvers, "renderer compatibility never patches the host Promise");
   console.log("pdf-preview-ok: source and shipped PDF.js bundle, accessible/inert text, progressive admission/abort, resize failure/Retry, canvas caps, lifecycle/app integration, CSP/assets/rendered Features");
 }

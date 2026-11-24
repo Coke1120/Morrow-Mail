@@ -41,6 +41,7 @@ const state = {
   agentLearning: null,
   composeAttachments: [],
   composePdfBytes: new Map(),
+  composeDraftPdf: null,
   composePdfPreview: null,
   composeFileJobs: [],
   composeSuggestions: null,
@@ -10686,11 +10687,11 @@ function cancelAttachmentTask(task) {
   });
 }
 
-function startAttachmentTask(channel, email, files, label) {
+function startAttachmentTask(channel, email, files, label, accountId) {
   const zip = channel === "mail:downloadAttachmentsZip", draft = channel === "mail:prepareDraft", forward = channel === "mail:prepareForward";
   const prepare = draft || forward;
   const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
-  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
+  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids, accountId]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
   const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? (forward ? "Forward attachments" : "Draft attachments") : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
@@ -10701,6 +10702,7 @@ function startAttachmentTask(channel, email, files, label) {
     if (task === attachmentPreviewRequest && $("attachment-preview-status")) $("attachment-preview-status").textContent = attachmentTaskCopy(task);
   }) : () => {};
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
+    ...(accountId ? { accountId } : {}),
     ...(draft ? { draftRevision: email.draftRevision } : forward ? { accountId: email.accountId, attachmentIds: ids } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
@@ -10839,8 +10841,7 @@ function finishAttachmentPreview() {
   if ($("attachment-preview").open) return;
   const origin = state.composePdfPreview;
   clearAttachmentPreview();
-  if (!origin || origin.session !== state.composeSession || !state.composePdfBytes.has(origin.storageUrl)
-      || topOpenDialog()?.id !== "compose") return;
+  if (!origin || origin.session !== state.composeSession || topOpenDialog()?.id !== "compose") return;
   const button = [...$("compose-attachments").querySelectorAll("[data-compose-pdf]")]
     .find((node) => node.dataset.composePdf === origin.storageUrl);
   button?.focus();
@@ -10918,7 +10919,7 @@ function pdfPreviewError(error, inCompose) {
   return inCompose ? message : message + " Save or Open it instead.";
 }
 
-async function previewAttachment(email, file, composeBytes) {
+async function previewAttachment(email, file, composeBytes, draftPdf) {
   const kind = composeBytes ? "pdf" : attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
   if (email && attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
@@ -10933,17 +10934,31 @@ async function previewAttachment(email, file, composeBytes) {
   attachmentPreviewAbort = controller;
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   attachmentPreviewFileId = file.id;
-  state.composePdfPreview = composeBytes ? { session: state.composeSession, storageUrl: file.storageUrl } : null;
-  showAttachmentPreviewShell(file, kind, email);
+  const inCompose = !!(composeBytes || draftPdf);
+  state.composePdfPreview = inCompose ? { session: state.composeSession, storageUrl: file.storageUrl } : null;
+  showAttachmentPreviewShell(file, kind, inCompose ? null : email);
+  const current = () => gen === attachmentPreviewToken && (!draftPdf
+    || ($("attachment-preview").open && $("compose").open && currentComposeDraftPdf() === draftPdf));
+  const changed = "The saved draft or attachment changed. Reopen the draft to preview it.";
+  const status = $("attachment-preview-status");
   const label = file.filename || "attachment";
-  let data;
+  let data, task, savedId;
   try {
     if (!composeBytes) {
-      attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
-      data = await attachmentPreviewRequest.promise;
+      let selected = file;
+      if (draftPdf) {
+        if (status) { status.hidden = false; status.textContent = "Loading preview…"; }
+        savedId = await readComposeDraftPdfId(draftPdf, file.storageUrl);
+        if (!current()) return;
+        if (!savedId) throw new Error(changed);
+        selected = { id: savedId, filename: file.filename };
+      }
+      task = startAttachmentTask("mail:fetchAttachmentBytes", draftPdf || email, [selected], "Preview", draftPdf?.accountId);
+      attachmentPreviewRequest = task;
+      data = await task.promise;
     }
   } catch (error) {
-    if (gen !== attachmentPreviewToken) return;
+    if (!current()) return;
     attachmentPreviewFileId = "";
     const message = error instanceof Error ? error.message : String(error);
     if (message === "cancelled") {
@@ -10958,9 +10973,8 @@ async function previewAttachment(email, file, composeBytes) {
     }
     throw error;
   }
-  if (gen !== attachmentPreviewToken) return;
+  if (!current() || (draftPdf && task?.cancelRequested)) return;
   const bytes = composeBytes || attachmentBytes(data);
-  const status = $("attachment-preview-status");
   if (!bytes.byteLength) {
     if (status) {
       status.hidden = false;
@@ -11004,7 +11018,16 @@ async function previewAttachment(email, file, composeBytes) {
   if (status) { status.hidden = false; status.textContent = "Rendering PDF…"; }
   try {
     const pdfApi = await loadPdfPreview();
-    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    if (!current() || controller.signal.aborted) return;
+    if (draftPdf) {
+      const latestId = await readComposeDraftPdfId(draftPdf, file.storageUrl);
+      if (!current() || task.cancelRequested) return;
+      if (latestId !== savedId) {
+        pages.hidden = true;
+        if (status) { status.hidden = false; status.textContent = changed; }
+        return;
+      }
+    }
     await pdfApi.render({
       data: bytes,
       pages,
@@ -11016,9 +11039,9 @@ async function previewAttachment(email, file, composeBytes) {
       },
     });
   } catch (error) {
-    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    if (!current() || controller.signal.aborted) return;
     attachmentPreviewFileId = "";
-    const message = pdfPreviewError(error, !!composeBytes);
+    const message = pdfPreviewError(error, inCompose);
     if (!message || !status) return;
     status.hidden = false;
     status.textContent = message;
@@ -15886,6 +15909,35 @@ function setComposeAttachError(text) {
   el.textContent = message;
 }
 
+function matchingDraftPdfId(files, storageUrl, originalId) {
+  if (!Array.isArray(files) || typeof storageUrl !== "string" || !storageUrl.startsWith("local:") || storageUrl.length === 6) return null;
+  const rows = files.filter(file => file?.storageUrl === storageUrl);
+  if (rows.length !== 1 || !rows[0].id || attachmentPreviewKind(rows[0]) !== "pdf") return null;
+  const id = String(rows[0].id);
+  if ((originalId != null && id !== originalId) || files.filter(file => file?.id != null && String(file.id) === id).length !== 1) return null;
+  return id;
+}
+
+function currentComposeDraftPdf() {
+  const scope = state.composeDraftPdf;
+  return scope && scope.id === state.draftId && scope.accountId === state.composeMeta?.accountId
+    && scope.draftRevision === state.draftRevision && !state.composeQueued ? scope : null;
+}
+
+async function readComposeDraftPdfId(scope, storageUrl) {
+  const source = scope.files.find(file => file.storageUrl === storageUrl);
+  if (!source) return null;
+  const result = await call("mail:readCachedBody", {
+    emailId: scope.id, accountId: scope.accountId, bodyEpoch: scope.bodyEpoch,
+  }).catch(() => null);
+  const draft = result?.email;
+  if (!draft?.isDraft || draft.id !== scope.id || draft.accountId !== scope.accountId
+      || draft.bodyEpoch !== scope.bodyEpoch || draft.draftRevision !== scope.draftRevision) return null;
+  // An explicit Save can normalize legacy attachment IDs to blob IDs.
+  const originalId = scope.draftRevision === scope.originalRevision ? source.id : null;
+  return matchingDraftPdfId(draft.attachments, storageUrl, originalId);
+}
+
 function paintComposeAttachments() {
   const list = $("compose-attachments");
   if (!list || typeof list.replaceChildren !== "function") return;
@@ -15900,13 +15952,16 @@ function paintComposeAttachments() {
   }
   const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
   const session = state.composeSession;
+  const draftPdf = currentComposeDraftPdf();
   for (const [index, row] of rows.entries()) {
     const item = typeof document.createElement === "function" ? document.createElement("li") : null;
     if (!item) continue;
     item.className = "compose-file";
+    const duplicate = rows.some(other => other !== row && other.filename === row.filename);
+    const actionLabel = duplicate ? `${row.filename}, attachment ${index + 1} of ${rows.length}` : row.filename;
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = row.filename;
+    name.textContent = duplicate ? `${index + 1} · ${row.filename}` : row.filename;
     const size = document.createElement("span");
     size.className = "size";
     const label = fileSize(row.size);
@@ -15917,19 +15972,21 @@ function paintComposeAttachments() {
     remove.className = "ghost";
     remove.textContent = "Remove";
     remove.disabled = locked;
-    if (typeof remove.setAttribute === "function") remove.setAttribute("aria-label", `Remove ${row.filename}`);
+    if (typeof remove.setAttribute === "function") remove.setAttribute("aria-label", `Remove ${actionLabel}`);
     if (typeof remove.addEventListener === "function") {
       remove.addEventListener("click", () => removeComposeAttachment(row.storageUrl));
     }
     const controls = [name, size];
-    if (state.composePdfBytes?.has(row.storageUrl)) {
-      const actionLabel = rows.some((other) => other !== row && other.filename === row.filename)
-        ? `${row.filename}, attachment ${index + 1} of ${rows.length}` : row.filename;
+    if (state.composePdfBytes?.has(row.storageUrl) || draftPdf?.files.some(file => file.storageUrl === row.storageUrl)) {
       const preview = attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => {
         if (session !== state.composeSession || state.composePending || state.composeQueued || state.composeInitializing || !$("compose").open
             || $("attachment-preview").open) return;
         const bytes = state.composePdfBytes.get(row.storageUrl);
         if (bytes) return previewAttachment(null, row, bytes);
+        if (draftPdf && currentComposeDraftPdf() === draftPdf
+            && state.composeAttachments.some(file => file.storageUrl === row.storageUrl && file.id === row.id)) {
+          return previewAttachment(null, row, null, draftPdf);
+        }
       }));
       preview.dataset.composePdf = row.storageUrl;
       preview.disabled = locked;
@@ -15948,6 +16005,8 @@ function removeComposeAttachment(storageUrl) {
   if (state.composePending || state.composeQueued || state.composeInitializing) return;
   state.composeAttachments = composeAttachmentList(state.composeAttachments).filter((row) => row.storageUrl !== storageUrl);
   state.composePdfBytes?.delete(storageUrl);
+  const draftPdf = state.composeDraftPdf;
+  if (draftPdf) draftPdf.files = draftPdf.files.filter(file => file.storageUrl !== storageUrl);
   if (state.composePdfPreview?.storageUrl === storageUrl) closeAttachmentPreview();
   setComposeAttachError("");
   paintComposeAttachments();
@@ -17675,6 +17734,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
     paintComposeIdentity();
     paintComposeNote();
     switched = true;
+    state.composeDraftPdf = null;
     if (previous.draftId) setComposeStatus("The earlier draft stays in the original mailbox. Save draft stores a new copy here.");
   } catch (error) {
     if (session !== state.composeSession) return;
@@ -18056,6 +18116,7 @@ async function openCompose(seed) {
   closeComposeAi();
   state.draftId = fields.draftId || null;
   state.draftRevision = fields.draftRevision || null;
+  state.composeDraftPdf = fields.draftPdf ? { ...fields.draftPdf, originalRevision: fields.draftPdf.draftRevision } : null;
   state.composeQueued = false;
   state.composePartialReceipt = false;
   state.signatureText = "";
@@ -18203,6 +18264,7 @@ async function requestComposeClose() {
   // Await the exit before another composition reuses this dialog.
   state.composeSession += 1;
   state.composePdfBytes?.clear();
+  state.composeDraftPdf = null;
   state.composeInitializing = false;
   signatureGen += 1;
   await closeDialog("compose");
@@ -18224,12 +18286,24 @@ async function prepareDraftCompose(email, extra) {
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
   if (!draft.bodyComplete || draft.bodyWarning) throw new Error("The complete draft body could not be downloaded. The saved draft was retained; reopen it to retry.");
+  const original = draft;
   if (draft.attachments?.length) {
     const prepared = await startAttachmentTask("mail:prepareDraft", draft, draft.attachments, "Prepare draft").promise;
     draft = prepared.email;
     if (!draft || draft.accountId !== email.accountId || draft.id !== email.id
         || composeAttachmentList(draft.attachments).length !== draft.attachments.length) {
       throw new Error("Draft attachments could not be prepared. The saved draft was retained; retry from Drafts.");
+    }
+  }
+  // Only files already local on the saved draft qualify. Preparation can
+  // give provider files new local keys that do not belong to the saved row.
+  const draftPdfFiles = [];
+  if (!extra && original.id === draft.id && original.draftRevision && original.draftRevision === draft.draftRevision
+      && Number.isSafeInteger(original.bodyEpoch) && original.bodyEpoch === draft.bodyEpoch) {
+    for (const file of original.attachments || []) {
+      const storageUrl = file?.storageUrl;
+      const id = matchingDraftPdfId(original.attachments, storageUrl);
+      if (id && matchingDraftPdfId(draft.attachments, storageUrl, id)) draftPdfFiles.push({ id, storageUrl });
     }
   }
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
@@ -18240,6 +18314,9 @@ async function prepareDraftCompose(email, extra) {
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
     attachments: draft.attachments,
+    ...(draftPdfFiles.length ? { draftPdf: {
+      id: draft.id, accountId: draft.accountId, bodyEpoch: draft.bodyEpoch, draftRevision: draft.draftRevision, files: draftPdfFiles,
+    } } : {}),
     inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "",
     ...(draft.draftPending ? { status: "Local changes are protected and waiting for upload. Save draft to retry; nothing sends automatically." } : {}),
     ...(extra || {}) });
@@ -18747,9 +18824,15 @@ async function saveDraft() {
   return composeOperation(async () => {
     setComposeStatus("Saving draft…");
     const snapshot = composeSnapshot();
+    const draftPdf = state.composeDraftPdf;
     const saved = await call("mail:upsertDraft", composePayload(account));
-    state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
+    const savedId = saved && (saved.emailId || saved.draftId);
+    state.draftId = savedId || state.draftId;
     state.draftRevision = saved?.draftRevision || null;
+    if (draftPdf && draftPdf === state.composeDraftPdf && draftPdf.id === savedId
+        && draftPdf.accountId === account.id && state.draftRevision) {
+      state.composeDraftPdf = { ...draftPdf, draftRevision: state.draftRevision };
+    }
     if (!state.draftId) throw new Error("Draft could not be saved. Your text is still here.");
     state.composeBaseline = snapshot;
     setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. " + (saved.warning || "Server copy could not be updated.") : "Draft saved." + (saved?.warning ? " " + saved.warning : ""));
