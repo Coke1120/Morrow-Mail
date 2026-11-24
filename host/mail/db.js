@@ -577,6 +577,8 @@ async function openDatabase(target, operation) {
     ownedDb = await ownedStorage.open();
     assertOpening(operation);
     ownedDb.raw.function("morrow_list_text", { deterministic: true }, listFilter.connectedText);
+    ownedDb.raw.function("morrow_list_draft_to", { deterministic: true }, listFilter.matchesDraftTo);
+    ownedDb.raw.function("morrow_first_draft_to", { deterministic: true }, listFilter.firstDraftTo);
     ownedDb.raw.function("morrow_to_me", { deterministic: true }, require("./to-me").matches);
     db = ownedDb;
     storage = ownedStorage;
@@ -1880,8 +1882,10 @@ function whereFor(query, now = Date.now()) {
   }
   const literal = listFilter.normalize(query.listFilter);
   if (literal) {
-    clauses.push("instr(morrow_list_text(m.subject, m.from_addr, m.snippet, m.from_display_name, m.from_address, m.uid, m.draft_pending), ?) > 0");
+    const textMatch = "instr(morrow_list_text(m.subject, m.from_addr, m.snippet, m.from_display_name, m.from_address, m.uid, m.draft_pending), ?) > 0";
+    clauses.push(query.includeDraftTo ? `(${textMatch} OR morrow_list_draft_to(m.to_json, ?) = 1)` : textMatch);
     params.push(literal);
+    if (query.includeDraftTo) params.push(literal);
   }
   for (const token of query.tokens || []) {
     clauses.push(`(
@@ -1945,10 +1949,13 @@ function metadataColumns(table) {
 function messageOrder(query, table = "m") {
   const prefix = table ? table + "." : "";
   const dir = query.sortDirection === "asc" ? "ASC" : "DESC";
+  const recipient = query.includeDraftTo
+    ? `morrow_first_draft_to(${prefix}to_json)`
+    : `json_extract(${prefix}to_json, '$[0]')`;
   const fields = {
     date: `${prefix}list_sort_ts`,
     sender: `COALESCE(NULLIF(${prefix}from_display_name, ''), ${prefix}from_addr, '') COLLATE NOCASE`,
-    recipient: `COALESCE(json_extract(${prefix}to_json, '$[0]'), '') COLLATE NOCASE`,
+    recipient: `COALESCE(${recipient}, '') COLLATE NOCASE`,
     subject: `COALESCE(${prefix}subject, '') COLLATE NOCASE`,
   };
   const field = Object.hasOwn(fields, query.sortBy) ? query.sortBy : "date";

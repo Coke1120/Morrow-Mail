@@ -1374,8 +1374,8 @@ function applyUnreadHold(hold, action) {
   return current;
 }
 
-function visibleList(emails, query, folder, holdId) {
-  const rows = filteredEmails(emails, query);
+function visibleList(emails, query, folder, holdId, drafts) {
+  const rows = filteredEmails(emails, query, drafts);
   const view = folder && folder.view;
   if (!view) return rows;
   const kept = holdId == null ? "" : String(holdId);
@@ -1969,21 +1969,34 @@ function paintMailListColumns(list) {
   return header;
 }
 
-function mailRecipientText(email) {
+function mailRecipientEntries(email) {
   // Scheduled/Outbox summaries already contain a formatted address string;
   // downloaded mail carries an array. Preserve both transport-independent forms.
-  if (typeof email.to === "string") return email.to.trim();
-  return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
-    : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
+  if (typeof email.to === "string") return [email.to.trim()];
+  return (Array.isArray(email.to) ? email.to : []).map(value => {
+    if (typeof value === "string") return value;
+    const address = value?.address || value?.email;
+    if (typeof address !== "string" || !address.trim()) return "";
+    const name = typeof value.name === "string" ? value.name : "";
+    return name ? `${name} <${address}>` : address;
+  }).filter(Boolean);
+}
+
+function mailRecipientText(email) {
+  return mailRecipientEntries(email).join(", ");
+}
+
+function accountDraftsFolder(folder = selectedFolderNode()) {
+  if (state.view !== "mail" || state.query || state.outbox || state.allInbox
+    || !state.accountId || state.accountId === LOCAL_ACCOUNT_ID || isVirtualMailbox(folder) || isAllMailFolder(folder)) return null;
+  return canonicalFolderRole(folder?.wellKnownName || folder?.wellKnown) === "drafts" ? folder : null;
 }
 
 let draftRecipientScope = "";
 function draftRecipientView() {
-  if (state.view !== "mail" || state.query || state.outbox || state.allInbox
-    || state.accountId === LOCAL_ACCOUNT_ID || !state.mailHiddenColumns.includes("recipient")) return "";
-  const folder = selectedFolderNode();
-  return canonicalFolderRole(folder?.wellKnownName || folder?.wellKnown) === "drafts"
-    ? JSON.stringify([state.accountId, folder.id, effectiveMailViewLayout()]) : "";
+  if (!state.mailHiddenColumns.includes("recipient")) return "";
+  const folder = accountDraftsFolder();
+  return folder ? JSON.stringify([state.accountId, folder.id, effectiveMailViewLayout()]) : "";
 }
 
 function paintDraftRecipients(focusFallback = $("mail-columns-open")) {
@@ -7450,7 +7463,7 @@ async function toggleToMeFilter() {
 
 // The host applies this literal filter before paging normal mail lists.
 // Keep the same predicate here for immediate feedback and bounded Search/Outbox views.
-function filteredEmails(emails, query) {
+function filteredEmails(emails, query, drafts) {
   const q = String(query || "").trim().toLowerCase();
   const rows = Array.isArray(emails) ? emails : [];
   if (!q) return rows;
@@ -7458,7 +7471,9 @@ function filteredEmails(emails, query) {
     const subject = email && email.subject ? String(email.subject) : "";
     const from = email && email.from ? String(email.from) : "";
     const snippet = email && email.snippet ? String(email.snippet) : "";
-    return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q);
+    return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q)
+      || (drafts && !email?.outbox && email?.accountId === drafts.accountId && email.folderId === drafts.folderId
+        && mailRecipientEntries(email).some(value => value.trim().toLowerCase().includes(q)));
   });
 }
 
@@ -8712,7 +8727,8 @@ function shownEmails() {
     ? (state.allInboxUnreadOnly ? { view: { unread: true } } : state.allInboxStarredOnly ? { view: { flagged: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
-  return visibleList(emails, query, folder, holdId);
+  const drafts = accountDraftsFolder(folder);
+  return visibleList(emails, query, folder, holdId, drafts && { accountId: state.accountId, folderId: drafts.id });
 }
 
 function rememberLoadedSelection() {
@@ -8885,7 +8901,8 @@ function paintSearchCoverage(shown) {
     : state.listFilterError ? "Could not filter downloaded mail. Change the filter or refresh to retry."
     : state.listLoading ? "Filtering downloaded mail…"
     : `${state.listTotal} matches in this downloaded view · ${shown.length} on this page`;
-  $("list-filter").placeholder = state.query ? "Filter returned results" : state.outbox ? "Filter loaded Outbox" : "Filter downloaded view";
+  $("list-filter").placeholder = state.query ? "Filter returned results" : state.outbox ? "Filter loaded Outbox"
+    : accountDraftsFolder() ? "Filter drafts by To or text" : "Filter downloaded view";
   $("list-filter").setAttribute("aria-label", $("list-filter").placeholder);
   $("list-coverage").hidden = !state.query && !filter;
   const chip = $("filter-chip");
