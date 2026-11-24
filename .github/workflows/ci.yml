@@ -8,9 +8,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
+    name: Ubuntu / ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy: &shards
+      fail-fast: false
+      matrix:
+        shard: [mailbox, startup, integration, boot]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,16 +27,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
       - run: npm ci
-      - run: |
+      - if: matrix.shard == 'boot'
+        run: |
           shopt -s nullglob globstar
-          files=(host/**/*.js shared/**/*.js scripts/*.js)
+          files=(host/**/*.js shared/**/*.js scripts/*.js scripts/check-boot-path/*.js)
           test ${#files[@]} -gt 0
           for f in "${files[@]}"; do node --check "$f"; done
-      - run: node scripts/check-boot-path.js
+      - run: node scripts/check-boot-path.js --shard ${{ matrix.shard }}
 
   windows-check:
+    name: Windows / ${{ matrix.shard }}
     runs-on: windows-2022
+    strategy: *shards
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,8 +48,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
       # Match the release job: node-gyp 9 needs distutils under Python 3.12.
       - name: Install native module build prerequisite
         run: python3 -m pip install --upgrade setuptools
       - run: npm ci
-      - run: npm run check
+      - run: npm run check -- --shard ${{ matrix.shard }}
+
+  # Keep the existing required check names. Each depends only on its own OS.
+  ubuntu-result:
+    name: check
+    needs: check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Ubuntu shard to pass
+        run: |
+          echo "Ubuntu shards: ${{ needs.check.result }}" >> "$GITHUB_STEP_SUMMARY"
+          test "${{ needs.check.result }}" = success
+
+  windows-result:
+    name: windows-check
+    needs: windows-check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Windows shard to pass
+        run: |
+          echo "Windows shards: ${{ needs.windows-check.result }}" >> "$GITHUB_STEP_SUMMARY"
+          test "${{ needs.windows-check.result }}" = success

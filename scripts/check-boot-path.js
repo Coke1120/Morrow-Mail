@@ -5,6 +5,13 @@ const { spawnSync } = require("child_process");
 
 const root = path.join(__dirname, "..");
 
+// The inline checks share VM state and host mocks. Run them in their original
+// order in one child, whether the caller selected a CI shard or the full suite.
+if (process.argv[2] !== "--inline-checks") {
+  require("./check-boot-path/runner").runShards(process.argv.slice(2));
+  return;
+}
+
 const syntax = [
   "host/main.js",
   "host/timeline/quotes.js",
@@ -211,110 +218,6 @@ for (const file of syntax) {
 
 const sponsorUi = spawnSync(process.execPath, [path.join(__dirname, "check-sponsor-ui.js")], { stdio: "inherit", timeout: 15000 });
 if (sponsorUi.status !== 0) process.exit(sponsorUi.status || 1);
-
-const oauthReliability = spawnSync(process.execPath, [path.join(__dirname, "check-oauth-reliability.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(oauthReliability.error);
-assert.strictEqual(oauthReliability.status, 0, "OAuth renewal reliability failed");
-
-const featureOauthRecovery = spawnSync(process.execPath, [path.join(__dirname, "check-feature-oauth-recovery.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(featureOauthRecovery.error);
-assert.strictEqual(featureOauthRecovery.status, 0, "Feature OAuth recovery failed");
-
-const gmailAuthRetry = spawnSync(process.execPath, [path.join(__dirname, "check-gmail-auth-retry.js")], { stdio: "inherit", timeout: process.platform === "win32" ? 90000 : 30000 });
-assert.ifError(gmailAuthRetry.error);
-assert.strictEqual(gmailAuthRetry.status, 0, "Gmail read authentication recovery failed");
-
-const outlookSyncAuth = spawnSync(process.execPath, [path.join(__dirname, "check-outlook-sync-auth.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(outlookSyncAuth.error);
-assert.strictEqual(outlookSyncAuth.status, 0, "Outlook sync authentication recovery failed");
-
-const mailColumns = spawnSync(process.execPath, [path.join(__dirname, "check-mail-columns.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(mailColumns.error);
-assert.strictEqual(mailColumns.status, 0, "mail columns failed");
-
-const mailView = spawnSync(process.execPath, [path.join(__dirname, "check-mail-view.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(mailView.error);
-assert.strictEqual(mailView.status, 0, "mail reading layouts failed");
-
-const mailSelection = spawnSync(process.execPath, [path.join(__dirname, "check-mail-selection.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(mailSelection.error);
-assert.strictEqual(mailSelection.status, 0, "mail Shift-click range selection failed");
-
-const folderChips = spawnSync(process.execPath, [path.join(__dirname, "check-folder-chips.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(folderChips.error);
-assert.strictEqual(folderChips.status, 0, "folder chips and sidebar icons failed");
-const toMe = spawnSync(process.execPath, [path.join(__dirname, "check-to-me-filter.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(toMe.error);
-assert.strictEqual(toMe.status, 0, "To Me recipient filter failed");
-const sidebarAccounts = spawnSync(process.execPath, [path.join(__dirname, "check-sidebar-accounts.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(sidebarAccounts.error);
-assert.strictEqual(sidebarAccounts.status, 0, "per-account sidebar expansion failed");
-
-for (const name of ["check-cross-mailbox-copy.js", "check-cross-mailbox-protocol.js", "check-cross-mailbox-engine.js", "check-cross-mailbox-move.js", "check-cross-mailbox-move-engine.js", "check-cross-mailbox-move-ui.js", "check-cross-mailbox-copy-ui.js", "check-message-context-owner.js", "check-message-context-menu.js", "check-local-folders.js", "check-local-folders-ui.js", "check-mbox-import.js", "check-mbox-import-ui.js", "check-mbox-import-host.js"]) {
-  // MBOX runs 25 serial MIME/restart/SQLite/fsync cases. Windows reached 21
-  // healthy cases before the old 30s aggregate deadline; allow bounded I/O
-  // headroom for this process only. Per-message worker and import budgets stay.
-  // Source Move also runs 14 separate engine/SQLite lifecycle processes. Keep
-  // each child and every provider deadline intact while allowing serial fsync
-  // overhead on Windows for the complete aggregate fixture.
-  const timeout = ["check-mbox-import.js", "check-cross-mailbox-move-engine.js"].includes(name) && process.platform === "win32" ? 90000 : 30000;
-  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
-  assert.ifError(fixture.error);
-  assert.strictEqual(fixture.status, 0, name + " failed");
-}
-
-// Isolate provider fixtures from the legacy suite's mutable host mocks.
-for (const name of ["check-mail-shortcut-target.js", "check-mail-delete-selection.js", "check-mail-status-columns.js", "check-bot-mail-actions.js", "check-bot-send-confirm-ui.js", "check-mail-list-layout.js", "check-google-onboarding-startup.js", "check-google-onboarding.js", "check-google-client-switching.js", "check-google-oauth-default-ui.js", "check-account-settings.js", "check-attachment-transfers.js", "check-pdf-preview.js", "check-forward-attachments.js", "check-responsive-attachments.js", "check-gmail-cache.js", "check-gmail-engine.js", "check-gmail-mail-api-ui.js", "check-gmail-error-diagnostics.js", "check-reviewed-mail-flows.js", "check-fresh-review-fixes.js", "check-mail-performance.js", "check-residual-mail-work.js", "check-mail-phase-two.js", "check-checkpoint-observer.js", "check-startup-preparation.js", "check-startup-upgrade.js", "check-keychain-reads.js", "check-outbox.js", "check-agent-todos.js", "check-agent-card-view.js", "check-agent-learning.js", "check-agent-safety-review.js", "check-agent-actions.js"]) {
-  // Reviewed-flow and Bot-action cases include durable SQLite commits and
-  // restarts; allow full assertions to finish on the Windows filesystem.
-  // Startup-upgrade retains all 300 rows, oversized bodies and recovery cases.
-  // A healthy Windows run measured 168.75s; the same workload later hit 180s.
-  // Allow measured filesystem headroom, with heartbeat/CPU counters in the
-  // fixture to distinguish progress from a hang. Storage worker limits stay.
-  const timeout =
-    ["check-reviewed-mail-flows.js", "check-bot-mail-actions.js"].includes(name) ? 90000 :
-    // This real-SQLite fixture now checkpoints its 2.5k-row search seed once,
-    // then replays pending/body deltas. Keep finite Windows I/O headroom for
-    // all reference/6 MiB/recovery assertions plus phase/CPU/heartbeat evidence.
-    name === "check-residual-mail-work.js" ? (process.platform === "win32" ? 90000 : 60000) :
-    name === "check-startup-upgrade.js" ? (process.platform === "win32" ? 300000 : 180000) :
-    30000;
-  const fixture = spawnSync(process.execPath, [path.join(__dirname, name)], { stdio: "inherit", timeout });
-  assert.ifError(fixture.error);
-  assert.strictEqual(fixture.status, 0, name + " failed");
-}
-
-const sendPreviews = spawnSync(process.execPath, [path.join(__dirname, "check-send-previews.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(sendPreviews.error);
-assert.strictEqual(sendPreviews.status, 0, "send preview rendering failed");
-
-const replyHistory = spawnSync(process.execPath, [path.join(__dirname, "check-reply-history.js")], { stdio: "inherit", timeout: 30000 });
-assert.ifError(replyHistory.error);
-assert.strictEqual(replyHistory.status, 0, "reply history rendering failed");
-
-const uiEditorFeedback = spawnSync(process.execPath, [path.join(__dirname, "check-ui-editor-feedback.js")], { stdio: "inherit", timeout: 15000 });
-if (uiEditorFeedback.status !== 0) process.exit(uiEditorFeedback.status || 1);
-const calendarKeyboardFollowup = spawnSync(process.execPath, [path.join(__dirname, "check-calendar-keyboard-followup.js")], { stdio: "inherit", timeout: 15000 });
-if (calendarKeyboardFollowup.status !== 0) process.exit(calendarKeyboardFollowup.status || 1);
-const bodySyncStatus = spawnSync(process.execPath, [path.join(__dirname, "check-body-sync-status.js")], { stdio: "inherit", timeout: 15000 });
-if (bodySyncStatus.status !== 0) process.exit(bodySyncStatus.status || 1);
-const undoSyncRaces = spawnSync(process.execPath, [path.join(__dirname, "check-undo-sync-races.js")], { stdio: "inherit", timeout: 15000 });
-if (undoSyncRaces.status !== 0) process.exit(undoSyncRaces.status || 1);
-const wave1Review = spawnSync(process.execPath, [path.join(__dirname, "check-wave1-review.js")], { stdio: "inherit", timeout: 15000 });
-if (wave1Review.status !== 0) process.exit(wave1Review.status || 1);
-const wave2Review = spawnSync(process.execPath, [path.join(__dirname, "check-wave2-page-review.js")], { stdio: "inherit", timeout: 15000 });
-if (wave2Review.status !== 0) process.exit(wave2Review.status || 1);
-const wave3Review = spawnSync(process.execPath, [path.join(__dirname, "check-wave3-page-review.js")], { stdio: "inherit", timeout: 15000 });
-if (wave3Review.status !== 0) process.exit(wave3Review.status || 1);
-const unreadHold = spawnSync(process.execPath, [path.join(__dirname, "check-unread-hold.js")], { stdio: "inherit", timeout: 15000 });
-if (unreadHold.status !== 0) process.exit(unreadHold.status || 1);
-const recipientSuggest = spawnSync(process.execPath, [path.join(__dirname, "check-recipient-suggest.js")], { stdio: "inherit", timeout: 30000 });
-if (recipientSuggest.status !== 0) process.exit(recipientSuggest.status || 1);
-
-for (const file of ["check-brain-persona.js", "check-signed-update-manifest.js", "check-update-installer.js", "check-update-launcher.js", "check-update-publisher.js", "check-update-quiescence.js", "check-update-macos.js", "check-update-windows.js", "check-update-schedule.js", "check-release-preflight.js", "check-release-publication.js", "check-changelog.js", "check-mail-discovery.js"]) {
-  const result = spawnSync(process.execPath, [path.join(__dirname, file)], { stdio: "inherit" });
-  if (result.status !== 0) process.exit(result.status || 1);
-}
 
 const asar = require("../host/asar");
 delete process.env.MORROW_ASAR;
@@ -10754,43 +10657,7 @@ require("./check-bot-setup-ux").run();
 
 checkFetchedModelChooser().then(() => require("./check-project-license").run()).then(() => require("./check-bot-probe").run()).then(() => require("./check-macos-sign").run()).then(() => checkUpdateAuth()).then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-oauth-graph-regressions").run()).then(() => require("./check-mail-reader").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-sync-retry").run()).then(() => require("./check-gmail-pace").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-bot-send-authorization").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-mail-actions").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-quit-scheduled").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
-}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => require("./check-draft-partial-delivery").run()).then(() => require("./check-draft-revisions").run()).then(() => {
-  const spelling = spawnSync(process.execPath, [path.join(root, "scripts/check-compose-spelling.js")], { stdio: "inherit", timeout: 30000 });
-  assert.ifError(spelling.error);
-  assert.strictEqual(spelling.status, 0, "Compose spelling menu fixture failed");
-  const summaries = spawnSync(process.execPath, [path.join(root, "scripts/check-message-summary.js")], { stdio: "inherit", timeout: 30000 });
-  assert.strictEqual(summaries.status, 0, "Message summary fixture failed");
-  // This fixture supplies its own Electron file dialogs; isolate it from the
-  // earlier suites' VM-loaded host and native-window mocks.
-  const result = spawnSync(process.execPath, [path.join(root, "scripts/check-account-calendar-attachments.js")], { stdio: "inherit", timeout: 30000 });
-  assert.strictEqual(result.status, 0, "Account/calendar/attachment fixture failed");
-  const liveness = spawnSync(process.execPath, [path.join(root, "scripts/check-account-liveness.js")], { stdio: "inherit", timeout: 30000 });
-  assert.strictEqual(liveness.status, 0, "Account liveness fixture failed");
-  const indexControl = spawnSync(process.execPath, [path.join(root, "scripts/check-index-opening-control.js")], { stdio: "inherit", timeout: 15000 });
-  assert.strictEqual(indexControl.status, 0, "Index opening control fixture failed");
-  const indexRebuild = spawnSync(process.execPath, [path.join(root, "scripts/check-search-index-rebuild.js")], { stdio: "inherit", timeout: 120000 });
-  assert.strictEqual(indexRebuild.status, 0, "Search index rebuild fixture failed");
-  const startupCredentialQuit = spawnSync(process.execPath, [path.join(root, "scripts/check-startup-credential-quit.js")], { stdio: "inherit", timeout: 120000 });
-  assert.strictEqual(startupCredentialQuit.status, 0, "Combined startup/credential quit fixture failed");
-  for (const name of ["check-whole-list-filter.js", "check-whole-mailbox-filter-renderer.js", "check-mcp.js", "check-mcp-ui.js", "check-bot-proactive.js", "check-bot-proactive-ui.js", "check-hermes-webhook.js", "check-ipc-diagnostics.js", "check-bot-provider-metadata.js", "check-reconnect-calendar-preservation.js", "check-chatgpt.js", "check-chatgpt-ui.js", "check-ai-settings-ownership.js", "check-imap-client-errors.js", "check-ai-consent.js", "check-ai-consent-settings.js", "check-brain-refresh.js", "check-subject-prefixes.js", "check-gmail-mail-api.js", "check-folder-management.js", "check-folder-recovery.js", "check-folder-management-channel.js", "check-gmail-dispositions.js", "check-gmail-reply-backfill.js", "check-imap-dispositions.js", "check-sender-names.js", "check-wave4-ux.js", "check-mail-decoding.js", "check-list-unsubscribe.js", "check-unsubscribe-dkim.js", "check-unsubscribe-post.js", "check-unsubscribe-source.js", "check-gmail-raw-bounds.js", "check-unsubscribe-integration.js", "check-unsubscribe-browser.js"]) {
-    // Durable cache fixtures use real SQLite commits, checkpoints and reopen.
-    // Windows filesystem latency needs bounded headroom for the complete suite;
-    // keep every case, assertion and application/protocol deadline unchanged.
-    const durableCache = ["check-whole-list-filter.js", "check-gmail-reply-backfill.js", "check-imap-dispositions.js", "check-mail-decoding.js"].includes(name);
-    const timeout = durableCache && process.platform === "win32" ? 90000 : 30000;
-    const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout });
-    assert.ifError(fixture.error);
-    assert.strictEqual(fixture.status, 0, name + " failed");
-  }
-}).then(() => checkTranslateBatches()).then(() => {
-  const timeline = spawnSync(process.execPath, [path.join(root, "scripts/timeline.test.js")], { stdio: "inherit", timeout: 30000 });
-  assert.strictEqual(timeline.status, 0, "Timeline regression fixture failed");
-  for (const name of ["check-mail-notifications.js", "check-mail-notifications-sync.js", "check-mail-notifications-ui.js"]) {
-    const fixture = spawnSync(process.execPath, [path.join(root, "scripts", name)], { stdio: "inherit", timeout: 30000 });
-    assert.strictEqual(fixture.status, 0, name + " failed");
-  }
-  console.log("ui-path-ok");
-}).catch((error) => {
+}).then(() => require("./check-batch-b").run()).then(() => require("./check-background-folders").run()).then(() => require("./check-overnight-bodies").run()).then(() => require("./check-mail-review-regressions").run()).then(() => require("./check-confirmed-identity").run()).then(() => require("./check-move-calendar-patches").run()).then(() => require("./check-draft-scheduled-recovery").run()).then(() => require("./check-draft-partial-delivery").run()).then(() => require("./check-draft-revisions").run()).then(() => checkTranslateBatches()).catch((error) => {
   console.error(error);
   process.exit(1);
 });
