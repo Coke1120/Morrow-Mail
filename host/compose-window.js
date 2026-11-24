@@ -89,8 +89,11 @@ function createComposeHost(options) {
     return typeof opts.mode === "function" ? opts.mode() : opts.mode;
   }
 
-  function open(seed, opener) {
+  function openWindow(seed, opener, fromShell) {
     const clean = sanitizeComposeSeed(seed);
+    const owner = fromShell ? opts.resolveResumedDraftOwner?.(clean) : null;
+    if (owner) clean.draftBodyEpoch = owner.bodyEpoch;
+    else delete clean?.draftBodyEpoch;
     let index = 0;
     for (const record of records.values()) {
       if (record.win && !record.win.isDestroyed()) index += 1;
@@ -164,12 +167,8 @@ function createComposeHost(options) {
       if (isMainFrame === false) return;
       fail();
     });
-    const { ordinaryDraftResume, draftId, accountId, draftBodyEpoch: bodyEpoch, draftRevision } = clean ?? {};
-    // The opening revision qualifies the seed. Reviews check the current saved revision.
-    if (ordinaryDraftResume === true && Number.isSafeInteger(bodyEpoch) && bodyEpoch >= 0
-        && [draftId, accountId, draftRevision].every(value => typeof value === "string" && value.trim())) {
-      resumedDraftOwners.set(contents, { win, owner: Object.freeze({ draftId, accountId, bodyEpoch }) });
-    }
+    // The window stays scoped to this draft. Reviews validate the current saved revision.
+    if (owner) resumedDraftOwners.set(contents, { win, owner: Object.freeze(owner) });
     try {
       const loading = mode() === "asar"
         ? win.loadURL("morrow://local/index.html?role=compose")
@@ -182,10 +181,19 @@ function createComposeHost(options) {
     return { ok: true, id };
   }
 
+  function open(seed, opener) {
+    return openWindow(seed, opener);
+  }
+
   function register() {
     ipcMain.handle("compose:open", (event, seed) => {
-      const opener = BrowserWindow.fromWebContents(event.sender);
-      return open(seed, opener);
+      const sender = event?.sender;
+      const opener = sender && !sender.isDestroyed?.() ? BrowserWindow.fromWebContents(sender) : null;
+      const shellWindow = typeof opts.getParent === "function" ? opts.getParent() : null;
+      const frame = event?.senderFrame;
+      const fromShell = shellWindow && opener === shellWindow && !shellWindow.isDestroyed()
+        && sender === shellWindow.webContents && frame && frame === sender.mainFrame;
+      return openWindow(seed, opener, fromShell);
     });
     ipcMain.handle("compose:pullSeed", (event) => {
       const record = records.get(event.sender.id);

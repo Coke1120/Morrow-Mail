@@ -3629,6 +3629,11 @@ function inboxReviewId(value) {
   return typeof value === "string" && value.length <= 200 && value.trim().length > 0;
 }
 
+function validDraftInboxReference({ accountId, draftId, draftRevision, bodyEpoch }) {
+  return inboxReviewId(accountId) && inboxReviewId(draftId) && inboxReviewId(draftRevision)
+    && Number.isSafeInteger(bodyEpoch) && bodyEpoch >= 0;
+}
+
 function assertDraftInboxOwner(owner) {
   if (owner?.isDestroyed?.()) throw attachmentTransfers.cancelled();
   if (!Number.isSafeInteger(owner?.id) || owner.id <= 0
@@ -3650,8 +3655,7 @@ function draftInboxReview(params, owner) {
   const review = params.inboxAttachmentReview;
   if (params.strictLocal !== true || typeof review?.id !== "string"
       || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(review.id)
-      || !inboxReviewId(review.accountId) || !inboxReviewId(review.draftId) || !inboxReviewId(review.draftRevision)
-      || !Number.isSafeInteger(review.bodyEpoch) || review.bodyEpoch < 0
+      || !validDraftInboxReference(review)
       || !Array.isArray(review.recipients) || review.recipients.length !== 3
       || review.recipients.some(value => typeof value !== "string" || value.length > 32_768)) {
     throw new Error("The Inbox attachment review is invalid. Open it again from the draft.");
@@ -3661,14 +3665,31 @@ function draftInboxReview(params, owner) {
     bodyEpoch: review.bodyEpoch, recipients: review.recipients, ownerId: owner.id };
 }
 
-function draftInboxTarget(review) {
-  const account = bindAccount(db.accountById(review.accountId));
-  if (account[ACCOUNT_EPOCH] !== review.bodyEpoch) throw removedAccountError();
-  const draft = db.messageById(review.draftId);
+function savedDraftInboxTarget({ accountId, draftId, draftRevision, bodyEpoch }) {
+  const account = bindAccount(db.accountById(accountId));
+  if (account[ACCOUNT_EPOCH] !== bodyEpoch) throw removedAccountError();
+  const draft = db.messageById(draftId);
   if (!draft?.is_draft || draft.account_id !== account.id || !isSystemDraftFolder(account.id, draft.folder_path)
-      || db.draftRevision(draft) !== review.draftRevision || db.messageHeld(draft.id)) {
+      || db.draftRevision(draft) !== draftRevision || db.messageHeld(draft.id)) {
     throw Object.assign(new Error("This saved draft changed or was removed. Reopen it before attaching Inbox files."), { code: "draft_conflict" });
   }
+  return { account, draft };
+}
+
+function resolveResumedDraftOwner(seed) {
+  const { ordinaryDraftResume, accountId, draftId, draftRevision, draftBodyEpoch: bodyEpoch } = seed ?? {};
+  const reference = { accountId, draftId, draftRevision, bodyEpoch };
+  if (ordinaryDraftResume !== true || !validDraftInboxReference(reference) || !ready || !db.isReady()) return null;
+  try {
+    const { account, draft } = savedDraftInboxTarget(reference);
+    return { draftId: draft.id, accountId: account.id, bodyEpoch: account[ACCOUNT_EPOCH] };
+  } catch {
+    return null;
+  }
+}
+
+function draftInboxTarget(review) {
+  const { account } = savedDraftInboxTarget(review);
   const folder = db.folderByWellKnown(account.id, "inbox");
   const inbox = folder?.path && !remote.isAllMail(folder)
     && (account.mail_transport !== "gmail_api" || folder.provider_id === "INBOX");
@@ -5649,6 +5670,7 @@ module.exports = {
   },
   init,
   answer,
+  resolveResumedDraftOwner,
   settleActions: actions.settleActions,
   submitBotAction: actions.submitBotAction,
   settleAccount: actions.settleAccount,

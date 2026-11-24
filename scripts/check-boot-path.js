@@ -4487,7 +4487,7 @@ const featureSeed = [
   ["folder-label-safety", "Folders and Gmail labels", "Mail", "Switching folders retires the previous list before loading downloaded mail. Folder-move completion follows only its original mailbox selection, not a newer folder or account visit. Open in Mail matches provider identity or the complete folder hierarchy, never a same-named leaf. Gmail label checkboxes use saved provider memberships, including labels outside the current folder; confirmed removal of the current label refreshes that view and clears only removed messages from its reader and selection. Provider label edits and Outlook moves target the selected cached identity. Legacy RFC Message-ID lookup must be unique and match the source folder; ambiguous or paginated matches are refused. Existing provider grants are required; no new scopes or bot operations are added."],
   ["support-navigation", "Support and mailbox selection", "Support", "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit."],
   ["compose-work-preservation", "Compose recovery and preparation", "Mail", "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Choose Preview beside a PDF added in this Compose session (including drag and drop and replacements) or a verified local PDF in a resumed draft. Saved PDFs are read on demand. Close Preview to return focus to the row and choose Remove while keeping your edits. Same-name attachments have numbered rows. If the draft changed in another window, reopen it before previewing again. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip."],
-  ["draft-inbox-attachments", "Attach from Inbox in a draft", "Mail", "In a saved draft, choose Attach from Inbox and check the draft’s exact To, Cc and Bcc. Choose files by their source sender, subject and date, then select Add selected files. The picker shows files stored on this device, including completed Inbox downloads still in the five-minute transfer cache. If a file has expired, preview it in the reader and reopen the picker. You can preview the added PDF, remove the old version and choose Save draft. Cancel or Escape keeps your edits. The 25 MiB outgoing attachment limit applies."],
+  ["draft-inbox-attachments", "Attach from Inbox in a draft", "Mail", "From Drafts in the main Mail window, use Right preview or Bottom preview and choose Resume draft. In the editor, choose Attach from Inbox and check the draft’s exact To, Cc and Bcc. Choose files by their source sender, subject and date, then select Add selected files. The picker shows files stored on this device, including completed Inbox downloads still in the five-minute transfer cache. If a file has expired, preview it in the reader and reopen the picker. You can preview the added PDF, remove the old version and choose Save draft. Cancel or Escape keeps your edits. The 25 MiB outgoing attachment limit applies."],
   ["brain-edit-preservation", "Profile edit preservation", "Agent", "Refresh and Rebuild preserve saved user-rule and category edits made during analysis. A changed learned profile rejects an obsolete analysis. Learned facts retain non-Latin names and text. Fix persists the selected row, including voice quotes, only while its stored version still matches; an obsolete Fix asks you to reload. Category-save readback preserves newer local edits and reports them as unsaved. Domain CC/BCC recipients may contain = in the address, and a quoted display name may contain a comma. An invalid address is not saved."],
   ["calendar-write-safety", "Calendar write safety", "Calendar", "Known authorization failures offer Reauthorize calendar; ordinary refresh reuses valid grants. Retrying unchanged creation in the same editor reuses its Google event ID or Microsoft transaction ID. Check the provider before changing an uncertain submission and starting another event. Plain-text descriptions preserve literal angle brackets; readable HTML descriptions retain link targets. Outlook description edits tolerate surrounding whitespace in an unchanged baseline and still require the provider revision to match. Non-time edits omit time fields, preserving offsets and seconds through repeated daylight-saving hours. Ambiguous or nonexistent local time edits require another time or the provider editor with an explicit offset. Confirmed saves and deletes invalidate all cached months for the changed mailbox, even after closing the editor. Google and Outlook calendar enumeration each follow up to five pages; an incomplete list leaves saved selections unchanged. Saved calendar checks are stored and restored in full. Timed agenda and day-cell rows sort by actual instants across UTC offsets."],
   ["ai-connection", "ChatGPT or API key", "Agent", "In Settings → AI, choose Sign in with ChatGPT to use an eligible plan without an API key, or keep your API key / custom endpoint. Browser sign-in uses Morrow Mail's own registered client, automatic loopback and optional one-time paste-back. Cancel, timeout, account selection, reauthorization and sign-out are available. Cancellation permits a fresh retry without waiting for an old discovery response; obsolete attempts cannot change the new one. Save keeps newer edits unsaved, and connection test results apply only to the current settings. Fetch account-specific models before choosing one. Settings clears fetched API models when the Base URL or API key changes. In Settings and AI Setup, saving ChatGPT keeps the latest saved API settings unless you edited them in that form. AI data permission discloses mail, calendar, drafts, profile and conversation context and the saved destination before an affirmative choice. Settings → AI and AI Setup support review, allow and revoke; Allow requires a ready saved connection and the explicit-action checkbox. If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step. Unsaved edits, saves and pending permission reads block Allow with an actionable reason. Save & review connection saves without approving; choose permission after reviewing the saved destination. Reopening Settings preserves unsaved connection edits and clearly shows saved permission choices. App updates retain unchanged uses. Thread Timeline and cross-thread Case permissions are separate opt-ins; a new or expanded use requires incremental approval, while verified historical grants preserve only uses disclosed at that time. Selecting the already active ChatGPT account keeps its permission and saved model selection. In Settings → AI, Manage permissions shows the saved status and opens the disclosure and explicit-action choice. Timeline, Case and background choices are under Optional access. AI Setup shows the choices directly. Privacy details opens the full disclosure. Reading details never grants permission. API and ChatGPT connections without a saved permission grant start with AI data use off. Saving a key or signing in is not consent. Explicit AI actions need approval; Background profile refresh, page-open triage, compose-open reply suggestions and scheduled skills need separate background opt-in. Destination, model and account changes need fresh permission. Material data-use changes require approval for the affected scope; ordinary unchanged actions keep their saved grant. Cancel / revoke stops queued and active AI requests; data already delivered cannot be recalled. ChatGPT requests set store: false; no retention or training guarantee is made. Plan, app and workspace limits apply; Manage usage opens ChatGPT settings. No automatic billing fallback, provider switching, extra allowance, hosted tools or general proxy. ChatGPT credentials use OS-encrypted storage and require unlocked OS secure storage. API keys are saved in ai.json with restricted file permissions, not OS encryption. AI Setup announces connection results as live status; setup readiness follows the selected authentication mode. Native and live sign-in validation remains pending."],
@@ -6596,6 +6596,65 @@ async function checkComposeMailbox() {
   assert.strictEqual(calls.length, 9, "a removed reply account must not fall back to the sidebar mailbox");
 }
 
+function checkDraftPickerOpeners(engine, seed) {
+  const { EventEmitter } = require("node:events");
+  const filename = require.resolve("../host/compose-window");
+  const fromHost = require("node:module").createRequire(filename);
+  const handlers = new Map();
+  let nextId = 700;
+  class FixtureWindow extends EventEmitter {
+    constructor() {
+      super();
+      this.webContents = Object.assign(new EventEmitter(), { id: nextId++, window: this, mainFrame: {},
+        getURL: () => "morrow://local/index.html?role=compose", setWindowOpenHandler() {} });
+    }
+    static fromWebContents(contents) { return contents.window; }
+    isDestroyed() { return false; }
+    getBounds() { return {}; }
+    loadFile() { return Promise.resolve(); }
+  }
+  const shell = new FixtureWindow();
+  const electron = { BrowserWindow: FixtureWindow, ipcMain: {
+    handle: (key, fn) => handlers.set(key, fn), on() {},
+  }, screen: { getDisplayMatching: () => ({ workArea: {} }) } };
+  // Give this host its own window registry and IPC handlers, even if another
+  // check in this process has already loaded Electron.
+  const fixture = { exports: {} };
+  const loadHost = require("node:vm").compileFunction(require("node:fs").readFileSync(filename, "utf8"),
+    ["module", "require"], { filename });
+  loadHost(fixture, name => name === "electron" ? electron : fromHost(name));
+  const compose = fixture.exports;
+  let resolutions = 0;
+  const host = compose.createComposeHost({ getParent: () => shell, resolveResumedDraftOwner(fields) {
+    resolutions++;
+    return engine.resolveResumedDraftOwner(fields);
+  } }).register();
+  function resume(opener, fields = seed, frame = opener.webContents.mainFrame) {
+    const result = handlers.get("compose:open")({ sender: opener.webContents, senderFrame: frame }, fields);
+    return host.records.get(result.id);
+  }
+  const bound = resume(shell);
+  assert.deepEqual(compose.getResumedDraftOwner(bound.win.webContents), {
+    draftId: seed.draftId, accountId: seed.accountId, bodyEpoch: seed.draftBodyEpoch,
+  });
+  const child = new FixtureWindow();
+  const guest = new FixtureWindow();
+  guest.webContents.window = shell;
+  const untrusted = [resume(bound.win), resume(child, { ...seed, accountId: "other" }),
+    resume(child, { ...seed, draftId: "missing" }), resume(guest), resume(shell, seed, {})];
+  shell.webContents.window = child;
+  untrusted.push(resume(shell));
+  shell.webContents.window = shell;
+  assert.equal(resolutions, 1, "only the mail shell's own main frame consults the saved draft");
+  const stale = resume(shell, { ...seed, draftRevision: "obsolete" });
+  for (const record of [...untrusted, stale]) {
+    assert.equal(compose.getResumedDraftOwner(record.win.webContents), null);
+    assert.equal(record.seed.draftBodyEpoch, undefined, "the unbound editor has no Inbox picker");
+    assert.equal(record.seed.ordinaryDraftResume, true, "normal draft editing and labels remain available");
+  }
+  return { unbound: untrusted.map(record => record.win.webContents), lookup: compose.getResumedDraftOwner };
+}
+
 async function checkDraftInboxAttachments(engine, db) {
   const { EventEmitter } = require("node:events");
   const { randomUUID } = require("node:crypto");
@@ -6641,7 +6700,6 @@ async function checkDraftInboxAttachments(engine, db) {
     profile: "custom", imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
     smtpHost: "smtp.example.invalid", smtpPort: 465, smtpTls: true, createdAt: 1 });
   try {
-    composeHost.getResumedDraftOwner = contents => windows.get(contents) || null;
     db.replaceFolders(accountId, [
       { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
       { path: "Drafts", name: "Drafts", wellKnown: "drafts" },
@@ -6660,6 +6718,10 @@ async function checkDraftInboxAttachments(engine, db) {
     db.saveBlob("draft-inbox-one", "one.txt", "text/plain", Buffer.from("one"));
     db.saveBlob("draft-inbox-two", "two.txt", "text/plain", Buffer.from("two"));
     const draftRevision = db.draftRevision(db.messageById(draftId));
+    const { unbound, lookup } = checkDraftPickerOpeners(engine, {
+      ordinaryDraftResume: true, accountId, draftId, draftRevision, draftBodyEpoch: 0,
+    });
+    composeHost.getResumedDraftOwner = contents => windows.get(contents) || lookup(contents);
     const request = { strictLocal: true, inboxAttachmentReview: {
       id: randomUUID(), accountId, draftId, draftRevision, bodyEpoch: 0, recipients: ["target@example.invalid", "", ""],
     } };
@@ -6675,7 +6737,7 @@ async function checkDraftInboxAttachments(engine, db) {
       return originalList(query, options);
     };
     db.readBlob = (id, version) => { reads.push(id); return originalReadBlob(id, version); };
-    for (const sender of [other, editor(603)]) {
+    for (const sender of [other, editor(603), ...unbound]) {
       assert.equal((await invoke("mail:listFromCache", request, sender)).success, false);
     }
     assert.equal(listCalls, 0, "only the draft's registered editor reaches Inbox metadata");
@@ -6701,6 +6763,8 @@ async function checkDraftInboxAttachments(engine, db) {
     };
     await pinParts(parts);
     reads.length = 0;
+    for (const sender of unbound) assert.equal((await confirm({}, sender)).success, false);
+    assert.deepEqual(reads, [], "an editor without a shell-issued grant cannot read a selected file");
     const retired = confirm();
     windows.delete(owner);
     assert.equal((await retired).success, false, "retiring the editor while the read is pending stops delivery");
