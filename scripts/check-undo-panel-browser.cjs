@@ -107,6 +107,7 @@ const root = path.resolve(__dirname, '..');
     await click('confirm-ok');
     await page.waitForFunction(() => restoreCalls.length === 2);
     assert.deepEqual(await value('restoreCalls[1].payload.opIds'), ['a','b']);
+    assert.equal(await page.locator('#undo').textContent(), 'Restoring 2 changes…');
     await value("finishRestore({outcomes:['a','b'].map(id=>({id,kind:'undo',status:'completed'}))})");
     await page.waitForFunction(() => !undoConfirmationPending);
 
@@ -123,8 +124,39 @@ const root = path.resolve(__dirname, '..');
     await click('confirm-ok');
     await page.waitForFunction(() => !undoConfirmationPending);
     assert.equal(await value('restoreCalls.length'), 2);
+    // After a selective restore the primary Undo reviews only the remaining sender.
+    await page.evaluate(() => {
+      const items = ['Amber Reed', 'Jules Moss'].map((from, i) => ({
+        ...fixtureItems[i], opId: 'archive-' + i, messageId: 'note-' + i,
+        subject: 'Shared dispatch note', from, action: 'archive', destinationLabel: 'Archive',
+      }));
+      startRemovalSession('Archived two messages.', items.map(item => item.opId), false, items);
+    });
+    await click('undo-details');
+    await page.locator('#undo-details-list li').filter({hasText:'Jules Moss'}).getByRole('checkbox').check();
+    await click('undo-details-selected');
+    const reviewBody = page.locator('#confirm-body');
+    assert.match(await reviewBody.textContent(), /From: Jules Moss\nSubject: Shared dispatch note/);
+    await click('confirm-ok');
+    await page.waitForFunction(() => restoreCalls.length === 3);
+    assert.deepEqual(await value('restoreCalls[2].payload.opIds'), ['archive-1']);
+    assert.equal(await page.locator('#undo').textContent(), 'Restoring 1 change…');
+    await value("finishRestore({outcomes:[{id:'note-1',kind:'undo',status:'completed'}]})");
+    await page.waitForFunction(() => !undoConfirmationPending);
+    assert.equal(await page.locator('#undo').textContent(), 'Undo 1 completed change');
+    await click('undo');
+    assert.match(await reviewBody.textContent(), /From: Amber Reed\nSubject: Shared dispatch note/);
+    assert.doesNotMatch(await reviewBody.textContent(), /Jules Moss/);
+    await click('confirm-ok');
+    await page.waitForFunction(() => restoreCalls.length === 4);
+    assert.deepEqual(await value('restoreCalls[3].payload.opIds'), ['archive-0']);
+    await value("finishRestore({outcomes:[{id:'note-0',kind:'undo',status:'completed'}]})");
+    await page.waitForFunction(() => !undoConfirmationPending);
+    assert.equal(await page.locator('#undo').isVisible(), false);
+    assert.equal(await page.locator('#undo-details').isVisible(), false);
     await value("showFeatures()");
     assert.match(await page.locator('#features-panel').textContent(), /Select all and Clear keep Details open/);
+    assert.match(await page.locator('#features-panel').textContent(), /the confirmation shows the message sender and subject/);
     await shot('features-help');
     console.log('PASS: native pointer/keyboard selection, bulk/individual review, Cancel/Escape/focus, frozen IDs, stale session, delayed once-only restore, nested dialogs, outside click, empty state and Features.');
   } finally { await browser.close(); }

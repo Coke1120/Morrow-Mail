@@ -260,18 +260,24 @@ async function cancellationAndIntegration() {
   assert.equal(calls.length, 0, "unknown channels never reach IPC");
   const ui = renderer({ ...integration.globals, crypto: require("node:crypto").webcrypto });
   ui.run("openDialog=()=>{$('attachment-preview').open=true;};");
-  const opened = ui.run("previewAttachment({id:'synthetic-message'}, {id:'synthetic-pdf',filename:'fixture.pdf',mimeType:'application/pdf'})");
+  const opened = ui.run("previewAttachment({id:'synthetic-message',from:'Alder Paper <alder@example.invalid>'}, {id:'synthetic-pdf',filename:'fixture.pdf',mimeType:'application/pdf'})");
   await until(() => integration.paints.length === 1);
   assert.equal(calls.length, 1); assert.equal(integration.node("attachment-preview-status").hidden, true);
   assert.equal(calls[0].params.emailId, "synthetic-message"); assert.equal(calls[0].params.attachmentId, "synthetic-pdf");
+  const sender = integration.node("attachment-preview-from");
+  assert.equal(sender.hidden, false);
+  assert.match(sender.textContent, /Alder Paper <alder@example[.]invalid>/);
+  assert.equal(integration.node("attachment-preview-arrange").hidden, true, "arrangement belongs to separate readers");
   ui.run("clearAttachmentPreview()"); texts.resolve({ items: [{ str: "late integration text" }] }); await opened;
   assert.ok(integration.tasks[0].destroyed); assert.equal(integration.pages.childNodes.length, 0); assert.equal(integration.pages.hidden, true);
+  assert.equal(sender.textContent, "", "closing the preview clears its source");
+  assert.equal(sender.hidden, true);
   assert.equal(listeners.size, 0, "attachment progress subscription is released");
   assert.equal(integration.stage.contains(integration.document.activeElement), false);
 }
 
-function syntheticPdf(total = 1, width = 595, height = 842) {
-  const text = "BT /F1 12 Tf 10 20 Td (Synthetic accessible PDF body) Tj ET";
+function syntheticPdf(total = 1, width = 595, height = 842, body = "Synthetic accessible PDF body") {
+  const text = `BT /F1 12 Tf 10 20 Td (${body}) Tj ET`;
   const objects = ["<< /Type /Catalog /Pages 2 0 R >>", `<< /Type /Pages /Count ${total} /Kids [${Array.from({ length: total }, (_, i) => `${i + 5} 0 R`).join(" ")}] >>`,
     `<< /Length ${text.length} >>\nstream\n${text}\nendstream`, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
   for (let i = 0; i < total; i++) objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /Font << /F1 4 0 R >> >> /Contents 3 0 R >>`);
@@ -280,6 +286,73 @@ function syntheticPdf(total = 1, width = 595, height = 842) {
   const xref = pdf.length;
   pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n` + offsets.slice(1).map(offset => String(offset).padStart(10, "0") + " 00000 n \n").join("");
   return Uint8Array.from(Buffer.from(pdf + `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`));
+}
+
+async function composeReplacementPreview() {
+  const f = fixture(true), ui = renderer(f.globals);
+  const oldPdf = syntheticPdf(1, 595, 842, "HKD 1,240");
+  const replacement = syntheticPdf(1, 595, 842, "HKD 1,340");
+  assert.equal(oldPdf.byteLength, replacement.byteLength);
+  const compose = f.node("compose"), dialog = f.node("attachment-preview"), list = f.node("compose-attachments");
+  compose.id = "compose"; compose.open = true; compose.close = () => { compose.open = false; };
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = () => { dialog.open = false; dialog.listeners.close(); };
+  f.document.querySelectorAll = selector => selector === "dialog[open]" && compose.open ? [compose] : [];
+  const previews = () => descendants(list, "ghost").filter(button => button.dataset.composePdf);
+  list.querySelectorAll = previews;
+  f.node("compose-body").value = "Unsaved edits";
+
+  const calls = [];
+  ui.context.callUpload = async (channel, payload) => {
+    calls.push(channel);
+    assert.equal(channel, "mail:uploadAttachment");
+    assert.deepEqual(payload.fileBytes, replacement);
+    return { filename: payload.filename, mimeType: payload.mimeType, size: replacement.byteLength, storageUrl: "local:replacement" };
+  };
+  ui.context.file = { name: "quote.pdf", size: replacement.byteLength, type: "", arrayBuffer: async () => replacement.buffer.slice(0) };
+  ui.run(`syncComposeActions = () => {}; paintComposeNote = () => {}; call = callUpload;
+    $('attachment-preview').addEventListener('close', finishAttachmentPreview);
+    state.composeAttachments = [{ filename: 'quote.pdf', size: file.size, storageUrl: 'local:saved' }];
+    paintComposeAttachments();`);
+  assert.equal(previews().length, 0, "saved attachment has no current-session bytes");
+  await ui.run("removeComposeAttachment('local:saved'); addComposeFiles([file])");
+  assert.equal(previews().length, 1);
+  const button = previews()[0];
+  assert.equal(button.type, "button");
+  assert.equal(button.getAttribute("aria-label"), "Preview quote.pdf");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(attachmentPayload(state.composeAttachments))")), [
+    { storageUrl: "local:replacement", filename: "quote.pdf", mimeType: "application/octet-stream", size: replacement.byteLength, id: "local:replacement" },
+  ]);
+
+  const snapshot = ui.run("composeSnapshot()");
+  for (let count = 0; count < 2; count++) {
+    previews()[0].click();
+    await until(() => /HKD 1,340/.test(f.pages.textContent));
+    assert.doesNotMatch(f.pages.textContent, /HKD 1,240/);
+    ui.run("syncAttachmentPreview({id:'background-refresh'}); paintComposeAttachments()");
+    assert.equal(dialog.open, true, "reader refresh preserves the Compose preview");
+    ui.run("closeAttachmentPreview()");
+    assert.equal(f.pages.textContent, "");
+    assert.equal(f.document.activeElement, previews()[0], "Close focuses the rebuilt attachment button");
+    assert.equal(compose.open, true);
+    assert.equal(ui.run("composeSnapshot()"), snapshot, "preview preserves the current draft and edits");
+  }
+  assert.deepEqual(calls, ["mail:uploadAttachment"], "opening either preview uses the retained bytes");
+  ui.run("removeComposeAttachment('local:replacement')");
+  assert.equal(previews().length, 0);
+  assert.equal(ui.run("state.composePdfBytes.size"), 0, "removal releases the retained bytes");
+
+  await ui.run("addComposeFiles([file])");
+  const upload = gate(), waiting = gate();
+  ui.context.lateUpload = () => { waiting.resolve(); return upload.promise; };
+  const pending = ui.run("call = lateUpload; addComposeFiles([file])");
+  await waiting.promise;
+  ui.run("state.composeBaseline = composeSnapshot()");
+  assert.equal(await ui.run("requestComposeClose()"), true);
+  assert.equal(ui.run("state.composePdfBytes.size"), 0, "closing Compose clears accepted bytes");
+  upload.resolve({ filename: "quote.pdf", size: replacement.byteLength, storageUrl: "local:late" });
+  await pending;
+  assert.equal(ui.run("state.composePdfBytes.size"), 0, "an upload finishing after close cannot retain its bytes");
 }
 
 async function shippedBundle() {
@@ -332,7 +405,7 @@ async function run() {
   assert.equal(crlfSource, source, "Windows CRLF checkouts strip module imports identically");
   new vm.Script(crlfSource, { filename: "pdf-preview-crlf.js" });
   const hostWithResolvers = Promise.withResolvers;
-  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await shippedBundle(); contractAndHelp();
+  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await shippedBundle(); contractAndHelp();
   assert.equal(Promise.withResolvers, hostWithResolvers, "renderer compatibility never patches the host Promise");
   console.log("pdf-preview-ok: source and shipped PDF.js bundle, accessible/inert text, progressive admission/abort, resize failure/Retry, canvas caps, lifecycle/app integration, CSP/assets/rendered Features");
 }

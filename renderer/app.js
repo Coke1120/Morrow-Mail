@@ -40,6 +40,8 @@ const state = {
   agentReplySource: null,
   agentLearning: null,
   composeAttachments: [],
+  composePdfBytes: new Map(),
+  composePdfPreview: null,
   composeFileJobs: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -1372,8 +1374,8 @@ function applyUnreadHold(hold, action) {
   return current;
 }
 
-function visibleList(emails, query, folder, holdId) {
-  const rows = filteredEmails(emails, query);
+function visibleList(emails, query, folder, holdId, drafts) {
+  const rows = filteredEmails(emails, query, drafts);
   const view = folder && folder.view;
   if (!view) return rows;
   const kept = holdId == null ? "" : String(holdId);
@@ -1865,6 +1867,11 @@ function paintMailColumnEditor() {
 }
 function wireMailColumnEditor() {
   $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
+  $("draft-recipients").addEventListener("click", () => {
+    const scope = draftRecipientView();
+    draftRecipientScope = draftRecipientScope === scope ? "" : scope;
+    paintDraftRecipients();
+  });
   $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
   $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
   $("mail-columns-show-all").addEventListener("click", () => {
@@ -1962,12 +1969,66 @@ function paintMailListColumns(list) {
   return header;
 }
 
-function mailRecipientText(email) {
+function mailRecipientEntries(email) {
   // Scheduled/Outbox summaries already contain a formatted address string;
   // downloaded mail carries an array. Preserve both transport-independent forms.
-  if (typeof email.to === "string") return email.to.trim();
-  return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
-    : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
+  if (typeof email.to === "string") return [email.to.trim()];
+  return (Array.isArray(email.to) ? email.to : []).map(value => {
+    if (typeof value === "string") return value;
+    const address = value?.address || value?.email;
+    if (typeof address !== "string" || !address.trim()) return "";
+    const name = typeof value.name === "string" ? value.name : "";
+    return name ? `${name} <${address}>` : address;
+  }).filter(Boolean);
+}
+
+function mailRecipientText(email) {
+  return mailRecipientEntries(email).join(", ");
+}
+
+function accountDraftsFolder(folder = selectedFolderNode()) {
+  if (state.view !== "mail" || state.query || state.outbox || state.allInbox
+    || !state.accountId || state.accountId === LOCAL_ACCOUNT_ID || isVirtualMailbox(folder) || isAllMailFolder(folder)) return null;
+  return canonicalFolderRole(folder?.wellKnownName || folder?.wellKnown) === "drafts" ? folder : null;
+}
+
+let draftRecipientScope = "";
+function draftRecipientView() {
+  if (!state.mailHiddenColumns.includes("recipient")) return "";
+  const folder = accountDraftsFolder();
+  return folder ? JSON.stringify([state.accountId, folder.id, effectiveMailViewLayout()]) : "";
+}
+
+function paintDraftRecipients(focusFallback = $("mail-columns-open")) {
+  const button = $("draft-recipients");
+  if (!button) return;
+  const scope = draftRecipientView();
+  if (draftRecipientScope !== scope) draftRecipientScope = "";
+  const showing = !!draftRecipientScope;
+  const wasShowing = button.getAttribute("aria-pressed") === "true";
+  if (!scope && document.activeElement === button) focusFallback?.focus({ preventScroll: true });
+  button.hidden = !scope;
+  if (showing !== wasShowing) button.setAttribute("aria-pressed", String(showing));
+  if (!showing) {
+    if (wasShowing) for (const preview of $("message-list").querySelectorAll(".draft-recipient-preview")) preview.remove();
+    return;
+  }
+  // Update cached row buttons in place so revealing To keeps focus and selection.
+  for (const { row } of messageRows.values()) {
+    const email = row.mailMessage;
+    let preview = row.querySelector(".draft-recipient-preview");
+    if (email.outbox || email.accountId !== state.accountId || email.folderId !== state.folderId) {
+      preview?.remove();
+      continue;
+    }
+    if (!preview) {
+      preview = document.createElement("span");
+      preview.className = "draft-recipient-preview";
+      row.querySelector(".row-main").append(preview);
+    }
+    const text = "To: " + (mailRecipientText(email) || "(no recipient)");
+    if (preview.textContent !== text) preview.textContent = text;
+  }
 }
 
 function mailListRequest(view) {
@@ -4097,6 +4158,7 @@ function applyMailView() {
     const restore = mailViewScroll.get(layout) || position;
     list.scrollLeft = restore.left;
     list.scrollTop = restore.top;
+    if (draftRecipientScope) paintDraftRecipients();
   }
   const handle = shell.querySelector('[data-split="messages"]');
   if (handle) {
@@ -6275,6 +6337,7 @@ function onFolderNavKey(event) {
 }
 
 function renderAccounts() {
+  paintDraftRecipients();
   observeCrossMailboxMoveContext();
   renderSettingsAccounts();
   if (state.view === "mail") refreshMailVacation();
@@ -7400,7 +7463,7 @@ async function toggleToMeFilter() {
 
 // The host applies this literal filter before paging normal mail lists.
 // Keep the same predicate here for immediate feedback and bounded Search/Outbox views.
-function filteredEmails(emails, query) {
+function filteredEmails(emails, query, drafts) {
   const q = String(query || "").trim().toLowerCase();
   const rows = Array.isArray(emails) ? emails : [];
   if (!q) return rows;
@@ -7408,7 +7471,9 @@ function filteredEmails(emails, query) {
     const subject = email && email.subject ? String(email.subject) : "";
     const from = email && email.from ? String(email.from) : "";
     const snippet = email && email.snippet ? String(email.snippet) : "";
-    return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q);
+    return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q)
+      || (drafts && !email?.outbox && email?.accountId === drafts.accountId && email.folderId === drafts.folderId
+        && mailRecipientEntries(email).some(value => value.trim().toLowerCase().includes(q)));
   });
 }
 
@@ -8662,7 +8727,8 @@ function shownEmails() {
     ? (state.allInboxUnreadOnly ? { view: { unread: true } } : state.allInboxStarredOnly ? { view: { flagged: true } } : null)
     : selectedFolderNode();
   const holdId = unreadListActive(currentUnreadView()) && state.unreadHold ? state.unreadHold.id : "";
-  return visibleList(emails, query, folder, holdId);
+  const drafts = accountDraftsFolder(folder);
+  return visibleList(emails, query, folder, holdId, drafts && { accountId: state.accountId, folderId: drafts.id });
 }
 
 function rememberLoadedSelection() {
@@ -8835,7 +8901,8 @@ function paintSearchCoverage(shown) {
     : state.listFilterError ? "Could not filter downloaded mail. Change the filter or refresh to retry."
     : state.listLoading ? "Filtering downloaded mail…"
     : `${state.listTotal} matches in this downloaded view · ${shown.length} on this page`;
-  $("list-filter").placeholder = state.query ? "Filter returned results" : state.outbox ? "Filter loaded Outbox" : "Filter downloaded view";
+  $("list-filter").placeholder = state.query ? "Filter returned results" : state.outbox ? "Filter loaded Outbox"
+    : accountDraftsFolder() ? "Filter drafts by To or text" : "Filter downloaded view";
   $("list-filter").setAttribute("aria-label", $("list-filter").placeholder);
   $("list-coverage").hidden = !state.query && !filter;
   const chip = $("filter-chip");
@@ -8996,6 +9063,7 @@ function renderList() {
       previous = row;
     }
   }
+  paintDraftRecipients();
   refreshMailListDates();
   const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : "", state.allInboxStarredOnly ? "starred" : ""].join("\0");
   if (motionKey !== listMotionKey) {
@@ -10697,10 +10765,41 @@ function clearPdfPreviewPages() {
   pages.removeAttribute("aria-busy");
 }
 
+function updatePdfPreviewHeader(email) {
+  const source = $("attachment-preview-from");
+  if (source) {
+    source.textContent = email ? "From: " + (email.from || email.fromAddress || "Unknown sender") : "";
+    source.hidden = !email;
+  }
+  const arrange = $("attachment-preview-arrange");
+  if (arrange) arrange.hidden = !email || !isReaderWindow() || typeof api?.arrangeReaderPair !== "function";
+  const notice = $("attachment-preview-arrange-status");
+  if (notice) {
+    notice.textContent = "";
+    notice.hidden = true;
+  }
+}
+
+async function arrangePdfReaders() {
+  const token = attachmentPreviewToken;
+  const notice = $("attachment-preview-arrange-status");
+  try {
+    const result = await api.arrangeReaderPair();
+    if (!result?.ok) throw new Error(result?.message || "Could not place the reader windows side by side.");
+    if (token === attachmentPreviewToken) notice.hidden = true;
+  } catch (error) {
+    if (token !== attachmentPreviewToken) return;
+    notice.textContent = error.message || "Could not place the reader windows side by side.";
+    notice.hidden = false;
+  }
+}
+
 function clearAttachmentPreview() {
+  updatePdfPreviewHeader(null);
   attachmentPreviewToken += 1;
   attachmentPreviewEmailId = "";
   attachmentPreviewFileId = "";
+  state.composePdfPreview = null;
   cancelAttachmentTask(attachmentPreviewRequest);
   attachmentPreviewRequest = null;
   if (attachmentPreviewAbort) {
@@ -10735,15 +10834,28 @@ function closeAttachmentPreview() {
   dialog.close();
 }
 
+function finishAttachmentPreview() {
+  // A queued close event may arrive after another preview has already opened.
+  if ($("attachment-preview").open) return;
+  const origin = state.composePdfPreview;
+  clearAttachmentPreview();
+  if (!origin || origin.session !== state.composeSession || !state.composePdfBytes.has(origin.storageUrl)
+      || topOpenDialog()?.id !== "compose") return;
+  const button = [...$("compose-attachments").querySelectorAll("[data-compose-pdf]")]
+    .find((node) => node.dataset.composePdf === origin.storageUrl);
+  button?.focus();
+}
+
 function syncAttachmentPreview(email) {
   const dialog = $("attachment-preview");
-  if (!dialog || !dialog.open) return;
+  if (!dialog || !dialog.open || state.composePdfPreview) return;
   const id = email && email.id;
   if (id && id === attachmentPreviewEmailId) return;
   closeAttachmentPreview();
 }
 
-function showAttachmentPreviewShell(file, kind) {
+function showAttachmentPreviewShell(file, kind, email) {
+  updatePdfPreviewHeader(kind === "pdf" ? email : null);
   const dialog = $("attachment-preview");
   const title = $("attachment-preview-title");
   const status = $("attachment-preview-status");
@@ -10799,33 +10911,37 @@ function loadPdfPreview() {
   return pdfPreviewLoader;
 }
 
-function pdfPreviewError(error) {
+function pdfPreviewError(error, inCompose) {
   const name = error && error.name;
-  if (name === "PasswordException") return "This PDF is password-protected. Save or Open it instead.";
   if (name === "AbortError") return "";
-  return "This PDF could not be previewed. Save or Open it instead.";
+  const message = name === "PasswordException" ? "This PDF is password-protected." : "This PDF could not be previewed.";
+  return inCompose ? message : message + " Save or Open it instead.";
 }
 
-async function previewAttachment(email, file) {
-  const kind = attachmentPreviewKind(file);
+async function previewAttachment(email, file, composeBytes) {
+  const kind = composeBytes ? "pdf" : attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
-  if (attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
+  if (email && attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
   const gen = ++attachmentPreviewToken;
   if (attachmentPreviewAbort) {
     attachmentPreviewAbort.abort();
     attachmentPreviewAbort = null;
   }
   cancelAttachmentTask(attachmentPreviewRequest);
+  attachmentPreviewRequest = null;
   const controller = new AbortController();
   attachmentPreviewAbort = controller;
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   attachmentPreviewFileId = file.id;
-  showAttachmentPreviewShell(file, kind);
+  state.composePdfPreview = composeBytes ? { session: state.composeSession, storageUrl: file.storageUrl } : null;
+  showAttachmentPreviewShell(file, kind, email);
   const label = file.filename || "attachment";
   let data;
   try {
-    attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
-    data = await attachmentPreviewRequest.promise;
+    if (!composeBytes) {
+      attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
+      data = await attachmentPreviewRequest.promise;
+    }
   } catch (error) {
     if (gen !== attachmentPreviewToken) return;
     attachmentPreviewFileId = "";
@@ -10843,7 +10959,7 @@ async function previewAttachment(email, file) {
     throw error;
   }
   if (gen !== attachmentPreviewToken) return;
-  const bytes = attachmentBytes(data);
+  const bytes = composeBytes || attachmentBytes(data);
   const status = $("attachment-preview-status");
   if (!bytes.byteLength) {
     if (status) {
@@ -10902,7 +11018,7 @@ async function previewAttachment(email, file) {
   } catch (error) {
     if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
     attachmentPreviewFileId = "";
-    const message = pdfPreviewError(error);
+    const message = pdfPreviewError(error, !!composeBytes);
     if (!message || !status) return;
     status.hidden = false;
     status.textContent = message;
@@ -11487,7 +11603,8 @@ function paintUndoControls() {
     undo.hidden = !count;
     undo.disabled = !!undoBusy || pending;
     undo.setAttribute?.("aria-busy", undoBusy || pending ? "true" : "false");
-    undo.textContent = pending ? "Restoring " + undoPending.size + " changes…" : "Undo " + count + " completed changes";
+    const noun = (pending ? undoPending.size : count) === 1 ? "change" : "changes";
+    undo.textContent = pending ? `Restoring ${undoPending.size} ${noun}…` : `Undo ${count} completed ${noun}`;
   }
   if (details) {
     details.hidden = !count;
@@ -11984,9 +12101,11 @@ async function requestUndoRemoval(requested) {
   if (!count) return;
   const opener = document.activeElement;
   const actions = new Map();
-  for (const item of undoItems || []) {
-    if (ids.includes(item.opId)) actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
+  const reviewedItems = (undoItems || []).filter(item => ids.includes(item.opId));
+  for (const item of reviewedItems) {
+    actions.set(item.action || "move", (actions.get(item.action || "move") || 0) + 1);
   }
+  const single = ids.length === 1 ? reviewedItems[0] : null;
   undoConfirmationPending = true;
   clearStatusTimer();
   try {
@@ -11994,8 +12113,12 @@ async function requestUndoRemoval(requested) {
       title: "Undo " + count + (count === 1 ? " change?" : " changes?"),
       body: kind === "read"
         ? "Restore the previous read state of " + count + (count === 1 ? " message?" : " messages?")
-        : "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
-          " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+        : [
+          "Restore the previous folder for " + count + (count === 1 ? " completed change" : " completed changes") +
+            " (" + [...actions].map(([action, n]) => n + " " + action).join(", ") + "). Newly completed changes are not included.",
+          single?.from && "From: " + single.from.replace(/\s+/g, " ").trim(),
+          single?.subject && "Subject: " + single.subject.replace(/\s+/g, " ").trim(),
+        ].filter(Boolean).join("\n"),
       confirm: "Undo " + count + (count === 1 ? " change" : " changes"),
     });
     await confirmSettled();
@@ -15068,7 +15191,14 @@ function readComposeEditorHtml() {
   const html = typeof editor.innerHTML === "string" ? editor.innerHTML.trim() : "";
   if (blankComposeHtml(html)) return "";
   if (typeof sanitizeComposeHtml !== "function") return "";
-  try { return sanitizeComposeHtml(html); } catch { return ""; }
+  try {
+    if (!editor.querySelector("[data-mail-style]")) return sanitizeComposeHtml(html);
+    // Chromium needs inert style attributes to retain paste formatting in
+    // its Undo history. Serialize the live CSSOM styles after later edits.
+    const copy = editor.cloneNode(true);
+    for (const node of copy.querySelectorAll("[data-mail-style]")) node.removeAttribute("data-mail-style");
+    return sanitizeComposeHtml(copy.innerHTML);
+  } catch { return ""; }
 }
 
 function composeEditorSnapshot() {
@@ -15286,7 +15416,9 @@ function revealEditorStyles(root) {
   try { nodes = root.querySelectorAll("[style], [data-mail-style], font[color], [bgcolor]"); } catch { return; }
   for (const el of nodes) {
     if (!el || el === root) continue;
-    const css = mailInlineStyle(el);
+    // An empty live style in Compose can also mean that Undo or a format
+    // command cleared it. Only a missing style needs the parked paste value.
+    const css = root.id === "compose-editor" ? (el.getAttribute("style") ?? mailInlineStyle(el)) : mailInlineStyle(el);
     if (css) mailApplyCss(el, css, false, false);
     if (typeof el.getAttribute !== "function" || !el.style || typeof el.style.setProperty !== "function") continue;
     if (String(el.tagName || "").toLowerCase() === "font") {
@@ -15375,27 +15507,32 @@ function applyComposeCommand(command, editor, value) {
   const target = activeRichEditor(editor);
   if (!target) return;
   if (typeof target.focus === "function") target.focus();
+  const fontSize = command === "fontSize";
+  if (fontSize && !/^[1-7]$/.test(value)) return;
   const colored = command === "foreColor" || command === "hiliteColor" || command === "backColor";
   const color = colored ? mailColor(value) : "";
   if (colored && !color) return;
   let applied = false;
+  // CSS keeps a chosen size inside pasted styles and avoids a legacy
+  // font[color] that CSSOM could leave behind after Undo.
+  const useCss = fontSize || (colored && (command !== "foreColor" || target.id === "compose-editor"));
   try {
-    if (command === "foreColor") {
+    if (command === "foreColor" && !useCss) {
       try { document.execCommand("styleWithCSS", false, false); } catch { /* font color stays visible without a style attribute */ }
-    } else if (colored) {
-      try { document.execCommand("styleWithCSS", false, true); } catch { /* highlight uses a background color */ }
+    } else if (useCss) {
+      try { document.execCommand("styleWithCSS", false, true); } catch { /* leave the native default */ }
     }
-    try { applied = document.execCommand(command, false, colored ? color : null) === true; } catch { applied = false; }
+    try { applied = document.execCommand(command, false, fontSize ? String(value) : color || null) === true; } catch { applied = false; }
     if (!applied && command === "hiliteColor") {
       try { applied = document.execCommand("backColor", false, color) === true; } catch { applied = false; }
     }
   } finally {
-    if (colored && command !== "foreColor") {
+    if (useCss) {
       try { document.execCommand("styleWithCSS", false, false); } catch { /* bold and italic stay on tags */ }
     }
   }
-  if (!applied && !colored) insertComposeFallback(command);
-  if (!applied && command === "foreColor") wrapRichStyle(target, "color", color);
+  if (!applied && !colored && !fontSize) insertComposeFallback(command);
+  if (!applied && command === "foreColor" && target.id !== "compose-editor") wrapRichStyle(target, "color", color);
   if (!applied && (command === "hiliteColor" || command === "backColor")) wrapRichStyle(target, "background-color", color);
   if (colored) revealEditorStyles(target);
 }
@@ -15404,6 +15541,14 @@ function insertComposeMarkup(markup, editor) {
   const target = activeRichEditor(editor);
   if (!target) return;
   if (typeof target.focus === "function") target.focus();
+  // Paste uses sanitized markup. Insert it through Chromium so Undo can restore
+  // both the previous text and selection, and normal input updates the draft.
+  if (target.id === "compose-editor" && typeof document.execCommand === "function") {
+    if (!document.execCommand("insertHTML", false, parkMailStyleAttributes(markup))) {
+      document.execCommand("insertText", false, plainFromComposeHtml(markup));
+    }
+    return;
+  }
   const holder = document.createElement("div");
   appendSafeMailHtml(holder, markup, false);
   const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
@@ -15454,9 +15599,105 @@ function focusComposeBody() {
   if (typeof body.scrollTop === "number") body.scrollTop = 0;
 }
 
+function bindComposeTextColor(editor, applyColor) {
+  const trigger = $("compose-text-color");
+  const palette = $("compose-color-palette");
+  const custom = $("compose-color-custom");
+  const picker = $("compose-color-picker");
+  if (!trigger || !palette || !custom || !picker) return;
+  const colors = [...palette.querySelectorAll("[data-text-color]")];
+  const choices = [...colors, custom];
+  for (const button of colors) {
+    if (button.value !== "currentcolor") button.style.setProperty("--preset-color", button.value);
+  }
+  function close() {
+    if (palette.hidden) return;
+    palette.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+  }
+  trigger.addEventListener("click", () => {
+    if (!palette.hidden) return close();
+    const value = document.queryCommandValue?.("foreColor");
+    const rgb = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(value);
+    const hex = rgb ? "#" + rgb.slice(1).map(part => Number(part).toString(16).padStart(2, "0")).join("") : value;
+    const current = !value || value === getComputedStyle(editor).color ? "currentcolor" : hex;
+    let active = null;
+    for (const button of colors) {
+      const selected = button.value === current;
+      button.setAttribute("aria-pressed", String(selected));
+      if (selected) active = button;
+    }
+    palette.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    (active || colors[0]).focus();
+  });
+  for (const button of colors) button.addEventListener("click", () => {
+    close();
+    applyColor(button.value);
+  });
+  custom.addEventListener("click", () => {
+    trigger.focus();
+    close();
+    picker.click();
+  });
+  picker.addEventListener("change", () => applyColor(picker.value));
+  palette.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      trigger.focus();
+      close();
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const index = choices.indexOf(event.target);
+      const step = { ArrowRight: 1, ArrowDown: 3, ArrowLeft: -1, ArrowUp: -3 }[event.key];
+      choices[(index + step + choices.length) % choices.length].focus();
+    }
+  });
+  trigger.parentElement.addEventListener("focusout", (event) => {
+    if (!trigger.parentElement.contains(event.relatedTarget)) close();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!trigger.parentElement.contains(event.target)) close();
+  });
+}
+
+function steppedComposeFontSize(editor, direction) {
+  const selection = document.getSelection();
+  const editingSize = Number(document.queryCommandValue?.("fontSize"));
+  if (selection?.isCollapsed && editingSize) return editingSize + direction;
+  const start = selection?.rangeCount ? selection.getRangeAt(0).startContainer : editor;
+  const element = start.nodeType === 1 ? start : start.parentElement;
+  const current = parseFloat(getComputedStyle(editor.contains(element) ? element : editor).fontSize);
+  // Chromium's legacy HTML font sizes, in the order passed to fontSize.
+  const sizes = [10, 13, 16, 18, 24, 32, 48];
+  const next = direction > 0 ? sizes.findIndex(size => size > current) : sizes.findLastIndex(size => size < current);
+  return next + 1;
+}
+
 function bindRichEditor(bar, editor, onInput) {
   if (!bar && !editor) return;
   let saved = null;
+  let savedSession = null;
+  const steps = bar?.querySelectorAll?.("[data-font-step]");
+  if (steps?.length && editor) {
+    editor.addEventListener("focusout", () => {
+      saved = rememberEditorRange(editor);
+      savedSession = state.composeSession;
+    });
+    function applyFormat(command, value) {
+      if (steps[0].disabled) return;
+      if (document.activeElement !== editor && saved && savedSession === state.composeSession
+          && editor.contains(saved.commonAncestorContainer)) restoreEditorRange(editor, saved);
+      editor.focus();
+      const argument = command === "fontSize" ? steppedComposeFontSize(editor, value) : value;
+      applyComposeCommand(command, editor, argument);
+      if (onInput) onInput();
+      paintFormatState(bar);
+    }
+    for (const button of steps) button.addEventListener("click", () => applyFormat("fontSize", Number(button.dataset.fontStep)));
+    bindComposeTextColor(editor, color => applyFormat("foreColor", color));
+  }
   if (bar && typeof bar.addEventListener === "function") {
     if (typeof bar.querySelectorAll === "function") {
       for (const input of bar.querySelectorAll("input[data-command]")) paintColorSwatch(input);
@@ -15465,7 +15706,10 @@ function bindRichEditor(bar, editor, onInput) {
       const button = event.target && event.target.closest && event.target.closest("button");
       if (button && button.id === "compose-ai-open") return;
       if (button) event.preventDefault();
-      saved = rememberEditorRange(editor);
+      if (!steps?.length || document.activeElement === editor) {
+        saved = rememberEditorRange(editor);
+        savedSession = state.composeSession;
+      }
     });
     bar.addEventListener("click", (event) => {
       const button = event.target && event.target.closest && event.target.closest("button[data-command]");
@@ -15655,7 +15899,8 @@ function paintComposeAttachments() {
     list.appendChild(item);
   }
   const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
-  for (const row of rows) {
+  const session = state.composeSession;
+  for (const [index, row] of rows.entries()) {
     const item = typeof document.createElement === "function" ? document.createElement("li") : null;
     if (!item) continue;
     item.className = "compose-file";
@@ -15676,11 +15921,24 @@ function paintComposeAttachments() {
     if (typeof remove.addEventListener === "function") {
       remove.addEventListener("click", () => removeComposeAttachment(row.storageUrl));
     }
-    if (typeof item.append === "function") item.append(name, size, remove);
+    const controls = [name, size];
+    if (state.composePdfBytes?.has(row.storageUrl)) {
+      const actionLabel = rows.some((other) => other !== row && other.filename === row.filename)
+        ? `${row.filename}, attachment ${index + 1} of ${rows.length}` : row.filename;
+      const preview = attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => {
+        if (session !== state.composeSession || state.composePending || state.composeQueued || state.composeInitializing || !$("compose").open
+            || $("attachment-preview").open) return;
+        const bytes = state.composePdfBytes.get(row.storageUrl);
+        if (bytes) return previewAttachment(null, row, bytes);
+      }));
+      preview.dataset.composePdf = row.storageUrl;
+      preview.disabled = locked;
+      controls.push(preview);
+    }
+    controls.push(remove);
+    if (typeof item.append === "function") item.append(...controls);
     else if (typeof item.appendChild === "function") {
-      item.appendChild(name);
-      item.appendChild(size);
-      item.appendChild(remove);
+      for (const control of controls) item.appendChild(control);
     }
     if (typeof list.appendChild === "function") list.appendChild(item);
   }
@@ -15689,6 +15947,8 @@ function paintComposeAttachments() {
 function removeComposeAttachment(storageUrl) {
   if (state.composePending || state.composeQueued || state.composeInitializing) return;
   state.composeAttachments = composeAttachmentList(state.composeAttachments).filter((row) => row.storageUrl !== storageUrl);
+  state.composePdfBytes?.delete(storageUrl);
+  if (state.composePdfPreview?.storageUrl === storageUrl) closeAttachmentPreview();
   setComposeAttachError("");
   paintComposeAttachments();
   paintComposeNote();
@@ -15741,6 +16001,10 @@ async function addComposeFiles(list) {
         if (over) {
           errors.push(over);
           continue;
+        }
+        if (meta.size === bytes.byteLength && !state.composeAttachments.some((item) => item.storageUrl === meta.storageUrl)
+            && attachmentPreviewKind(meta) === "pdf") {
+          state.composePdfBytes.set(meta.storageUrl, bytes);
         }
         state.composeAttachments = next;
         paintComposeAttachments();
@@ -17777,6 +18041,7 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  state.composePdfBytes?.clear();
   state.composeInputVersions = { to: 0, cc: 0, bcc: 0, subject: 0, body: 0 };
   state.composeFileJobs = [];
   const replySession = state.composeSession;
@@ -17923,6 +18188,7 @@ async function requestComposeClose() {
   const preview = $("compose-preview");
   if (preview && preview.open) return false;
   if (state.composePending) return false;
+  if (state.composePdfPreview) closeAttachmentPreview();
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
     const choice = await new Promise((resolve) => {
       const dialog = $("compose-close-review");
@@ -17936,6 +18202,7 @@ async function requestComposeClose() {
   }
   // Await the exit before another composition reuses this dialog.
   state.composeSession += 1;
+  state.composePdfBytes?.clear();
   state.composeInitializing = false;
   signatureGen += 1;
   await closeDialog("compose");
@@ -18330,6 +18597,7 @@ async function scheduleMail(whenOverride, reviewedPayload) {
     state.agentReplyTodo = null;
     state.agentReplySource = null;
     state.composeQueued = true;
+    state.composePdfBytes?.clear();
     $("compose-title").textContent = "Scheduled receipt";
     // Mailbox fixtures evaluate scheduleMail without the compose-window helpers.
     if (typeof publishComposeTitle === "function") publishComposeTitle("Scheduled receipt");
@@ -18546,6 +18814,7 @@ async function deliverMail(payload, session = state.composeSession) {
         return;
       }
       state.composeQueued = true;
+      state.composePdfBytes?.clear();
       state.composePartialReceipt = true;
       state.draftId = null;
       state.draftRevision = null;
@@ -18565,6 +18834,7 @@ async function deliverMail(payload, session = state.composeSession) {
     state.draftRevision = null;
     state.composeBaseline = composeSnapshot();
     await closeDialog("compose");
+    if (ownsCompose()) state.composePdfBytes?.clear();
     showStatus(result?.warning || "Sent.", !!result?.warning);
   } catch (error) {
     const message = "Delivery was not confirmed. Your draft is ready to edit. Check Sent before retrying. " + (error.message || String(error));
@@ -18642,6 +18912,7 @@ async function sendMail(reviewedPayload) {
     state.agentReplyTodo = null;
     state.agentReplySource = null;
     state.composeQueued = true;
+    state.composePdfBytes?.clear();
     state.composeBaseline = composeSnapshot();
   } catch (error) {
     if (!queued) {
@@ -26287,6 +26558,7 @@ function markRail(view) {
     features: "rail-shortcuts",
     folders: "rail-folders",
   }[view];
+  paintDraftRecipients($(current));
   for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-shortcuts", "rail-log", "rail-folders"]) {
     const node = $(id);
     if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
@@ -28968,6 +29240,10 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (state.composePdfPreview && $("attachment-preview").open) {
+          closeAttachmentPreview();
+          return;
+        }
         if (takeRecipientSuggestEscape()) return;
         if (composeAiOpen()) {
           dismissComposeAi().catch(() => {});
@@ -29114,11 +29390,12 @@ function wire() {
     event.preventDefault();
     applySearch();
   });
-  $("search-query").addEventListener("search", () => {
-    if ($("search-query").value.trim()) return;
-    if (!state.query) return;
-    applySearch();
-  });
+  const searchQuery = $("search-query");
+  const restoreListIfCleared = (event) => {
+    if (!event.isComposing && !searchQuery.value.trim() && state.query) applySearch();
+  };
+  searchQuery.addEventListener("input", restoreListIfCleared);
+  searchQuery.addEventListener("search", restoreListIfCleared);
   const listFilter = $("list-filter");
   if (listFilter) {
     listFilter.addEventListener("input", applyListFilter);
@@ -29308,9 +29585,10 @@ function wire() {
     $("confirm-validation").hidden = true;
   });
   $("confirm-cancel").addEventListener("click", () => cancelConfirm());
+  $("attachment-preview-arrange").addEventListener("click", arrangePdfReaders);
   $("attachment-preview-close").addEventListener("click", () => closeAttachmentPreview());
   window.addEventListener("beforeunload", () => { cancelCrossMailboxMoveIntent(localTransfer, "Window closing. Remaining Gmail Trash actions are cancelled; a started request cannot be recalled."); clearMessageSummary(); for (const task of attachmentTasks.values()) cancelAttachmentTask(task); });
-  $("attachment-preview").addEventListener("close", clearAttachmentPreview);
+  $("attachment-preview").addEventListener("close", finishAttachmentPreview);
   $("agent-peek-close").addEventListener("click", () => closeDialog("agent-peek"));
   $("agent-peek-mail").addEventListener("click", () => {
     openPeekInMail().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));

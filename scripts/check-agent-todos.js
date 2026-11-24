@@ -498,7 +498,7 @@ async function rendererChecks() {
   ui.run('showUndo("Moved.", ["op-1"])');
   ui.run('showStatus("Background note.")');
   assert.equal(undo.hidden, false);
-  assert.match(undo.textContent, /completed changes/);
+  assert.equal(undo.textContent, "Undo 1 completed change");
   assert.match(dom.window.document.getElementById("status").textContent, /Moved/);
   assert.match(dom.window.document.getElementById("status").textContent, /Background note/);
 

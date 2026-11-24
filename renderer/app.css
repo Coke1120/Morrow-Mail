@@ -4994,11 +4994,12 @@ dialog h2 {
 
 .attachment-preview-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
   gap: 12px;
   flex: none;
 }
+
+.attachment-preview-heading { flex: 1; min-width: 0; }
 
 .attachment-preview-bar h2 {
   margin: 0;
@@ -5008,7 +5009,21 @@ dialog h2 {
   white-space: nowrap;
 }
 
-#attachment-preview-status { margin: 0; flex: none; }
+#attachment-preview-from { margin: 4px 0 0; overflow-wrap: anywhere; }
+
+.attachment-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 50%;
+}
+
+#attachment-preview-arrange { max-width: 100%; min-height: 32px; height: auto; overflow-wrap: anywhere; }
+#attachment-preview-close { flex: none; }
+
+#attachment-preview-status,
+#attachment-preview-arrange-status { margin: 0; flex: none; }
 
 #attachment-preview-stage {
   position: relative;
@@ -5305,7 +5320,7 @@ label.check input { width: auto; accent-color: var(--accent-ink); }
 textarea { min-height: 140px; resize: vertical; }
 
 #compose textarea,
-#compose .compose-editor { min-height: 180px; margin-top: 8px; }
+#compose .compose-editor { min-height: 180px; margin-top: 8px; font-size: medium; }
 
 #compose textarea.compose-body-source {
   position: absolute;
@@ -5360,6 +5375,63 @@ textarea { min-height: 140px; resize: vertical; }
 .compose-format .compose-color:has(input:disabled) {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.compose-format .compose-font-step { font-size: 13px; font-weight: 600; }
+.compose-color-tools { position: relative; }
+
+.compose-color-palette:not([hidden]) {
+  position: absolute;
+  z-index: 3;
+  inset: calc(100% + 4px) auto auto 0;
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--shadow-card);
+}
+
+.compose-format .compose-color-palette button { position: relative; width: 34px; height: 34px; }
+
+.compose-color-palette [data-text-color] span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: var(--preset-color, var(--paper));
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.compose-format .compose-color-palette [aria-pressed="true"] { border-color: var(--accent-ink); }
+
+.compose-color-palette [aria-pressed="true"]::after {
+  position: absolute;
+  inset: auto 1px 0 auto;
+  content: "✓" / "";
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.compose-format #compose-color-custom {
+  grid-column: 1 / -1;
+  width: auto;
+  height: 26px;
+  border-color: transparent;
+  font-size: 12px;
+}
+
+.compose-format :is(.compose-font-step, #compose-text-color, .compose-color-palette button):focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
 }
 
 .compose-format .compose-color {
@@ -6249,6 +6321,19 @@ html[data-window="translate"] #reader .translate-column h2 {
 #messages #message-list .snippet { grid-column: 1 / -1; }
 #messages.compact-list #message-list button.message { padding-top: 3px; padding-bottom: 3px; }
 #messages #message-list .row-actions { top: auto; bottom: 0; transform: none; }
+
+#draft-recipients { margin-top: 6px; }
+#list-head:has(#draft-recipients[aria-pressed="true"]) ~ #message-list { container-type: inline-size; }
+#messages #message-list .draft-recipient-preview {
+  grid-column: 1 / -1;
+  /* Keep To text inside the scrollport at its leftmost position. */
+  max-width: calc(100cqw - 54px);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+#messages.compact-list #message-list button.message:has(.draft-recipient-preview) { height: auto; }
+#messages #message-list .message-row:has(.draft-recipient-preview) .row-actions { top: 0; bottom: auto; }
 
 #messages #message-list .outbox-row { padding-left: 28px; }
 
