@@ -89,6 +89,7 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
   const drafts = { ...scope, folderId: '[Gmail]/Drafts' };
   const draftRows = Array.from({ length: 206 }, (_, i) => fixture.message(i + 1, {
     id: `draft-${i}`, subject: 'Purchase order', snippet: '', isDraft: true, listSortTs: 1000 - i,
+    from: 'a@fixture.invalid', fromAddress: 'a@fixture.invalid',
     to: i === 205 ? ['supplier@fixture.invalid', { name: 'Équipe approbation', address: target }, 'a@fixture.invalid'] : [],
     cc: [target], bcc: [target], recipientHeaders: { replyTo: [target] },
   }));
@@ -99,6 +100,11 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
   ]) db.applyFolderSync(accountId, folderPath, fixture.report([{
     ...draftRows[205], id,
   }]));
+  const openDraft = async (emailId, accountId = 'a') => {
+    const result = await engine.answer('mail:openEmail', [{ emailId, accountId, full: true, includeThread: false }]);
+    assert.equal(result.success, true, JSON.stringify(result.error));
+    return result.data.email;
+  };
 
   await t.test('finds the later To entry from page two before count and sorting', async () => {
     assert.equal((await ask(drafts)).total, 206);
@@ -110,6 +116,25 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
     }
     assert.equal((await ask({ ...drafts, listFilter: target, filterToMe: true })).total, 1);
     assert.equal((await ask({ ...drafts, listFilter: 'approvalXXteam' })).total, 0);
+    const opened = await openDraft('draft-205');
+    const expectedTo = ['supplier@fixture.invalid', 'Équipe approbation <' + target + '>', 'a@fixture.invalid'];
+    assert.deepEqual(
+      [(await ask({ ...drafts, listFilter: target })).emails[0].to, opened.to],
+      [expectedTo, expectedTo],
+    );
+    assert.deepEqual((await openDraft('ordinary-folder-draft')).to, draftRows[205].to, 'custom-folder detail keeps its existing representation');
+    // The compose field joins the hydrated entries, and explicit Save submits that text.
+    const saved = await engine.answer('mail:upsertDraft', [{
+      emailId: opened.id, accountId: opened.accountId, draftRevision: opened.draftRevision,
+      fromAddress: opened.fromAddress, fromDisplayName: opened.fromDisplayName,
+      threadId: opened.threadId, subject: opened.subject, body: '<p>Body-only edit</p>',
+      to: opened.to.join(', '), cc: opened.cc.join(', '), bcc: opened.bcc.join(', '),
+    }]);
+    assert.deepEqual(
+      [saved.success, saved.data?.remoteSaved, JSON.parse(db.messageById(opened.id).to_json)],
+      [true, false, [expectedTo.join(', ')]],
+      saved.error?.message || 'local Save preserves the hydrated addresses and names',
+    );
   });
 
   await t.test('scopes To to the selected system folder and refreshes counts after To edits', async () => {
@@ -118,14 +143,40 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
     assert.equal((await ask({ ...lookup, folderKey: 'drafts' })).total, 0);
     assert.equal((await ask({ ...lookup, accountId: 'b' })).emails[0].id, 'other-account-draft');
     assert.equal((await ask({ ...lookup, folderId: 'Old Drafts' })).emails[0].id, 'other-folder-draft');
-    db.updateMessage('draft-205', { to_json: JSON.stringify('Legacy Approver <' + target + '>') });
-    assert.deepEqual((await ask(lookup)).emails[0].to, ['Legacy Approver <' + target + '>']);
+    const legacyTo = ['Legacy Approver <' + target + '>'];
+    db.updateMessage('draft-205', { to_json: JSON.stringify(legacyTo[0]) });
+    assert.deepEqual(
+      [(await ask(lookup)).emails[0].to, (await openDraft('draft-205')).to],
+      [legacyTo, legacyTo],
+    );
     db.updateMessage('draft-205', { to_json: '[null, {"label":"approval%_team@fixture.invalid"}, {"address":7}]' });
     assert.equal((await ask(lookup)).total, 0, 'Cc, Bcc, Reply-To and unrecognized To fields do not match');
     assert.equal((await ask({ ...lookup, listFilter: 'address' })).total, 0, 'serialized keys do not match');
     db.updateMessage('draft-205', { to_json: 'invalid json' });
     assert.equal((await ask({ ...lookup, listFilter: '  ', sortBy: 'recipient' })).total, 206);
     assert.equal((await ask({ ...lookup, listFilter: 'purchase order', sortBy: 'recipient' })).total, 206);
+    db.updateMessage('draft-205', { subject: 'Recipient sort' });
+    for (const [id, to] of [
+      ['draft-0', ['A <' + target + '>']],
+      ['draft-1', 'Z <' + target + '>'],
+      ['draft-2', [null, ' ', { label: 'Ignore' }, { name: 'Review', email: target }, 'aaa@fixture.invalid']],
+      ['draft-11', ['Review <' + target + '>, later@fixture.invalid']],
+    ]) db.updateMessage(id, { subject: 'Recipient sort', to_json: JSON.stringify(to) });
+    const sort = { ...drafts, listFilter: 'recipient sort', sortBy: 'recipient' };
+    const ascending = await ask({ ...sort, sortDirection: 'asc' });
+    const descending = await ask({ ...sort, sortDirection: 'desc' });
+    assert.deepEqual(
+      [ascending.emails.map(row => row.id), descending.emails.map(row => row.id)],
+      [['draft-205', 'draft-0', 'draft-11', 'draft-2', 'draft-1'], ['draft-1', 'draft-2', 'draft-11', 'draft-0', 'draft-205']],
+    );
+    assert.deepEqual(
+      [(await ask({ ...lookup, listFilter: 'review <' + target + '>' })).emails.find(row => row.id === 'draft-2')?.to,
+        (await openDraft('draft-2')).to, (await openDraft('draft-0')).to, (await openDraft('draft-205')).to],
+      [['Review <' + target + '>', 'aaa@fixture.invalid'],
+        ['Review <' + target + '>', 'aaa@fixture.invalid'], ['A <' + target + '>'], []],
+    );
+    db.updateMessage('draft-2', { to_json: JSON.stringify([{ name: 'Review, Jane', address: target }]) });
+    assert.deepEqual((await openDraft('draft-2')).to, ['"Review, Jane" <' + target + '>']);
   });
 });
 

@@ -849,14 +849,21 @@ async function unsubscribeAnswer(params, event) {
   catch { return fail("unsubscribe", "The unsubscribe action could not be prepared. No automatic retry was made."); }
 }
 
+function isSystemDraftFolder(accountId, folderPath) {
+  const folder = db.folderByPath(accountId, folderPath);
+  const role = String(folder?.well_known || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+  return (role === "draft" || role === "drafts") && !remote.isAllMail(folder);
+}
+
 function detailOf(row, generations, memberships) {
+  const includeDraftTo = row.is_draft === 1 && isSystemDraftFolder(row.account_id, row.folder_path);
   const presented = decoding.presentation(row, textEncoding.presentMessage({
     subject: row.subject || "",
     htmlBody: row.html_body,
     textBody: row.text_body,
   }, { preserveDecoded: Number(row.uid) > 0 && !row.draft_pending }));
   return {
-    ...listRow(row, generations, memberships),
+    ...listRow(row, generations, memberships, includeDraftTo),
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
@@ -944,9 +951,7 @@ function queryFrom(params) {
   }
   // Derive To matching from the saved folder role and the effective list scope.
   if (out.accountId && out.folderId && !out.folderKey && !out.mailboxes?.length) {
-    const folder = db.folderByPath(out.accountId, out.folderId);
-    const role = String(folder?.well_known || "").trim().toLowerCase().replace(/[\s_-]/g, "");
-    out.includeDraftTo = (role === "draft" || role === "drafts") && !remote.isAllMail(folder);
+    out.includeDraftTo = isSystemDraftFolder(out.accountId, out.folderId);
   }
   if (query.beforeDate) {
     const ts = Date.parse(query.beforeDate);

@@ -578,6 +578,7 @@ async function openDatabase(target, operation) {
     assertOpening(operation);
     ownedDb.raw.function("morrow_list_text", { deterministic: true }, listFilter.connectedText);
     ownedDb.raw.function("morrow_list_draft_to", { deterministic: true }, listFilter.matchesDraftTo);
+    ownedDb.raw.function("morrow_first_draft_to", { deterministic: true }, listFilter.firstDraftTo);
     ownedDb.raw.function("morrow_to_me", { deterministic: true }, require("./to-me").matches);
     db = ownedDb;
     storage = ownedStorage;
@@ -1948,8 +1949,9 @@ function metadataColumns(table) {
 function messageOrder(query, table = "m") {
   const prefix = table ? table + "." : "";
   const dir = query.sortDirection === "asc" ? "ASC" : "DESC";
-  const firstRecipient = `json_extract(${prefix}to_json, '$[0]')`;
-  const recipient = query.includeDraftTo ? `CASE WHEN json_valid(${prefix}to_json) THEN ${firstRecipient} END` : firstRecipient;
+  const recipient = query.includeDraftTo
+    ? `morrow_first_draft_to(${prefix}to_json)`
+    : `json_extract(${prefix}to_json, '$[0]')`;
   const fields = {
     date: `${prefix}list_sort_ts`,
     sender: `COALESCE(NULLIF(${prefix}from_display_name, ''), ${prefix}from_addr, '') COLLATE NOCASE`,
