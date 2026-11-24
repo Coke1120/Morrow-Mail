@@ -1,5 +1,6 @@
 "use strict";
 
+const { randomUUID } = require("node:crypto");
 const MIB = 1024 * 1024;
 const LIMITS = Object.freeze({ bytes: 64 * MIB, entryBytes: 32 * MIB, fileBytes: 64 * MIB,
   zipBytes: 128 * MIB, entries: 64, pending: 16, concurrency: 2, ttlMs: 5 * 60 * 1000 });
@@ -21,8 +22,24 @@ function createAttachmentCache(options = {}) {
     drop(entry.key);
     while (completed.size && (bytes + data.length > limits.bytes || completed.size >= limits.entries)) drop(completed.keys().next().value);
     const timer = setTimeout(() => drop(entry.key), limits.ttlMs); timer.unref?.();
-    completed.set(entry.key, { accountId: entry.accountId, data, timer, expires: Date.now() + limits.ttlMs });
+    completed.set(entry.key, { accountId: entry.accountId, generation: randomUUID(), data, timer, expires: Date.now() + limits.ttlMs });
     bytes += data.length;
+  }
+  // A draft can reuse a completed reader download without joining a pending
+  // transfer or touching the entry's expiry or eviction order.
+  function currentEntry(accountId, key) {
+    const entry = completed.get(key);
+    return entry && entry.accountId === accountId && entry.expires > Date.now() ? entry : null;
+  }
+  function describeCompleted(accountId, key) {
+    const entry = currentEntry(accountId, key);
+    return entry ? { generation: entry.generation, size: entry.data.length } : null;
+  }
+  function readCompleted(accountId, key, generation, maxBytes) {
+    const entry = currentEntry(accountId, key);
+    if (!entry || entry.generation !== generation || !Number.isSafeInteger(maxBytes)
+        || maxBytes <= 0 || entry.data.length > maxBytes) return null;
+    return Buffer.from(entry.data);
   }
   function progress(entry, value) {
     entry.progress = value;
@@ -140,7 +157,7 @@ function createAttachmentCache(options = {}) {
       entry.controller.abort(error); finish(entry, error);
     }
   }
-  return { getMany, invalidateAccount, clear() {
+  return { getMany, describeCompleted, readCompleted, invalidateAccount, clear() {
     for (const accountId of new Set([...completed.values(), ...pending.values(), ...groups].map(e => e.accountId))) invalidateAccount(accountId);
   }, stats: () => ({ bytes, entries: completed.size, pending: pending.size, active, queued: queue.length }) };
 }

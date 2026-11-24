@@ -97,6 +97,12 @@ id: "mail-workflow-feedback",
         blurb: "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Choose Preview beside a PDF added in this Compose session (including drag and drop and replacements) or a verified local PDF in a resumed draft. Saved PDFs are read on demand. Close Preview to return focus to the row and choose Remove while keeping your edits. Same-name attachments have numbered rows. If the draft changed in another window, reopen it before previewing again. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip.",
       },
       {
+        id: "draft-inbox-attachments",
+        title: "Attach from Inbox in a draft",
+        category: "Mail",
+        blurb: "From Drafts in the main Mail window, use Right preview or Bottom preview and choose Resume draft. In the editor, choose Attach from Inbox and check the draft’s exact To, Cc and Bcc. Choose files by their source sender, subject and date, then select Add selected files. The picker shows files stored on this device, including completed Inbox downloads still in the five-minute transfer cache. If a file has expired, preview it in the reader and reopen the picker. You can preview the added PDF, remove the old version and choose Save draft. Cancel or Escape keeps your edits. The 25 MiB outgoing attachment limit applies.",
+      },
+      {
         id: "brain-edit-preservation",
         title: "Profile edit preservation",
         category: "Agent",

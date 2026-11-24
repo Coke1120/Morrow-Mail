@@ -2160,7 +2160,18 @@ function saveBlob(id, filename, mime, data) {
   });
 }
 
-function readBlob(id) {
+function blobVersion(id) {
+  const row = get(`SELECT rowid AS rowId, length(data) AS size,
+    (SELECT data_version FROM pragma_data_version) AS externalVersion FROM blobs WHERE id = ?`, [id]);
+  return row && { ...row, storeGeneration };
+}
+
+function readBlob(id, version) {
+  if (version) {
+    if (version.storeGeneration !== storeGeneration) return null;
+    return get(`SELECT id, filename, mime, data FROM blobs WHERE id = ? AND rowid = ? AND length(data) = ?
+      AND (SELECT data_version FROM pragma_data_version) = ?`, [id, version.rowId, version.size, version.externalVersion]);
+  }
   return get("SELECT id, filename, mime, data FROM blobs WHERE id = ?", [id]);
 }
 
@@ -3089,7 +3100,7 @@ module.exports = {
   clearSnooze,
   snoozeRows,
   saveBlob,
-  readBlob,
+  readBlob, blobVersion,
   saveOp,
   readOp,
   transaction,
