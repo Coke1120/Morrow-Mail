@@ -13,9 +13,11 @@ fs.writeFileSync(preload,`
 const {contextBridge}=require('electron');
 let populated=false, failSave=true, queueReady=false, failRead=false, rejectReader=false;
 let queue=[], update={enabled:false};
+let pdfSaveError='cancelled';
 const calls=[], listeners={};
 const accounts=['a','b'].map(id=>({id,email:id+'@example.test',platform:'imap',imapSmtpProfile:'custom',folders:{primary:[{id:'Inbox',name:'Inbox',wellKnownName:'inbox'},{id:'Drafts',name:'Drafts',wellKnownName:'drafts'}],more:[{id:'Archive',name:'Archive',wellKnownName:'archive'}]}}));
-const messages=[{id:'one',accountId:'a',folderId:'Inbox',threadId:'thread-a',subject:'Alpha report',from:'Ada <ada@example.test>',textBody:'Alpha source',snippet:'Alpha preview',messageId:'<alpha@test>',date:'2026-10-18T08:00:00Z'},
+const messages=[{id:'one',accountId:'a',folderId:'Inbox',threadId:'thread-a',subject:'Alpha report',from:'Ada <ada@example.test>',textBody:'Alpha source',snippet:'Alpha preview',messageId:'<alpha@test>',date:'2026-10-18T08:00:00Z',
+attachments:['original','revised'].map(id=>({id,filename:'quote.pdf',mimeType:'application/pdf'}))},
 {id:'two',accountId:'b',folderId:'Inbox',threadId:'thread-b',subject:'Beta report',from:'Ben <ben@example.test>',textBody:'Beta source',snippet:'Beta preview',messageId:'<beta@test>',date:'2026-10-18T07:00:00Z'}];
 let draft={id:'saved-draft',accountId:'b',isDraft:true,to:['ben@example.test'],subject:'Saved Beta',textBody:'Saved body',inReplyTo:'<beta@test>',threadId:'thread-b'};
 const access={enabled:true,listen:{listening:false,error:'port_in_use'},accounts:accounts.map(a=>({accountId:a.id,email:a.email})),grants:[{clientId:'fixture-client',label:'Fixture client',keyId:'fixture-id',live:true,accountIds:['a'],capabilities:['accounts.read','mail.headers.read'],expiry:{kind:'finite',expiresAt:'2090-10-25T00:00:00Z'}}],drafts:[]};
@@ -38,6 +40,12 @@ contextBridge.exposeInMainWorld('morrow',{
  if(channel==='mail:listFromCache'||channel==='mail:listFromNetwork')return ok({emails:populated?messages:[]});
  if(channel==='mail:searchLocal')return ok(payload.accountId?messages.filter(m=>m.accountId===payload.accountId):messages);
  if(channel==='mail:openEmail'){const email=payload.emailId==='saved-draft'?draft:messages.find(m=>m.id===payload.emailId);return ok({email,threadMessages:email?[email]:[]});}
+ if(channel==='mail:fetchAttachmentBytes')return ok({type:'Buffer',data:[1]});
+ if(channel==='mail:downloadAttachment'){
+   const message=pdfSaveError;
+   pdfSaveError='Fixture PDF save failed';
+   return {success:false,error:{message}};
+ }
  if(channel==='mail:listThreadMessages')return ok([messages[0],{...messages[0],id:'other-folder',folderId:'Archive'}]);
  if(channel==='mail:listProviderFolders')return ok({api:false,reason:'profile',folders:[]});
  if(channel==='mail:listSnoozed')return ok({records:[]});
@@ -88,6 +96,46 @@ let win;const run=async code=>{try{return await win.webContents.executeJavaScrip
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function shot(name){if(!out)return;fs.mkdirSync(out,{recursive:true});await sleep(300);fs.writeFileSync(path.join(out,name+'.png'),(await win.webContents.capturePage()).toPNG());}
 async function waitFor(code){for(let i=0;i<60;i++){if(await run(code))return;await sleep(50);}throw new Error('UI condition timed out: '+code);}
+
+async function checkIncomingPdfSave() {
+ const count = `uxFixture.counts()['mail:downloadAttachment'] || 0`;
+ const hidden = `getComputedStyle($('attachment-preview-save')).display === 'none'`;
+ await run(`window.morrowPdf = { render({ onFirstPage }) {
+   return new Promise(resolve => { window.finishFixturePdf = () => { onFirstPage(); resolve(); }; });
+ } }; $('reader').querySelector('.attachment-toggle').click();`);
+ const preview = async () => {
+  await run(`$('reader').querySelector('.attachment-actions button[aria-label="Preview quote.pdf, attachment 2 of 2"]').click()`);
+  await waitFor(`typeof window.finishFixturePdf === 'function'`);
+  assert.equal(await run(hidden), true, 'Save stays hidden until the first PDF page is ready');
+  await run(`window.finishFixturePdf(); delete window.finishFixturePdf;`);
+  assert.equal(await run(hidden), false);
+ };
+ await preview();
+ assert.equal(await run(count), 0);
+ await run(`$('attachment-preview-save').click(); $('attachment-preview-save').click();`);
+ await waitFor(`!$('attachment-preview').open && !attachmentTasks.size && (${count}) === 1`);
+ const saved = await run(`uxFixture.last('mail:downloadAttachment')`);
+ assert.deepEqual(saved, { emailId:'one', messageId:'one', attachmentId:'revised', filename:'quote.pdf', requestId:saved.requestId });
+ assert.equal(typeof saved.requestId, 'string');
+ assert.equal(await run(`state.email.id`), 'one');
+ assert.equal(await run(hidden), true);
+
+ await preview();
+ await run(`$('attachment-preview-save').click(); renderReader(false);`);
+ assert.equal(await run(`$('attachment-preview').open`), true);
+ assert.equal(await run(hidden), true, 'A rerender retires the original row binding');
+ assert.match(await run(`$('attachment-preview-status').textContent`), /Reopen the PDF to save it/);
+ assert.equal(await run(count), 1);
+ await run(`$('attachment-preview-close').click()`);
+ await preview();
+ await run(`$('attachment-preview-save').click()`);
+ await waitFor(`!$('attachment-preview').open && $('status').textContent.includes('Fixture PDF save failed')`);
+ assert.equal(await run(`getComputedStyle($('notice')).display === 'none'`), false);
+ assert.equal(await run(count), 2, 'A failure requires another explicit save');
+ assert.equal(await run(`uxFixture.counts()['mail:upsertDraft'] || 0`), 0);
+ await run(`delete window.morrowPdf; showStatus('');`);
+}
+
 app.whenReady().then(async()=>{
  session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_d,cb)=>cb({cancel:true}));
  win=new BrowserWindow({width:1180,height:820,show:true,webPreferences:{preload,contextIsolation:true,nodeIntegration:false,sandbox:true}});
@@ -106,7 +154,16 @@ app.whenReady().then(async()=>{
  await run(`openConnectFor({id:'a',email:'a@example.test'})`);
  assert.match(await run(`$('connect-recovery-note').textContent`),/Removing this account invalidates a pending reconnect.*new connection after removal/);
  await shot('reconnect-removal-help');await run(`$('connect').close()`);
- await run(`openMessage('one',false);`);await run(`reviewDraft({messageId:'two',accountId:'b',body:'Beta reply'})`);
+ await run(`openMessage('one',false);`);
+ await checkIncomingPdfSave();
+ if (process.argv.includes('--pdf-preview-save')) {
+   assert.deepEqual(rendererErrors, []);
+   console.log('PDF_PREVIEW_SAVE_OK');
+   win.destroy();
+   app.quit();
+   return;
+ }
+ await run(`reviewDraft({messageId:'two',accountId:'b',body:'Beta reply'})`);
  assert.equal(await run(`$('compose-to').value`),'Ben <ben@example.test>');assert.equal(await run(`state.composeMeta.accountId`),'b');
  assert.equal(await run(`state.composeMeta.inReplyTo`),'<beta@test>');assert.equal(await run(`state.composeQuote.email.id`),'two');
  await shot('proposal-source');
@@ -253,6 +310,7 @@ app.whenReady().then(async()=>{
   assert.match(catalogText, new RegExp(title));
  }
  assert.match(catalogText,/Titles over 200 characters and long Google descriptions stay read-only previews/);
+ assert.match(catalogText,/Save PDF as… to close the preview and save that attachment.*return to Compose and choose Attach files/);
  assert.match(catalogText,/Password reconnects save the matching login type and servers after credentials are saved/);
  assert.match(catalogText,/Unchanged titles are kept, including untitled events/);
  assert.match(catalogText,/invalidates queued sync and pending reconnects/);
