@@ -16,5 +16,6 @@ Library/
 resources/ui.asar
 resources/google-oauth.json
 resources/morrow-mcp.cjs
+/renderer/features-catalog.js
 github-update.json
 .env

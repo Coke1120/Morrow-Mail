@@ -1,0 +1,6 @@
+{
+  "id": "schedule-send",
+  "title": "Send later",
+  "category": "Mail",
+  "blurb": "Schedule send keeps the message on this computer and delivers it while Morrow is open. Cancel asks twice, then Undo cancel is available for about eight seconds to restore that record. An Undo started in time keeps its success or failure feedback after the offer expires. A newer cancellation replaces the Undo offer, and an older restore cannot consume it or overwrite its feedback, even after the newer offer expires. Quitting with a pending send asks you first. Unchanged source drafts are cleaned up after delivery, including names with quotes or angle brackets; later edits stay saved. Default schedule-delay saves keep newer Hours and Minutes edits and report when they are still unsaved. Scheduled records load only while the dialog is open, 200 summaries at a time with Load more scheduled records. Pending reads are shared; unchanged rows stay in place. Editing or recovering still fetches the full saved content and requires an explicit action."
+}

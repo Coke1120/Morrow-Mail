@@ -1,0 +1,6 @@
+[
+  "compose-work-preservation",
+  "Compose recovery and preparation",
+  "Mail",
+  "Unrelated, completed and canceled AI draft events cannot replace manual edits. Selected files show Preparing attachment and block Save, previews, Send and Schedule until preparation settles; closing Compose abandons unfinished preparation. Choose Preview beside a PDF added in this Compose session (including drag and drop and replacements) or a verified local PDF in a resumed draft. Saved PDFs are read on demand. Close Preview to return focus to the row and choose Remove while keeping your edits. Same-name attachments have numbered rows. If the draft changed in another window, reopen it before previewing again. Undo atomically saves an inert recovery draft before opening Compose. Exact recipients and body, including cleared Cc/Bcc and one existing signature, are preserved. If Compose fails, resume from local Drafts; Undo never requeues delivery. Failed-send snapshots also bypass new-message defaults. Untouched multiline HTML signatures follow same-mailbox aliases; edited signatures stay intact. Changing recipient input retires old suggestion choices immediately, and escaped display-name quotes round-trip."
+]

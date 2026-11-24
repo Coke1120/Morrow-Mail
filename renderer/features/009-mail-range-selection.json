@@ -1,0 +1,6 @@
+{
+  "id": "mail-range-selection",
+  "title": "Mail range selection",
+  "category": "Mail",
+  "blurb": "Click a message, then Shift-click another message or its checkbox to select every visible row between them, including both ends, in the displayed page order. Preview clicks keep a starting message without showing a checked selection; Separate window still selects the clicked row. Repeated Shift-clicks extend or shrink the range from the same starting message. A normal checkbox or Ctrl/Cmd-click starts a new range; Ctrl/Cmd + Shift-click adds a range to the existing selection. Clear or Escape resets the starting message. If the starting message is hidden or no longer loaded, Shift-click selects only the clicked row. Ranges do not add filtered, pending-removal, unloaded or other-page messages. A plain Shift-click replaces the selection; Ctrl/Cmd + Shift-click preserves other selected messages, including any already hidden by a filter. Shift-click only selects and never opens or marks the target read. Folder navigation, a new search and page changes clear the starting message. Outbox does not support selection."
+}
