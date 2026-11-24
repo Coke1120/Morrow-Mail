@@ -9,6 +9,7 @@ const db = require("./db");
 const recipientSuggest = require("./recipient-suggest");
 const actions = require("./actions");
 const virtuals = require("./virtual-folders");
+const listFilter = require("./list-filter");
 const presets = require("./presets");
 const discovery = require("./discovery");
 const remote = require("./remote");
@@ -676,7 +677,7 @@ function publicAttachment(item) {
   return out;
 }
 
-function listRow(row, generations, memberships) {
+function listRow(row, generations, memberships, includeDraftTo = false) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   const sender = row.from_address || row.from_addr || "";
@@ -703,7 +704,7 @@ function listRow(row, generations, memberships) {
     subject: listText(row.subject),
     snippet: listText(row.snippet),
     from: row.from_display_name && bareSender ? composePolicy.senderPreview(bareSender, row.from_display_name) : row.from_addr || "",
-    to: db.jsonList(row.to_json),
+    to: includeDraftTo ? listFilter.savedTo(row.to_json) : db.jsonList(row.to_json),
     cc: db.jsonList(row.cc_json),
     bcc: db.jsonList(row.bcc_json),
     date: row.date_iso,
@@ -734,10 +735,10 @@ function listRow(row, generations, memberships) {
   };
 }
 
-function listRows(rows, details = false) {
+function listRows(rows, details = false, includeDraftTo = false) {
   const generations = db.maxActionGenerations(rows.map(row => row.id));
   const memberships = db.gmailLabelMemberships(rows);
-  return rows.map(row => details ? detailOf(row, generations, memberships) : listRow(row, generations, memberships));
+  return rows.map(row => details ? detailOf(row, generations, memberships) : listRow(row, generations, memberships, includeDraftTo));
 }
 
 function conversationRows(rows, selectedId) {
@@ -926,7 +927,7 @@ function queryFrom(params) {
     limit: query.limit,
     offset: query.offset,
     pageCursor: query.pageCursor,
-    listFilter: require("./list-filter").normalize(query.listFilter),
+    listFilter: listFilter.normalize(query.listFilter),
     sortBy: query.sortBy,
     sortDirection: query.sortDirection,
   };
@@ -940,6 +941,12 @@ function queryFrom(params) {
   if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
     out.folderKey = out.folderId;
     out.folderId = null;
+  }
+  // Derive To matching from the saved folder role and the effective list scope.
+  if (out.accountId && out.folderId && !out.folderKey && !out.mailboxes?.length) {
+    const folder = db.folderByPath(out.accountId, out.folderId);
+    const role = String(folder?.well_known || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+    out.includeDraftTo = (role === "draft" || role === "drafts") && !remote.isAllMail(folder);
   }
   if (query.beforeDate) {
     const ts = Date.parse(query.beforeDate);
@@ -1007,7 +1014,7 @@ function listPayload(params) {
     }, { headersOnly: true, now });
     if (extra.length) stored = stored.concat(extra);
   }
-  const rows = listRows(stored);
+  const rows = listRows(stored, false, query.includeDraftTo);
   const total = summary.total;
   const days = syncHorizonDays();
   const oldest = summary.oldest;

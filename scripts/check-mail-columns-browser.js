@@ -162,7 +162,12 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
    call = async (channel, params) => {
     if (channel === 'mail:listFromCache') {
      const scoped = draftRows.filter(row => row.accountId === params.accountId && row.folderId === params.folderId);
-     const emails = filteredEmails(scoped, params.listFilter);
+     const term = (params.listFilter || '').trim().toLowerCase();
+     const textHits = new Set(filteredEmails(scoped, term));
+     const emails = scoped.filter(row => textHits.has(row) || row.to.some(to => {
+      const address = typeof to === 'string' ? to : to.address;
+      return address.toLowerCase().includes(term);
+     }));
      return {emails,total:emails.length,initialSyncDone:true};
     }
     if (channel === 'mail:openEmail') {
@@ -194,7 +199,13 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
    $('list-filter').value = 'approval@fixture.invalid';
    await loadList(false,0);
   });
-  assert.equal(await page.locator('.message-row').count(),0,'the downloaded view filter still excludes To');
+  assert.deepEqual(await page.locator('.message-row').evaluateAll(rows => rows.map(row => row.dataset.emailId)),['approval']);
+  assert.equal(await draftPreviews.count(),0);
+  await page.evaluate(async () => {
+   $('list-filter').value = 'cc@fixture.invalid';
+   await loadList(false,0);
+  });
+  assert.equal(await page.locator('.message-row').count(),0,'the downloaded view filter excludes Cc');
   await page.evaluate(async () => {
    $('list-filter').value = 'Approval';
    await loadList(false,0);

@@ -15,4 +15,24 @@ function connectedText(subject, from, snippet, displayName, address, uid, draftP
   const repair = value => Number(uid) > 0 && !draftPending ? value : textEncoding.repairMojibake(value || "");
   return text(repair(subject), renderedFrom, repair(snippet));
 }
-module.exports = { normalize, text, connectedText };
+
+function savedTo(json) {
+  try {
+    const value = JSON.parse(json);
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string" || typeof value?.address === "string" || typeof value?.email === "string") return [value];
+  } catch { /* Invalid cached To data has no searchable recipients. */ }
+  return [];
+}
+
+function matchesDraftTo(json, literal) {
+  return Number(savedTo(json).some(value => {
+    if (typeof value === "string") return normalize(value).includes(literal);
+    const address = value?.address || value?.email;
+    if (typeof address !== "string" || !address.trim()) return false;
+    const name = typeof value.name === "string" ? value.name : "";
+    return normalize(composePolicy.senderPreview(address, name)).includes(literal);
+  }));
+}
+
+module.exports = { normalize, text, connectedText, savedTo, matchesDraftTo };

@@ -196,6 +196,39 @@ test('stale response cannot replace typed query during debounce; clear and navig
   f.run('pending.pop()()'); await f.run('nav');
   f.run('pending.shift()()'); await tick(); assert.equal(f.run('state.folderId'),'Archive'); assert.equal(f.run('state.emails.length'),0);
 });
+test('Drafts renders a later To match with Recipient hidden and ignores an obsolete filter after clear', async t => {
+  const f = fixture(t);
+  f.run(`state.accounts[0].folders.primary.push({id:'provider-drafts',name:'Unsent',wellKnownName:'drafts'});
+    state.folderId='provider-drafts'; state.mailHiddenColumns=['recipient'];
+    storeRows=storeRows.slice(0,206).map(row=>({...row,folderId:state.folderId,isDraft:true}));
+    storeRows[0].to=['supplier@fixture.invalid'];
+    storeRows[205].to=['supplier@fixture.invalid',{name:'Approvals',address:'approve@fixture.invalid'}];
+    const baseAnswer=answer;
+    answer=(channel,p)=>channel==='mail:listFromCache' && p.accountId==='alpha'
+      && p.folderId==='provider-drafts' && p.listFilter==='approve@fixture.invalid'
+      ? {emails:[storeRows[205]],total:1,initialSyncDone:true} : baseAnswer(channel,p);`);
+  await f.run('loadList(false,0)');
+  assert.equal(f.run('state.listTotal'),206);
+  assert.equal(f.document.getElementById('list-filter').placeholder,'Filter drafts by To or text');
+  assert.equal(f.run("shownEmails().some(row=>row.id==='m205')"),false);
+  f.run("commitSelection({ids:['m0'],anchor:'m0'})");
+  f.input('approve@fixture.invalid'); await f.flush();
+  assert.deepEqual([...f.document.querySelectorAll('.message-row')].map(row=>row.dataset.emailId),['m205']);
+  assert.equal(f.document.querySelectorAll('.draft-recipient-preview, [data-mail-column="recipient"]').length,0);
+  assert.deepEqual(f.json('state.selectedIds'),['m0']);
+  f.run('deferCalls=true');
+  f.input('approve@fixture.invalid'); await f.flush();
+  f.document.getElementById('filter-chip').click(); await f.flush();
+  f.run('pending.pop()()'); await tick();
+  f.run('pending.shift()()'); await tick();
+  assert.equal(f.run('state.listTotal'),206);
+  assert.equal(f.run('shownEmails().length'),200);
+  assert.equal(f.run('state.listOffset'),0);
+  assert.deepEqual(f.json('state.selectedIds'),['m0']);
+  f.run("state.query='toolbar search'; state.emails=[storeRows[205]]");
+  f.input('approve@fixture.invalid');
+  assert.equal(f.run('shownEmails().length'),0,'bounded toolbar results still filter by text');
+});
 test('hidden selection survives host filtering and stays part of reviewed Delete targets', async t => {
   const f=fixture(t); await f.run('loadList(false,0)');
   f.run("state.selectedIds=['m1','m2']; state.selectionAnchor='m1'; renderList()");
@@ -259,12 +292,14 @@ test('rendered Features and filter help describe downloaded-view and bounded-mod
   const catalog=f.document.getElementById('features-catalog').textContent;
   assert.match(catalog,/Filter downloaded view matches all saved messages in the selected local folder before paging/);
   assert.match(catalog,/Filter downloaded view matches a case-insensitive literal phrase/);
+  assert.match(catalog,/it also matches any saved To address or name, even when Recipient is hidden/);
   assert.match(catalog,/Ordinary selections remain only for rows on that page; selections retained when filtering also stay selected across later sorts, even when outside that page/);
   assert.doesNotMatch(catalog,/selection remains only for rows on that page/);
   assert.match(catalog,/Search filters only its returned results \(up to 100\); Outbox filters its loaded rows/);
   assert.match(catalog,/A read message held open in Unread appears only on its ordered page/);
   assert.match(catalog,/Per-account Starred and Unread refresh when downloaded mail changes in that account’s folders/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/across all downloaded messages in the selected folder or view/);
+  assert.match(f.document.getElementById('list-filter-help').textContent,/matches any saved To name or address/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/Settings → Mail & Sync controls sync history/);
 });
 

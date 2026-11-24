@@ -17,7 +17,11 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
   await engine.init();
   for (const id of ['a', 'b']) {
     db.insertAccount({ ...fixture.account, id, email: `${id}@fixture.invalid` });
-    db.replaceFolders(id, fixture.folders);
+    db.replaceFolders(id, [...fixture.folders,
+      { path: '[Gmail]/Drafts', name: 'Unsent', wellKnown: 'drafts' },
+      { path: 'Custom/Drafts', name: 'Drafts', wellKnown: null },
+      { path: 'Old Drafts', name: 'Old Drafts', wellKnown: 'draft' },
+    ]);
   }
   const rows = Array.from({ length: 650 }, (_, i) => fixture.message(i + 1, {
     id: `a-${i}`, subject: i >= 230 ? `Match ${String(i).padStart(4, '0')}` : `Other ${i}`,
@@ -81,6 +85,48 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
   db.updateMessage('a-0', { draft_pending: 0 });
   assert.equal((await ask({ ...scope, listFilter: 'café draft' })).total, 0, 'draft repair-state edits invalidate counts');
 
+  const target = 'approval%_team@fixture.invalid';
+  const drafts = { ...scope, folderId: '[Gmail]/Drafts' };
+  const draftRows = Array.from({ length: 206 }, (_, i) => fixture.message(i + 1, {
+    id: `draft-${i}`, subject: 'Purchase order', snippet: '', isDraft: true, listSortTs: 1000 - i,
+    to: i === 205 ? ['supplier@fixture.invalid', { name: 'Équipe approbation', address: target }, 'a@fixture.invalid'] : [],
+    cc: [target], bcc: [target], recipientHeaders: { replyTo: [target] },
+  }));
+  db.applyFolderSync('a', drafts.folderId, fixture.report(draftRows));
+  for (const [accountId, folderPath, id] of [
+    ['b', drafts.folderId, 'other-account-draft'], ['a', 'Custom/Drafts', 'ordinary-folder-draft'],
+    ['a', 'Old Drafts', 'other-folder-draft'],
+  ]) db.applyFolderSync(accountId, folderPath, fixture.report([{
+    ...draftRows[205], id,
+  }]));
+
+  await t.test('finds the later To entry from page two before count and sorting', async () => {
+    assert.equal((await ask(drafts)).total, 206);
+    assert.ok((await ask({ ...drafts, offset: 200 })).emails.some(row => row.id === 'draft-205'));
+    for (const listFilter of [target.toUpperCase(), 'équipe approbation', '%_']) {
+      const result = await ask({ ...drafts, listFilter, sortBy: 'subject' });
+      assert.equal(result.total, 1);
+      assert.deepEqual(result.emails.map(row => row.id), ['draft-205']);
+    }
+    assert.equal((await ask({ ...drafts, listFilter: target, filterToMe: true })).total, 1);
+    assert.equal((await ask({ ...drafts, listFilter: 'approvalXXteam' })).total, 0);
+  });
+
+  await t.test('scopes To to the selected system folder and refreshes counts after To edits', async () => {
+    const lookup = { ...drafts, listFilter: target };
+    assert.equal((await ask({ ...lookup, folderId: 'Custom/Drafts', includeDraftTo: true })).total, 0);
+    assert.equal((await ask({ ...lookup, folderKey: 'drafts' })).total, 0);
+    assert.equal((await ask({ ...lookup, accountId: 'b' })).emails[0].id, 'other-account-draft');
+    assert.equal((await ask({ ...lookup, folderId: 'Old Drafts' })).emails[0].id, 'other-folder-draft');
+    db.updateMessage('draft-205', { to_json: JSON.stringify('Legacy Approver <' + target + '>') });
+    assert.deepEqual((await ask(lookup)).emails[0].to, ['Legacy Approver <' + target + '>']);
+    db.updateMessage('draft-205', { to_json: '[null, {"label":"approval%_team@fixture.invalid"}, {"address":7}]' });
+    assert.equal((await ask(lookup)).total, 0, 'Cc, Bcc, Reply-To and unrecognized To fields do not match');
+    assert.equal((await ask({ ...lookup, listFilter: 'address' })).total, 0, 'serialized keys do not match');
+    db.updateMessage('draft-205', { to_json: 'invalid json' });
+    assert.equal((await ask({ ...lookup, listFilter: '  ', sortBy: 'recipient' })).total, 206);
+    assert.equal((await ask({ ...lookup, listFilter: 'purchase order', sortBy: 'recipient' })).total, 206);
+  });
 });
 
 test('local folders apply the identical literal filter before counts and bounded pages', t => {

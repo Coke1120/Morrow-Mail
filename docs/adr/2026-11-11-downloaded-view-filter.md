@@ -1,8 +1,12 @@
 # Filter the complete downloaded view before paging
 
 The list input is a case-insensitive literal substring of the displayed subject,
-sender and preview, not toolbar token-prefix search. Apply the identical predicate
-in both connected and Local Folders stores before count, sorting and pagination.
+sender and preview, not toolbar token-prefix search. Apply this predicate in both
+connected and Local Folders stores before count, sorting and pagination.
+In a single connected account's selected system Drafts folder, the predicate
+also matches any saved To address or display name, regardless of the Recipient
+column or draft preview. Resolve that scope from account and folder metadata.
+Compare decoded To values only and reuse the existing list revision for To edits.
 Keep the selected folder/virtual view, mailbox, flags, To Me and snooze scope.
 Never expand into other folders or call provider search. Only downloaded content
 is covered; sync-history settings remain the download boundary.
