@@ -6626,6 +6626,11 @@ async function checkDraftInboxAttachments(engine, db) {
     id, isDestroyed: () => false, getURL: () => "morrow://local/index.html?role=compose",
   });
   const owner = editor(601), other = editor(602);
+  const composeHost = require("../host/compose-window");
+  const hostLookup = composeHost.getResumedDraftOwner;
+  assert.equal(hostLookup(owner), null, "a Compose URL by itself does not register a receiving window");
+  const boundScope = { draftId, accountId, bodyEpoch: 0 };
+  const windows = new Map([[owner, boundScope], [other, { draftId: "studio-draft", accountId: "studio", bodyEpoch: 0 }]]);
   const files = ["one", "two"].map((id) => ({
     id, filename: id + ".txt", size: 3, mimeType: "text/plain", storageUrl: "local:draft-inbox-" + id,
   }));
@@ -6636,6 +6641,7 @@ async function checkDraftInboxAttachments(engine, db) {
     profile: "custom", imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
     smtpHost: "smtp.example.invalid", smtpPort: 465, smtpTls: true, createdAt: 1 });
   try {
+    composeHost.getResumedDraftOwner = contents => windows.get(contents) || null;
     db.replaceFolders(accountId, [
       { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
       { path: "Drafts", name: "Drafts", wellKnown: "drafts" },
@@ -6658,7 +6664,9 @@ async function checkDraftInboxAttachments(engine, db) {
       id: randomUUID(), accountId, draftId, draftRevision, bodyEpoch: 0, recipients: ["target@example.invalid", "", ""],
     } };
     const invoke = (channel, params, sender = owner) => engine.answer(channel, [params], { sender });
+    let listCalls = 0;
     db.selectMessages = (query, options) => {
+      listCalls += 1;
       if (query.accountId === accountId) {
         assert.equal(query.folderPath, "INBOX");
         assert.equal(query.limit, 21);
@@ -6667,6 +6675,11 @@ async function checkDraftInboxAttachments(engine, db) {
       return originalList(query, options);
     };
     db.readBlob = (id, version) => { reads.push(id); return originalReadBlob(id, version); };
+    for (const sender of [other, editor(603)]) {
+      assert.equal((await invoke("mail:listFromCache", request, sender)).success, false);
+    }
+    assert.equal(listCalls, 0, "only the draft's registered editor reaches Inbox metadata");
+    assert.deepStrictEqual(reads, []);
     const newest = await invoke("mail:listFromCache", request);
     assert.deepStrictEqual(newest.data.sources, []);
     assert.ok(newest.data.nextCursor, "an empty page can navigate to old local Inbox records");
@@ -6688,6 +6701,11 @@ async function checkDraftInboxAttachments(engine, db) {
     };
     await pinParts(parts);
     reads.length = 0;
+    const retired = confirm();
+    windows.delete(owner);
+    assert.equal((await retired).success, false, "retiring the editor while the read is pending stops delivery");
+    assert.deepStrictEqual(reads, []);
+    windows.set(owner, boundScope);
     assert.equal((await confirm({ strictLocal: false, emailId: draftId, draftRevision })).success, false);
     assert.equal((await confirm({ strictLocal: undefined, emailId: draftId, draftRevision })).success, false);
     assert.equal((await confirm({}, other)).success, false);
@@ -6745,6 +6763,7 @@ async function checkDraftInboxAttachments(engine, db) {
     owner.emit("destroyed");
     assert.equal((await closing).error.code, "cancelled");
   } finally {
+    composeHost.getResumedDraftOwner = hostLookup;
     db.selectMessages = originalList;
     db.readBlob = originalReadBlob;
     db.removeAccount(accountId);

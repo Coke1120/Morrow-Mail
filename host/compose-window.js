@@ -1,6 +1,13 @@
 // Compose BrowserWindows. Helpers stay free of Electron so plain Node checks can load them.
 const CHANNELS = ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"];
 const MAX_SEED_CHARS = 8000000;
+const resumedDraftOwners = new WeakMap();
+
+function getResumedDraftOwner(contents) {
+  const entry = resumedDraftOwners.get(contents);
+  if (!entry || entry.win.isDestroyed() || contents.isDestroyed?.()) return null;
+  return entry.owner;
+}
 
 function composeWindowTitle(seed) {
   const raw = seed && typeof seed.title === "string" ? seed.title.trim() : "";
@@ -113,7 +120,8 @@ function createComposeHost(options) {
       },
     });
     require("./compose-editing-menu").installComposeEditingMenu(win, { Menu, htmlFile: opts.htmlFile });
-    const id = win.webContents.id;
+    const contents = win.webContents;
+    const id = contents.id;
     const record = { win, seed: clean, allowClose: false, closeRequested: false };
     records.set(id, record);
     win.webContents.setWindowOpenHandler(({ url }) => {
@@ -124,12 +132,18 @@ function createComposeHost(options) {
       }
       return { action: "deny" };
     });
+    const clearResumedDraftOwner = () => { resumedDraftOwners.delete(contents); };
     const fail = () => {
+      clearResumedDraftOwner();
       if (win.isDestroyed()) return;
       record.allowClose = true;
       win.close();
     };
-    win.on("closed", () => { records.delete(id); });
+    contents.once("destroyed", clearResumedDraftOwner);
+    win.on("closed", () => {
+      clearResumedDraftOwner();
+      records.delete(id);
+    });
     win.on("close", (event) => {
       const current = records.get(id);
       if (!current || current.allowClose) return;
@@ -150,10 +164,21 @@ function createComposeHost(options) {
       if (isMainFrame === false) return;
       fail();
     });
-    const loading = mode() === "asar"
-      ? win.loadURL("morrow://local/index.html?role=compose")
-      : win.loadFile(opts.htmlFile, { query: { role: "compose" } });
-    loading.catch(fail);
+    const { ordinaryDraftResume, draftId, accountId, draftBodyEpoch: bodyEpoch, draftRevision } = clean ?? {};
+    // The opening revision qualifies the seed. Reviews check the current saved revision.
+    if (ordinaryDraftResume === true && Number.isSafeInteger(bodyEpoch) && bodyEpoch >= 0
+        && [draftId, accountId, draftRevision].every(value => typeof value === "string" && value.trim())) {
+      resumedDraftOwners.set(contents, { win, owner: Object.freeze({ draftId, accountId, bodyEpoch }) });
+    }
+    try {
+      const loading = mode() === "asar"
+        ? win.loadURL("morrow://local/index.html?role=compose")
+        : win.loadFile(opts.htmlFile, { query: { role: "compose" } });
+      loading.catch(fail);
+    } catch (error) {
+      clearResumedDraftOwner();
+      throw error;
+    }
     return { ok: true, id };
   }
 
@@ -192,4 +217,5 @@ module.exports = {
   sanitizeComposeSeed,
   composeWindowBounds,
   createComposeHost,
+  getResumedDraftOwner,
 };

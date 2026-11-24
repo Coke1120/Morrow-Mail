@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { composePage } = require("../compose-editing-menu");
+const composeWindows = require("../compose-window");
 const db = require("./db");
 const recipientSuggest = require("./recipient-suggest");
 const actions = require("./actions");
@@ -3636,6 +3637,14 @@ function assertDraftInboxOwner(owner) {
   }
 }
 
+function assertDraftInboxBinding(owner, review) {
+  const resumed = composeWindows.getResumedDraftOwner(owner);
+  if (!resumed || resumed.draftId !== review.draftId
+      || resumed.accountId !== review.accountId || resumed.bodyEpoch !== review.bodyEpoch) {
+    throw new Error("Open the Inbox attachment picker from the editor for this draft.");
+  }
+}
+
 function draftInboxReview(params, owner) {
   assertDraftInboxOwner(owner);
   const review = params.inboxAttachmentReview;
@@ -3647,6 +3656,7 @@ function draftInboxReview(params, owner) {
       || review.recipients.some(value => typeof value !== "string" || value.length > 32_768)) {
     throw new Error("The Inbox attachment review is invalid. Open it again from the draft.");
   }
+  assertDraftInboxBinding(owner, review);
   return { id: review.id, accountId: review.accountId, draftId: review.draftId, draftRevision: review.draftRevision,
     bodyEpoch: review.bodyEpoch, recipients: review.recipients, ownerId: owner.id };
 }
@@ -3797,6 +3807,7 @@ async function draftInboxAttachmentAnswer(channel, params, owner) {
     await new Promise(resolve => setImmediate(resolve));
     request.signal.throwIfAborted();
     assertDraftInboxOwner(owner);
+    assertDraftInboxBinding(owner, review);
     const files = selectedDraftInboxParts(review, parts);
     if (files.reduce((total, file) => total + file.size, existingBytes) > ATTACHMENT_CAP) {
       throw new Error("These files exceed the draft's 25 MiB outgoing attachment limit.");
