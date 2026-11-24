@@ -470,6 +470,124 @@ async function resumedDraftPdfPreview() {
   assert.equal(f.node("compose-body").value, "Unsaved recommendation");
 }
 
+async function receivingDraftInboxPicker() {
+  const f = fixture();
+  f.window.location.search = "?role=compose";
+  const draft = { id: "draft", accountId: "box", bodyEpoch: 0, draftRevision: "saved", isDraft: true, bodyComplete: true,
+    fromAddress: "owner@example.invalid", to: ["To <to@example.invalid>"], cc: ["cc@example.invalid"],
+    bcc: ["bcc@example.invalid"], textBody: "Saved text", attachments: [] };
+  const file = { id: "2", filename: "Inbox quote.pdf", size: 7, proof: "opaque-proof" };
+  const local = { id: "blob", storageUrl: "local:blob", filename: file.filename, size: file.size, mimeType: "application/pdf" };
+  const sources = [{ id: "source", from: "Source <source@example.invalid>", subject: "Source quote",
+    date: "2026-11-24T08:00:00Z", files: [file] }];
+  const calls = [];
+  let seed, pending;
+  f.window.morrow = { openComposeWindow(fields) { seed = fields; }, async invoke(channel, params) {
+    calls.push({ channel, params });
+    let data;
+    if (channel === "mail:openEmail") data = { email: draft };
+    else if (channel === "mail:listFromCache") {
+      assert.equal(params.strictLocal, true);
+      assert.equal(params.inboxAttachmentReview.bodyEpoch, 0);
+      data = params.checkDraft ? { current: true } : { sources, nextCursor: null };
+    } else if (channel === "mail:prepareDraft") {
+      assert.equal(params.strictLocal, true);
+      const choice = { emailId: "source", partId: "2", proof: file.proof };
+      if (params.pinSelection) {
+        assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [choice]);
+        data = { attachments: [{ contentProof: "checked-bytes" }] };
+      } else {
+        assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [{ ...choice, contentProof: "checked-bytes" }]);
+        if (pending) await pending.promise;
+        data = { attachments: [{ filename: file.filename, mimeType: local.mimeType, bytes: Buffer.from("fixture"), size: 7 }] };
+      }
+    } else if (channel === "mail:uploadAttachment") {
+      assert.equal(Buffer.from(params.fileBytes).toString(), "fixture");
+      data = local;
+    } else {
+      assert.equal(channel, "mail:cancelAttachmentRequest");
+      data = true;
+    }
+    return { success: true, data };
+  } };
+  const ui = renderer({ ...f.globals, URLSearchParams, crypto: require("node:crypto").webcrypto });
+  const dialog = f.node("compose-inbox-picker");
+  for (const id of ["compose", "compose-inbox-picker", "compose-close-review"]) {
+    const node = f.node(id);
+    node.showModal = () => { node.open = true; };
+    node.close = () => { node.open = false; node.listeners.close?.(); };
+  }
+  ui.run(`
+    state.accounts = [{id:"box", email:"owner@example.invalid", platform:"imap", bodyEpoch:0}];
+    initializeComposeIdentity = async () => {}; fillSignatures = async () => {}; showComposeSuggestions = async () => {};
+    syncCompose = () => { syncComposeActions(); paintComposeAttachments(); }; paintComposeNote = () => {}; paintComposeEditor = () => {};
+    paintComposeChrome = () => {}; paintQuoteBody = () => {}; scheduleComposeLayout = () => {};
+    syncScheduleFields = () => {}; setAiMode = () => {}; showStatus = () => {};
+    wireComposeInboxPicker();
+  `);
+  await ui.run("resumeDraft({id:'draft',accountId:'box'})");
+  assert.equal(seed.draftBodyEpoch, 0);
+  assert.equal(seed.draftPdf, undefined, "receiving scope is independent of existing PDFs or attachments");
+  ui.context.inboxSeed = seed;
+  await ui.run("openCompose(inboxSeed)");
+  const confirm = f.node("compose-inbox-confirm");
+  const list = f.node("compose-inbox-sources");
+  const choose = async () => {
+    f.node("compose-attach-inbox").click();
+    await until(() => list.childNodes.length > 0);
+    assert.equal(confirm.disabled, true);
+    assert.match(list.textContent, /Source quote.*Source <source@example\.invalid>.*Inbox quote\.pdf · 7 B/);
+    const input = descendants(list, "check")[0].childNodes[0];
+    assert.equal(input.type, "checkbox");
+    assert.equal(input.getAttribute("aria-describedby"), list.childNodes[0].childNodes[1].id);
+    assert.equal(Boolean(input.checked), false);
+    input.checked = true;
+    await input.listeners.change();
+    assert.equal(confirm.disabled, false);
+  };
+  assert.equal(f.node("compose-attach-inbox").disabled, false);
+  await choose();
+  assert.deepEqual(["to", "cc", "bcc"].map(field => f.node("compose-inbox-" + field).textContent), [
+    draft.to[0], draft.cc[0], draft.bcc[0],
+  ]);
+  assert.equal(f.node("compose-save").disabled, true);
+  const before = ui.run("composeSnapshot()");
+  pending = gate();
+  const cancelled = ui.run("confirmComposeInboxFiles()");
+  const requestId = calls.at(-1).params.requestId;
+  assert.equal(Boolean(f.node("compose-inbox-cancel").disabled), false);
+  let escaped = false;
+  dialog.listeners.cancel({ preventDefault() { escaped = true; } });
+  assert.equal(escaped, true);
+  assert.equal(dialog.open, false);
+  assert.equal(calls.at(-1).params.requestId, requestId);
+  pending.resolve();
+  await cancelled;
+  assert.equal(ui.run("composeSnapshot()"), before, "a late result after Escape cannot attach");
+
+  await choose();
+  pending = gate();
+  const stale = ui.run("confirmComposeInboxFiles()");
+  f.node("compose-bcc").value = "updated@example.invalid";
+  pending.resolve();
+  await stale;
+  assert.equal(dialog.open, false);
+  assert.equal(ui.run("state.composeAttachments.length"), 0, "a late result for old recipients cannot attach");
+
+  await choose();
+  pending = null;
+  await ui.run("confirmComposeInboxFiles()");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.composeAttachments)")), [local]);
+  assert.equal(dialog.open, false);
+  assert.equal(f.node("compose-body").value, draft.textBody);
+  const closing = ui.run("requestComposeClose()");
+  await until(() => f.node("compose-close-review").open);
+  f.node("draft-close-keep").onclick();
+  assert.equal(await closing, false);
+  assert.equal(ui.run("state.composeAttachments.length"), 1, "Keep editing preserves the attachment");
+  assert.ok(calls.every(({ channel }) => ["mail:openEmail", "mail:listFromCache", "mail:prepareDraft", "mail:cancelAttachmentRequest", "mail:uploadAttachment"].includes(channel)));
+}
+
 async function shippedBundle() {
   const f = fixture(true); await f.render({ data: syntheticPdf() });
   assert.match(f.pages.textContent, /Synthetic accessible PDF body/, "shipped PDF.js bundle parses and exposes actual PDF text");
@@ -512,7 +630,7 @@ function contractAndHelp() {
   assert.equal(bitmap(100, 100, 10000, 2).bitmapHeight, 4096);
   f.window.morrowFeaturesCatalog = require("../renderer/features-catalog"); ui.run("paintFeatureCatalog()");
   const help = f.node("features-catalog").textContent;
-  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/, /verified local PDF in a resumed draft/]) assert.match(help, claim);
+  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/, /verified local PDF in a resumed draft/, /Attach from Inbox in a draft/, /exact To, Cc and Bcc/]) assert.match(help, claim);
 }
 
 async function run() {
@@ -520,7 +638,7 @@ async function run() {
   assert.equal(crlfSource, source, "Windows CRLF checkouts strip module imports identically");
   new vm.Script(crlfSource, { filename: "pdf-preview-crlf.js" });
   const hostWithResolvers = Promise.withResolvers;
-  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await resumedDraftPdfPreview(); await shippedBundle(); contractAndHelp();
+  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await resumedDraftPdfPreview(); await receivingDraftInboxPicker(); await shippedBundle(); contractAndHelp();
   assert.equal(Promise.withResolvers, hostWithResolvers, "renderer compatibility never patches the host Promise");
   console.log("pdf-preview-ok: source and shipped PDF.js bundle, accessible/inert text, progressive admission/abort, resize failure/Retry, canvas caps, lifecycle/app integration, CSP/assets/rendered Features");
 }

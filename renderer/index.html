@@ -1112,12 +1112,14 @@
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
             <span>Attach files</span>
           </button>
+          <button type="button" class="ghost" id="compose-attach-inbox" aria-haspopup="dialog" hidden>Attach from Inbox…</button>
           <ul id="compose-attachments" class="compose-attachments" hidden></ul>
           <p id="compose-attach-error" class="error" role="status" hidden></p>
         <details id="compose-editing-help"><summary>Editing and attachment help</summary>
           <p class="hint">Use A− and A+ to change font size one step at a time. Text color opens common colors, Default text color, and Custom…. Formatting applies to selected text or the next text you type. Use Command+Z on Mac or Ctrl+Z on Windows to undo an edit.</p>
           <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
           <p class="hint">Forward includes the original files after preparation. Review or remove them here before sending. Preparation failures keep the original unchanged; retry from the message.</p>
+          <p class="hint">In a resumed draft, choose Attach from Inbox to select a local file from the same mailbox. Check the source message and the draft’s recipients before adding. If a recently downloaded file has expired, preview it in the reader and reopen the picker.</p>
           <p class="hint">Choose Preview beside a PDF added in this Compose session (including drag and drop and replacements) or a verified local PDF in a resumed draft. Saved PDFs are read on demand. Close Preview to return focus to the row and choose Remove while keeping your edits. Same-name attachments have numbered rows. If the draft changed in another window, reopen it before previewing again. Press Escape or Close to return to Compose.</p>
           <p class="hint">Wait for Preparing attachment to finish before Save, preview, Send or Schedule. Closing Compose abandons unfinished file preparation. Undo saves an inert recovery draft before reopening; if the window fails, resume from local Drafts. Recovered recipients and signatures stay exactly as queued.</p>
         </details>
@@ -1152,6 +1154,29 @@
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="compose-inbox-picker" aria-labelledby="compose-inbox-title" aria-describedby="compose-inbox-help">
+      <div class="dialog-body">
+        <div class="sheet-head">
+          <h2 id="compose-inbox-title" tabindex="-1">Attach from Inbox</h2>
+          <button type="button" class="ghost" id="compose-inbox-cancel">Cancel</button>
+        </div>
+        <p class="hint" id="compose-inbox-help">Choose a file stored on this device from the same Inbox. Recently downloaded files are available for five minutes. If a file has expired, preview it in its message and reopen this picker.</p>
+        <h3>Draft recipients</h3>
+        <dl class="preview-meta">
+          <div class="preview-row"><dt>To</dt><dd id="compose-inbox-to"></dd></div>
+          <div class="preview-row"><dt>Cc</dt><dd id="compose-inbox-cc"></dd></div>
+          <div class="preview-row"><dt>Bcc</dt><dd id="compose-inbox-bcc"></dd></div>
+        </dl>
+        <h3 id="compose-inbox-sources-title">Inbox files</h3>
+        <p class="hint" id="compose-inbox-status" role="status"></p>
+        <div id="compose-inbox-sources" role="region" aria-labelledby="compose-inbox-sources-title"></div>
+        <div class="row">
+          <button type="button" class="ghost" id="compose-inbox-newer" disabled>Newer</button>
+          <button type="button" class="ghost" id="compose-inbox-older" disabled>Older</button>
+          <button type="button" class="primary" id="compose-inbox-confirm" disabled>Add selected files</button>
+        </div>
+      </div>
     </dialog>
     <dialog id="signatures" aria-labelledby="signatures-title">
       <div class="dialog-body">

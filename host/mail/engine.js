@@ -5,6 +5,7 @@ const deliveryReceipt = require("./delivery-receipt");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { composePage } = require("../compose-editing-menu");
 const db = require("./db");
 const recipientSuggest = require("./recipient-suggest");
 const actions = require("./actions");
@@ -3582,6 +3583,20 @@ function selectableAttachments(attachments, ids) {
   return picked;
 }
 
+function attachmentConnection(account) {
+  return JSON.stringify([account.created_at, account.auth_kind, account.mail_transport, account.gmail_generation,
+    account.username, account.imap_host, account.imap_port, account.imap_tls]);
+}
+
+function attachmentSnapshotKey(account, row, connection) {
+  return JSON.stringify([account.id, account[ACCOUNT_EPOCH], connection, row.id, row.folder_path, row.uid,
+    row.uid_validity, row.gmail_id, row.rfc_message_id, row.attachments_json]);
+}
+
+function attachmentPartKey(key, id) {
+  return JSON.stringify([key, String(id)]);
+}
+
 function attachmentSnapshot(row) {
   if (row.local) {
     const assertSnapshot = () => {
@@ -3592,20 +3607,223 @@ function attachmentSnapshot(row) {
     return { account: { id: localFolders.ACCOUNT_ID }, assertSnapshot, key: row.id };
   }
   const account = bindAccount(db.accountById(row.account_id));
-  const login = value => JSON.stringify([value.created_at, value.auth_kind, value.mail_transport, value.gmail_generation,
-    value.username, value.imap_host, value.imap_port, value.imap_tls]);
-  const connection = login(account);
+  const connection = attachmentConnection(account);
   const assertSnapshot = () => {
     assertAccountCurrent(account);
-    if (login(db.accountById(account.id)) !== connection) throw removedAccountError();
+    if (attachmentConnection(db.accountById(account.id)) !== connection) throw removedAccountError();
     const current = db.messageById(row.id);
     if (!current || ["account_id", "folder_path", "uid", "uid_validity", "gmail_id", "rfc_message_id", "attachments_json"].some(key => current[key] !== row[key])) {
       throw new Error("The message or its attachments changed. Reopen it before saving its files.");
     }
   };
   assertSnapshot();
-  return { account, assertSnapshot, key: JSON.stringify([account.id, account[ACCOUNT_EPOCH], connection, row.id,
-    row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id, row.attachments_json]) };
+  return { account, assertSnapshot, key: attachmentSnapshotKey(account, row, connection) };
+}
+
+const DRAFT_INBOX_PAGE_MESSAGES = 20;
+const DRAFT_INBOX_PAGE_FILES = 40;
+const draftInboxProofKey = crypto.randomBytes(32);
+
+function inboxReviewId(value) {
+  return typeof value === "string" && value.length <= 200 && value.trim().length > 0;
+}
+
+function assertDraftInboxOwner(owner) {
+  if (owner?.isDestroyed?.()) throw attachmentTransfers.cancelled();
+  if (!Number.isSafeInteger(owner?.id) || owner.id <= 0
+      || !composePage(owner.getURL?.(), path.join(__dirname, "../../renderer/index.html"))) {
+    throw new Error("Open the Inbox attachment picker from the draft editor.");
+  }
+}
+
+function draftInboxReview(params, owner) {
+  assertDraftInboxOwner(owner);
+  const review = params.inboxAttachmentReview;
+  if (params.strictLocal !== true || typeof review?.id !== "string"
+      || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(review.id)
+      || !inboxReviewId(review.accountId) || !inboxReviewId(review.draftId) || !inboxReviewId(review.draftRevision)
+      || !Number.isSafeInteger(review.bodyEpoch) || review.bodyEpoch < 0
+      || !Array.isArray(review.recipients) || review.recipients.length !== 3
+      || review.recipients.some(value => typeof value !== "string" || value.length > 32_768)) {
+    throw new Error("The Inbox attachment review is invalid. Open it again from the draft.");
+  }
+  return { id: review.id, accountId: review.accountId, draftId: review.draftId, draftRevision: review.draftRevision,
+    bodyEpoch: review.bodyEpoch, recipients: review.recipients, ownerId: owner.id };
+}
+
+function draftInboxTarget(review) {
+  const account = bindAccount(db.accountById(review.accountId));
+  if (account[ACCOUNT_EPOCH] !== review.bodyEpoch) throw removedAccountError();
+  const draft = db.messageById(review.draftId);
+  if (!draft?.is_draft || draft.account_id !== account.id || !isSystemDraftFolder(account.id, draft.folder_path)
+      || db.draftRevision(draft) !== review.draftRevision || db.messageHeld(draft.id)) {
+    throw Object.assign(new Error("This saved draft changed or was removed. Reopen it before attaching Inbox files."), { code: "draft_conflict" });
+  }
+  const folder = db.folderByWellKnown(account.id, "inbox");
+  const inbox = folder?.path && !remote.isAllMail(folder)
+    && (account.mail_transport !== "gmail_api" || folder.provider_id === "INBOX");
+  return { account, inbox: inbox ? folder : null };
+}
+
+function localInboxParts(row, { account, inbox }) {
+  if (!row || !inbox || row.account_id !== account.id || row.folder_path !== inbox.path || row.is_draft || row.draft_pending) return [];
+  if (account.mail_transport === "gmail_api" && !row.gmail_id) return [];
+  const validity = account.mail_transport === "gmail_api" ? account.gmail_generation : inbox.uid_validity;
+  if (row.uid > 0 && validity > 0 && Number(row.uid_validity) !== Number(validity)) return [];
+  const files = db.jsonList(row.attachments_json);
+  const counts = new Map();
+  for (const file of files) {
+    const id = file?.id == null ? "" : String(file.id);
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const snapshot = attachmentSnapshotKey(account, row, attachmentConnection(account));
+  const parts = [];
+  for (const file of files) {
+    if ((typeof file?.id !== "string" && !Number.isSafeInteger(file?.id)) || !inboxReviewId(String(file.id))
+        || counts.get(String(file.id)) !== 1) continue;
+    if (String(file.storageUrl || "").startsWith("local:")) {
+      if (!/^local:[A-Za-z0-9_-]{1,200}$/.test(file.storageUrl)) continue;
+      const version = db.blobVersion(file.storageUrl.slice(6));
+      if (version && version.size === file.size && version.size > 0 && version.size <= ATTACHMENT_CAP) {
+        parts.push({ ...file, generation: version });
+      }
+    } else if (row.uid > 0) {
+      const cacheKey = attachmentPartKey(snapshot, file.id);
+      const hit = attachmentCache.describeCompleted(account.id, cacheKey);
+      if (hit && hit.size > 0 && hit.size <= ATTACHMENT_CAP) {
+        parts.push({ ...file, cacheKey, generation: hit.generation, size: hit.size });
+      }
+    }
+  }
+  return parts;
+}
+
+function draftInboxSourceProof(review, account, row) {
+  // The page issues proofs only for displayed parts. No renderer-supplied blob
+  // reference is accepted, and a proof cannot move to another draft or window.
+  return crypto.createHmac("sha256", draftInboxProofKey).update(JSON.stringify([review, attachmentConnection(account),
+    row.id, row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id,
+    row.from_addr, row.from_display_name, row.subject, row.date_iso, row.attachments_json])).digest();
+}
+
+function draftInboxPartProof(sourceProof, file) {
+  return crypto.createHmac("sha256", sourceProof).update(JSON.stringify([String(file.id), file.cacheKey || file.storageUrl, file.generation, file.size])).digest("hex");
+}
+
+function draftInboxPage(review, cursor) {
+  const beforeMessage = cursor?.before;
+  const invalidBoundary = beforeMessage !== null && (!Number.isSafeInteger(beforeMessage?.ts) || !inboxReviewId(beforeMessage?.id));
+  const invalidResume = cursor?.resumeId == null ? cursor?.resumeIndex != null
+    : !inboxReviewId(cursor.resumeId) || !Number.isSafeInteger(cursor.resumeIndex) || cursor.resumeIndex <= 0;
+  if (cursor !== null && (invalidBoundary || invalidResume)) {
+    throw new Error("This Inbox page is invalid. Reopen the attachment picker.");
+  }
+  const target = draftInboxTarget(review);
+  if (!target.inbox) return { sources: [], nextCursor: null };
+  let before = beforeMessage || null;
+  const rows = db.selectMessages({ accountId: review.accountId, folderPath: target.inbox.path,
+    beforeMessage: before, limit: DRAFT_INBOX_PAGE_MESSAGES + 1 }, { headersOnly: true });
+  const memberships = target.account.mail_transport === "gmail_api" ? db.gmailLabelMemberships(rows) : null;
+  const sources = [];
+  let remaining = DRAFT_INBOX_PAGE_FILES;
+  for (const [index, row] of rows.slice(0, DRAFT_INBOX_PAGE_MESSAGES).entries()) {
+    const labels = memberships?.get(JSON.stringify([row.account_id, row.gmail_id]))?.labels_json;
+    const parts = memberships && row.gmail_id && !db.jsonList(labels).includes("INBOX") ? [] : localInboxParts(row, target);
+    const start = cursor?.resumeId === row.id ? cursor.resumeIndex : 0;
+    const files = parts.slice(start, start + remaining);
+    if (files.length) {
+      const proof = draftInboxSourceProof(review, target.account, row);
+      sources.push({ id: row.id, from: row.from_addr || row.from_address, subject: row.subject, date: row.date_iso,
+        files: files.map(file => ({ id: String(file.id), filename: attachmentName(file), size: file.size,
+          proof: draftInboxPartProof(proof, file) })) });
+    }
+    if (parts.length > start + remaining) return { sources, nextCursor: { before, resumeId: row.id, resumeIndex: start + remaining } };
+    remaining -= files.length;
+    before = { ts: row.list_sort_ts, id: row.id };
+    if (!remaining || index === DRAFT_INBOX_PAGE_MESSAGES - 1) {
+      return { sources, nextCursor: rows[index + 1] ? { before } : null };
+    }
+  }
+  return { sources, nextCursor: null };
+}
+
+function selectedDraftInboxParts(review, selections) {
+  const target = draftInboxTarget(review);
+  const sources = new Map();
+  const changed = () => new Error("An Inbox message or attachment changed. Open the picker again to review its files.");
+  const refs = new Set();
+  return selections.map(({ emailId, partId, proof }) => {
+    if (!sources.has(emailId)) {
+      const row = db.messageById(emailId, { headersOnly: true });
+      const files = localInboxParts(row, target);
+      if (!files.length) throw changed();
+      if (target.account.mail_transport === "gmail_api" && row.gmail_id
+          && !db.jsonList(db.gmailMap(review.accountId, row.gmail_id)?.labels_json).includes("INBOX")) throw changed();
+      sources.set(emailId, { proof: draftInboxSourceProof(review, target.account, row), files: new Map(files.map(file => [String(file.id), file])) });
+    }
+    const source = sources.get(emailId);
+    const file = source.files.get(partId);
+    const ref = file?.cacheKey || file?.storageUrl;
+    if (!file || refs.has(ref) || !crypto.timingSafeEqual(Buffer.from(proof, "hex"),
+      Buffer.from(draftInboxPartProof(source.proof, file), "hex"))) throw changed();
+    refs.add(ref);
+    return file;
+  });
+}
+
+async function draftInboxAttachmentAnswer(channel, params, owner) {
+  let request;
+  try {
+    const review = draftInboxReview(params, owner);
+    if (channel === "mail:listFromCache") {
+      if (params.checkDraft === true) {
+        draftInboxTarget(review);
+        return ok({ current: true });
+      }
+      return ok(draftInboxPage(review, params.cursor ?? null));
+    }
+    if (channel !== "mail:prepareDraft") throw new Error("This operation is unavailable for Inbox attachment review.");
+    const { parts, existingBytes, requestId } = params;
+    const pin = params.pinSelection === true;
+    if (!inboxReviewId(requestId) || !Array.isArray(parts) || !parts.length || parts.length > DRAFT_INBOX_PAGE_FILES
+        || parts.some(part => !inboxReviewId(part?.emailId) || !inboxReviewId(part?.partId)
+          || typeof part?.proof !== "string" || !/^[a-f0-9]{64}$/.test(part.proof))
+        || (pin ? parts.length !== 1 : parts.some(part => typeof part.contentProof !== "string" || !/^[a-f0-9]{64}$/.test(part.contentProof)))
+        || !Number.isSafeInteger(existingBytes) || existingBytes < 0 || existingBytes > ATTACHMENT_CAP) {
+      throw new Error("Review the Inbox files again before confirming.");
+    }
+    request = attachmentRequests.begin(params, owner);
+    request.accountId = review.accountId;
+    await new Promise(resolve => setImmediate(resolve));
+    request.signal.throwIfAborted();
+    assertDraftInboxOwner(owner);
+    const files = selectedDraftInboxParts(review, parts);
+    if (files.reduce((total, file) => total + file.size, existingBytes) > ATTACHMENT_CAP) {
+      throw new Error("These files exceed the draft's 25 MiB outgoing attachment limit.");
+    }
+    for (const emailId of new Set(parts.map(part => part.emailId))) actions.assertIdentityReady(emailId);
+    // Only checked files are read. Bind confirmation to the exact bytes read on
+    // selection, including a delete/reinsert that reused a SQLite rowid.
+    const attachments = files.map((file, index) => {
+      request.signal.throwIfAborted();
+      const bytes = file.cacheKey
+        ? attachmentCache.readCompleted(review.accountId, file.cacheKey, file.generation, file.size)
+        : db.readBlob(file.storageUrl.slice(6), file.generation)?.data;
+      if (!bytes || bytes.length !== file.size) throw new Error("The stored Inbox file changed. Select it again.");
+      const contentProof = crypto.createHmac("sha256", draftInboxProofKey).update(parts[index].proof).update(bytes).digest("hex");
+      if (pin) return { contentProof };
+      if (!crypto.timingSafeEqual(Buffer.from(contentProof, "hex"), Buffer.from(parts[index].contentProof, "hex"))) {
+        throw new Error("The stored Inbox file changed. Select it again.");
+      }
+      return { filename: attachmentName(file), mimeType: file.mimeType || file.contentType || "application/octet-stream",
+        size: bytes.length, bytes };
+    });
+    request.signal.throwIfAborted();
+    return ok({ attachments });
+  } catch (error) {
+    if (request?.signal.aborted || error?.code === "cancelled" || error?.name === "AbortError") return fail("cancelled", "cancelled");
+    return fail(error.code || "inbox_attachment", error.message);
+  } finally { request?.finish(); }
 }
 
 async function attachmentParts(row, files, { signal, onProgress = () => {} } = {}) {
@@ -3627,7 +3845,7 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
       localBytes += blob.data.length;
       if (localBytes > attachmentTransfers.LIMITS.zipBytes) throw Object.assign(new Error("These files exceed the 128 MiB combined download limit. Save them separately."), { code: "too-large" });
       parts.set(index, { name: item.filename || blob.filename || "attachment", data: Buffer.from(blob.data) });
-    } else remoteItems.push({ key: JSON.stringify([key, String(item.id)]), item, index });
+    } else remoteItems.push({ key: attachmentPartKey(key, item.id), item, index });
   }
   const assertRemote = () => {
     assertSnapshot();
@@ -4716,8 +4934,12 @@ async function importGoogleOauthClientAdmitted(event) {
 }
 
 function answer(channel, args, event) {
-  if (!ready) return undefined;
   const params = args && args.length ? args[0] : undefined;
+  if (params && (Object.hasOwn(params, "strictLocal") || Object.hasOwn(params, "inboxAttachmentReview"))) {
+    if (!ready || !db.isReady()) return fail("mail_not_ready", "Local mail is still opening. Try again when the mailbox is ready.");
+    return draftInboxAttachmentAnswer(channel, params, event?.sender);
+  }
+  if (!ready) return undefined;
   // This reviewed two-account channel validates its own captured source and
   // destination owners, rather than the single-account legacy action guard.
   if (channel === "mail:crossMailboxCopy") return crossMailboxCopyAnswer(params || {});

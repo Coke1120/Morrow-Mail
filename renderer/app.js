@@ -43,6 +43,8 @@ const state = {
   composePdfBytes: new Map(),
   composeDraftPdf: null,
   composePdfPreview: null,
+  composeInboxDraft: null,
+  composeInboxPicker: null,
   composeFileJobs: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -14808,6 +14810,10 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  if (state.composeInboxDraft) {
+    if (state.composeInboxPicker && !currentComposeInboxDraft()) invalidateComposeInboxPicker();
+    syncComposeInboxButton();
+  }
   observeCrossMailboxMoveContext();
   if (messageSummary && !summaryMatches(state.email)) {
     clearMessageSummary();
@@ -15889,6 +15895,7 @@ function syncComposeActions() {
     sendNow.hidden = !offerNow;
     sendNow.disabled = !live || locked || !!state.composeIdentityError;
   }
+  syncComposeInboxButton();
 }
 
 function syncCompose() {
@@ -15979,6 +15986,263 @@ async function readComposeDraftPdfId(scope, storageUrl) {
   return matchingDraftPdfId(draft.attachments, storageUrl, originalId);
 }
 
+const inboxRecipientFields = ["to", "cc", "bcc"];
+
+function currentComposeInboxDraft() {
+  const draft = state.composeInboxDraft;
+  if (!draft || draft.id !== state.draftId || !state.draftRevision || state.composeQueued
+      || state.composeInitializing || state.composeIdentityError) return null;
+  const account = composeAccount();
+  return isLive(account) && draft.accountId === account.id && draft.bodyEpoch === account.bodyEpoch ? draft : null;
+}
+
+function syncComposeInboxButton() {
+  const button = $("compose-attach-inbox");
+  if (!button) return;
+  button.hidden = !state.composeInboxDraft;
+  button.disabled = !currentComposeInboxDraft() || state.composePending
+    || state.draftWrite?.pending || (!state.composeInboxPicker && composeFilesPending());
+}
+
+function inboxPickerRecipients() {
+  return inboxRecipientFields.map(field => $("compose-" + field).value.trim());
+}
+
+function closeComposeInboxPicker() {
+  const picker = state.composeInboxPicker;
+  if (!picker) return;
+  state.composeInboxPicker = null;
+  if (picker.requestId) call("mail:cancelAttachmentRequest", { requestId: picker.requestId }).catch(() => {});
+  picker.selected.clear();
+  picker.cursors.length = 0;
+  $("compose-inbox-sources").replaceChildren();
+  for (const field of inboxRecipientFields) $("compose-inbox-" + field).textContent = "";
+  $("compose-inbox-status").textContent = "";
+  syncComposeActions();
+  return closeDialog("compose-inbox-picker");
+}
+
+function invalidateComposeInboxPicker(message = "The draft or its mailbox changed. Reopen the saved draft to review Inbox files.") {
+  if (!state.composeInboxPicker) return;
+  closeComposeInboxPicker();
+  setComposeAttachError(message);
+}
+
+function ownsComposeInboxPicker(picker) {
+  if (state.composeInboxPicker !== picker || !$("compose-inbox-picker").open) return false;
+  const { review } = picker;
+  if (!$("compose").open || state.composeSession !== picker.session || currentComposeInboxDraft() !== picker.draft
+      || state.draftRevision !== review.draftRevision || state.composePending) {
+    invalidateComposeInboxPicker();
+    return false;
+  }
+  if (inboxPickerRecipients().some((value, index) => value !== review.recipients[index])) {
+    invalidateComposeInboxPicker("The draft recipients changed. Choose Inbox files again.");
+    return false;
+  }
+  return true;
+}
+
+function syncComposeInboxPicker(picker) {
+  $("compose-inbox-sources").inert = picker.busy;
+  $("compose-inbox-newer").disabled = picker.busy || picker.page === 0;
+  $("compose-inbox-older").disabled = picker.busy || !picker.cursors[picker.page + 1];
+  $("compose-inbox-confirm").disabled = picker.busy || !picker.selected.size;
+}
+
+function paintComposeInboxSources(picker, sources) {
+  const list = $("compose-inbox-sources");
+  list.replaceChildren();
+  for (const [index, source] of sources.entries()) {
+    const group = document.createElement("fieldset");
+    group.className = "preview-meta";
+    group.dataset.inboxMessageId = source.id;
+    const subject = document.createElement("legend");
+    subject.textContent = source.subject || "(no subject)";
+    const details = document.createElement("p");
+    details.className = "hint";
+    details.id = "compose-inbox-source-details-" + index;
+    details.textContent = `${source.from || "Unknown sender"} · ${shownWhen(new Date(source.date || ""), true) || "Unknown date"}`;
+    group.append(subject, details);
+    for (const file of source.files) {
+      const label = document.createElement("label");
+      label.className = "check";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.inboxPartId = file.id;
+      input.setAttribute("aria-describedby", details.id);
+      const name = document.createElement("span");
+      const duplicate = source.files.some(other => other !== file && other.filename === file.filename && other.size === file.size);
+      name.textContent = `${file.filename} · ${fileSize(file.size)}${duplicate ? ` · Part ${file.id}` : ""}`;
+      input.addEventListener("change", () => selectComposeInboxFile(picker, source, file, input));
+      label.append(input, name);
+      group.appendChild(label);
+    }
+    list.appendChild(group);
+  }
+}
+
+async function selectComposeInboxFile(picker, source, file, input) {
+  if (picker.busy || !ownsComposeInboxPicker(picker)) return;
+  if (input.checked) {
+    picker.busy = true;
+    picker.requestId = crypto.randomUUID();
+    syncComposeInboxPicker(picker);
+    $("compose-inbox-status").textContent = "Checking selected file…";
+    try {
+      const part = { emailId: source.id, partId: file.id, proof: file.proof };
+      const result = await call("mail:prepareDraft", { strictLocal: true, pinSelection: true,
+        inboxAttachmentReview: picker.review, requestId: picker.requestId, existingBytes: 0, parts: [part] });
+      if (!ownsComposeInboxPicker(picker)) return;
+      const contentProof = result?.attachments?.[0]?.contentProof;
+      if (!contentProof) throw new Error("Select the Inbox file again.");
+      picker.selected.set(file.proof, { ...file, emailId: source.id, contentProof });
+    } catch (error) {
+      input.checked = false;
+      showComposeInboxError(picker, error);
+      return;
+    } finally {
+      picker.busy = false;
+      picker.requestId = null;
+      if (ownsComposeInboxPicker(picker)) syncComposeInboxPicker(picker);
+    }
+  } else picker.selected.delete(file.proof);
+  syncComposeInboxPicker(picker);
+  $("compose-inbox-status").textContent = picker.selected.size ? `${picker.selected.size} selected.` : "Choose files to add to the draft.";
+}
+
+function showComposeInboxError(picker, error) {
+  if (!ownsComposeInboxPicker(picker)) return;
+  if (["draft_conflict", "account_removed"].includes(error?.code)) {
+    state.composeInboxDraft = null;
+    invalidateComposeInboxPicker(error.message);
+  } else $("compose-inbox-status").textContent = error?.message || String(error);
+}
+
+async function loadComposeInboxPage(picker, page) {
+  if (!picker || picker.busy || !ownsComposeInboxPicker(picker) || page < 0 || page >= picker.cursors.length) return;
+  picker.busy = true;
+  picker.selected.clear();
+  $("compose-inbox-sources").replaceChildren();
+  syncComposeInboxPicker(picker);
+  $("compose-inbox-status").textContent = "Checking stored Inbox files…";
+  if (picker.loaded) $("compose-inbox-cancel").focus();
+  try {
+    const result = await call("mail:listFromCache", { strictLocal: true, inboxAttachmentReview: picker.review, cursor: picker.cursors[page] });
+    if (!ownsComposeInboxPicker(picker)) return;
+    if (!Array.isArray(result?.sources)) throw new Error("Could not list stored Inbox files. Reopen the picker to try again.");
+    picker.loaded = true;
+    picker.page = page;
+    picker.cursors.length = page + 1;
+    if (result.nextCursor) picker.cursors.push(result.nextCursor);
+    paintComposeInboxSources(picker, result.sources);
+    $("compose-inbox-status").textContent = result.sources.length ? "Choose files to add to the draft."
+      : result.nextCursor ? "No stored Inbox files on this page. Choose Older to keep looking." : "No stored Inbox files on this page.";
+  } catch (error) { showComposeInboxError(picker, error); }
+  finally {
+    picker.busy = false;
+    if (ownsComposeInboxPicker(picker)) syncComposeInboxPicker(picker);
+  }
+}
+
+function openComposeInboxPicker() {
+  const draft = currentComposeInboxDraft();
+  if (!draft || state.composePending || state.draftWrite?.pending || composeFilesPending()
+      || !$("compose").open || $("compose-inbox-picker").open || $("compose-preview").open || $("attachment-preview").open) return;
+  const recipients = inboxPickerRecipients();
+  const review = { id: crypto.randomUUID(), draftId: draft.id, accountId: draft.accountId, bodyEpoch: draft.bodyEpoch,
+    draftRevision: state.draftRevision, recipients };
+  const picker = { draft, review, session: state.composeSession, page: 0, cursors: [null], selected: new Map() };
+  state.composeInboxPicker = picker;
+  hideRecipientSuggest();
+  setComposeAttachError("");
+  for (const [index, field] of inboxRecipientFields.entries()) $("compose-inbox-" + field).textContent = recipients[index] || "None";
+  $("compose-attach-inbox").focus();
+  openDialog("compose-inbox-picker");
+  $("compose-inbox-title").focus();
+  syncComposeActions();
+  loadComposeInboxPage(picker, 0);
+}
+
+async function confirmComposeInboxFiles() {
+  const picker = state.composeInboxPicker;
+  if (!picker || picker.busy || !picker.selected.size || !ownsComposeInboxPicker(picker)) return;
+  const selected = [...picker.selected.values()];
+  const existing = composeAttachmentList(state.composeAttachments);
+  const provider = folderProvider(composeAccount());
+  const plan = reviewComposeFiles(existing, selected, provider);
+  if (plan.errors.length) {
+    $("compose-inbox-status").textContent = plan.errors[0];
+    return;
+  }
+  picker.busy = true;
+  picker.requestId = crypto.randomUUID();
+  syncComposeInboxPicker(picker);
+  $("compose-inbox-cancel").focus();
+  $("compose-inbox-status").textContent = "Checking selected Inbox files…";
+  try {
+    const result = await call("mail:prepareDraft", { strictLocal: true, inboxAttachmentReview: picker.review,
+      requestId: picker.requestId, existingBytes: existing.reduce((sum, file) => sum + file.size, 0),
+      parts: selected.map(file => ({ emailId: file.emailId, partId: file.id, proof: file.proof, contentProof: file.contentProof })) });
+    if (!ownsComposeInboxPicker(picker)) return;
+    const files = result?.attachments;
+    if (!Array.isArray(files) || files.length !== selected.length) throw new Error("Review the selected Inbox files again.");
+    const verified = files.map((file, index) => {
+      const bytes = attachmentBytes(file?.bytes);
+      if (!bytes.length || bytes.length !== selected[index].size || file.filename !== selected[index].filename)
+        throw new Error("An Inbox file changed. Review the selection again.");
+      return { file, bytes };
+    });
+    const currentDraft = async () => {
+      const check = await call("mail:listFromCache", { strictLocal: true, inboxAttachmentReview: picker.review, checkDraft: true });
+      return ownsComposeInboxPicker(picker) && check?.current === true;
+    };
+    if (!await currentDraft()) return;
+    const added = [];
+    for (const { file, bytes } of verified) {
+      const saved = await call("mail:uploadAttachment", { filename: file.filename, mimeType: file.mimeType, fileBytes: bytes });
+      if (!ownsComposeInboxPicker(picker)) return;
+      const meta = composeFileMeta(saved);
+      if (!meta || meta.size !== bytes.length) throw new Error("The selected file could not be attached. Try again.");
+      added.push(meta);
+    }
+    if (!await currentDraft()) return;
+    const current = composeAttachmentList(state.composeAttachments);
+    const check = reviewComposeFiles(current, added, provider);
+    if (check.errors.length) throw new Error(check.errors[0]);
+    for (const [index, meta] of added.entries()) {
+      if (attachmentPreviewKind(meta) === "pdf") state.composePdfBytes.set(meta.storageUrl, verified[index].bytes);
+    }
+    state.composeAttachments = current.concat(added);
+    picker.requestId = null;
+    closeComposeInboxPicker();
+    paintComposeAttachments();
+    paintComposeNote();
+    setComposeStatus("Inbox files added to this draft. Save draft to keep the changes.");
+  } catch (error) { showComposeInboxError(picker, error); }
+  finally {
+    picker.requestId = null;
+    picker.busy = false;
+    if (ownsComposeInboxPicker(picker)) syncComposeInboxPicker(picker);
+  }
+}
+
+function wireComposeInboxPicker() {
+  const dialog = $("compose-inbox-picker");
+  if (!dialog) return;
+  $("compose-attach-inbox").addEventListener("click", openComposeInboxPicker);
+  $("compose-inbox-confirm").addEventListener("click", confirmComposeInboxFiles);
+  $("compose-inbox-cancel").addEventListener("click", closeComposeInboxPicker);
+  for (const [id, step] of [["compose-inbox-newer", -1], ["compose-inbox-older", 1]]) {
+    $(id).addEventListener("click", () => {
+      const picker = state.composeInboxPicker;
+      if (picker) loadComposeInboxPage(picker, picker.page + step);
+    });
+  }
+  dialog.addEventListener("cancel", event => { event.preventDefault(); closeComposeInboxPicker(); });
+  dialog.addEventListener("close", () => { if (!dialog.open) closeComposeInboxPicker(); });
+}
+
 function paintComposeAttachments() {
   const list = $("compose-attachments");
   if (!list || typeof list.replaceChildren !== "function") return;
@@ -16055,7 +16319,7 @@ function removeComposeAttachment(storageUrl) {
 }
 
 function composeFilesPending() {
-  return (state.composeFileJobs || []).some((job) => job.session === state.composeSession);
+  return !!state.composeInboxPicker || (state.composeFileJobs || []).some((job) => job.session === state.composeSession);
 }
 
 async function addComposeFiles(list) {
@@ -17664,6 +17928,7 @@ function applyComposeRecipients() {
   $("compose-cc").value = seeded.cc;
   $("compose-bcc").value = seeded.bcc;
   syncComposeRecipientRows();
+  if (state.composeInboxPicker) ownsComposeInboxPicker(state.composeInboxPicker);
 }
 
 function paintComposeIdentity() {
@@ -17731,6 +17996,7 @@ function changeComposeFrom() {
 }
 
 async function switchComposeMailbox(accountId, fromAddress) {
+  invalidateComposeInboxPicker();
   const session = state.composeSession;
   const previous = {
     accountId: state.composeMeta.accountId,
@@ -17776,6 +18042,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
     paintComposeNote();
     switched = true;
     state.composeDraftPdf = null;
+    state.composeInboxDraft = null;
     if (previous.draftId) setComposeStatus("The earlier draft stays in the original mailbox. Save draft stores a new copy here.");
   } catch (error) {
     if (session !== state.composeSession) return;
@@ -18177,6 +18444,9 @@ async function openCompose(seed) {
   state.draftId = fields.draftId || null;
   state.draftRevision = fields.draftRevision || null;
   state.composeDraftPdf = fields.draftPdf ? { ...fields.draftPdf, originalRevision: fields.draftPdf.draftRevision } : null;
+  state.composeInboxDraft = fields.ordinaryDraftResume === true && isComposeWindow() && state.draftId && state.draftRevision
+    && Number.isSafeInteger(fields.draftBodyEpoch) && fields.draftBodyEpoch >= 0
+    ? { id: state.draftId, accountId: fields.accountId, bodyEpoch: fields.draftBodyEpoch } : null;
   state.composeQueued = false;
   state.composePartialReceipt = false;
   state.signatureText = "";
@@ -18314,6 +18584,7 @@ async function requestComposeClose() {
   const preview = $("compose-preview");
   if (preview && preview.open) return false;
   if (state.composePending) return false;
+  if (state.composeInboxPicker) await closeComposeInboxPicker();
   if (state.composePdfPreview) closeAttachmentPreview();
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
     const choice = await new Promise((resolve) => {
@@ -18330,6 +18601,7 @@ async function requestComposeClose() {
   state.composeSession += 1;
   state.composePdfBytes?.clear();
   state.composeDraftPdf = null;
+  state.composeInboxDraft = null;
   state.composeInitializing = false;
   signatureGen += 1;
   await closeDialog("compose");
@@ -18348,7 +18620,7 @@ function resumeDraft(email, extra) {
 async function prepareDraftCompose(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
   let draft = data && data.email;
-  if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
+  if (!draft?.isDraft || draft.id !== email.id || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
   if (!draft.bodyComplete || draft.bodyWarning) throw new Error("The complete draft body could not be downloaded. The saved draft was retained; reopen it to retry.");
   const original = draft;
@@ -18363,8 +18635,9 @@ async function prepareDraftCompose(email, extra) {
   // Only files already local on the saved draft qualify. Preparation can
   // give provider files new local keys that do not belong to the saved row.
   const draftPdfFiles = [];
-  if (!extra && original.id === draft.id && original.draftRevision && original.draftRevision === draft.draftRevision
-      && Number.isSafeInteger(original.bodyEpoch) && original.bodyEpoch === draft.bodyEpoch) {
+  const reviewedDraft = !extra && original.id === draft.id && original.draftRevision && original.draftRevision === draft.draftRevision
+    && Number.isSafeInteger(original.bodyEpoch) && original.bodyEpoch >= 0 && original.bodyEpoch === draft.bodyEpoch;
+  if (reviewedDraft) {
     for (const file of original.attachments || []) {
       const storageUrl = file?.storageUrl;
       const id = matchingDraftPdfId(original.attachments, storageUrl);
@@ -18373,6 +18646,7 @@ async function prepareDraftCompose(email, extra) {
   }
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
     ...(!extra ? { ordinaryDraftResume: true } : {}),
+    ...(reviewedDraft ? { draftBodyEpoch: draft.bodyEpoch } : {}),
     draftRevision: draft.draftRevision,
     fromAddress: draft.fromAddress,
     fromDisplayName: draft.fromDisplayName,
@@ -29337,9 +29611,13 @@ function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
   wireRecipientSuggest();
   wireComposeFormat();
+  wireComposeInboxPicker();
   $("scheduled-more")?.addEventListener("click", () => guard(() => loadScheduled({ more: true })));
   for (const field of ["to", "cc", "bcc", "subject", "body"]) $("compose-" + field).addEventListener("input", () => {
     if (state.composeInputVersions) state.composeInputVersions[field] += 1;
+    if (state.composeInboxPicker && inboxRecipientFields.includes(field)) {
+      invalidateComposeInboxPicker("The draft recipients changed. Choose Inbox files again.");
+    }
   });
   $("compose-editor")?.addEventListener("input", () => { if (state.composeInputVersions) state.composeInputVersions.body += 1; });
   $("compose-from").addEventListener("change", changeComposeFrom);
@@ -29381,7 +29659,7 @@ function wire() {
         else closeDialog("quit-scheduled");
         return;
       }
-      if (dialog.id === "compose-close-review") return;
+      if (dialog.id === "compose-close-review" || dialog.id === "compose-inbox-picker") return;
       if (dialog.id === "connect") {
         event.preventDefault();
         dismissConnect();
@@ -29389,6 +29667,10 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (state.composeInboxPicker) {
+          closeComposeInboxPicker();
+          return;
+        }
         if (state.composePdfPreview && $("attachment-preview").open) {
           closeAttachmentPreview();
           return;
@@ -29965,6 +30247,7 @@ function wire() {
     });
   }
   $("compose").addEventListener("close", () => {
+    if (!$("compose").open && state.composeInboxPicker) closeComposeInboxPicker();
     if (!$("compose").open && $("compose-window-label-control")?.hidden === false) publishComposeTitle("Resume draft");
     stopDraftWrite();
     closeComposeAi();
