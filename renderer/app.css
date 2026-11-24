@@ -6322,6 +6322,19 @@ html[data-window="translate"] #reader .translate-column h2 {
 #messages.compact-list #message-list button.message { padding-top: 3px; padding-bottom: 3px; }
 #messages #message-list .row-actions { top: auto; bottom: 0; transform: none; }
 
+#draft-recipients { margin-top: 6px; }
+#list-head:has(#draft-recipients[aria-pressed="true"]) ~ #message-list { container-type: inline-size; }
+#messages #message-list .draft-recipient-preview {
+  grid-column: 1 / -1;
+  /* Keep To text inside the scrollport at its leftmost position. */
+  max-width: calc(100cqw - 54px);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+#messages.compact-list #message-list button.message:has(.draft-recipient-preview) { height: auto; }
+#messages #message-list .message-row:has(.draft-recipient-preview) .row-actions { top: 0; bottom: auto; }
+
 #messages #message-list .outbox-row { padding-left: 28px; }
 
 /* The menu belongs to Mail's toolbar and stays above both preview panes. */
