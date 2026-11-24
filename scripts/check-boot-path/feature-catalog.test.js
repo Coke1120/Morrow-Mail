@@ -48,11 +48,13 @@ test("inserting paired manifests preserves deterministic bucket and ID order", t
   files.write("001-first.json");
   files.compare();
   files.write("900-alpha.json");
+  files.write("900-quote-review.json");
+  files.write("900-quote.json");
   const source = files.compare();
   const browser = { window: {} };
   vm.runInNewContext(source, browser);
   assert.deepStrictEqual(Array.from(browser.window.morrowFeaturesCatalog.items, row => row.id),
-    ["first", "alpha", "zulu"]);
+    ["first", "alpha", "quote", "quote-review", "zulu"]);
   const modified = fs.statSync(files.output).mtimeMs;
   assert.equal(files.compare(), source);
   assert.equal(fs.statSync(files.output).mtimeMs, modified);

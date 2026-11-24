@@ -13,11 +13,15 @@ function hasText(value) {
 }
 
 function readFeatures(directory, readRow) {
-  // The fixed-width bucket sorts numerically, then the ID breaks ties.
-  const names = fs.readdirSync(directory).filter(name => name.endsWith(".json")).sort();
-  if (!names.length) throw new Error(`No feature manifests in ${directory}`);
+  // Sort the fixed-width bucket and ID without the extension so prefix IDs come first.
+  const stems = fs.readdirSync(directory)
+    .filter(name => name.endsWith(".json"))
+    .map(name => name.slice(0, -5))
+    .sort();
+  if (!stems.length) throw new Error(`No feature manifests in ${directory}`);
   const ids = new Set();
-  return names.map(name => {
+  return stems.map(stem => {
+    const name = `${stem}.json`;
     const file = path.join(directory, name);
     const match = filenamePattern.exec(name);
     if (!match) throw new Error(`Invalid feature manifest filename: ${file}`);
