@@ -10646,6 +10646,7 @@ let attachmentPreviewRequest = null;
 let attachmentPreviewFileId = "";
 let pdfPreviewLoader = null;
 const attachmentTasks = new Map();
+const PDF_PREVIEW_SOURCE_CHANGED = "The attachment list changed. Reopen the PDF to save it.";
 
 function attachmentTaskKey(email, ids) {
   return JSON.stringify([String(email.id), ids]);
@@ -10767,7 +10768,32 @@ function clearPdfPreviewPages() {
   pages.removeAttribute("aria-busy");
 }
 
+function updatePdfPreviewSave(source) {
+  const button = $("attachment-preview-save");
+  if (!button) return;
+  button.hidden = !source;
+  button.onclick = null;
+  if (!source) return;
+  const activate = () => attachmentAction(() => {
+    if (button.onclick !== activate || !$("attachment-preview").open) return;
+    updatePdfPreviewSave(null);
+    closeAttachmentPreview();
+    if (source.isCurrent()) return source.save();
+    showStatus(PDF_PREVIEW_SOURCE_CHANGED, true);
+  });
+  button.onclick = activate;
+}
+
+function showPdfPreviewSourceChanged() {
+  if (document.activeElement === $("attachment-preview-save")) $("attachment-preview-close").focus();
+  updatePdfPreviewSave(null);
+  const status = $("attachment-preview-status");
+  status.textContent = PDF_PREVIEW_SOURCE_CHANGED;
+  status.hidden = false;
+}
+
 function updatePdfPreviewHeader(email) {
+  updatePdfPreviewSave(null);
   const source = $("attachment-preview-from");
   if (source) {
     source.textContent = email ? "From: " + (email.from || email.fromAddress || "Unknown sender") : "";
@@ -10851,7 +10877,11 @@ function syncAttachmentPreview(email) {
   const dialog = $("attachment-preview");
   if (!dialog || !dialog.open || state.composePdfPreview) return;
   const id = email && email.id;
-  if (id && id === attachmentPreviewEmailId) return;
+  if (id && id === attachmentPreviewEmailId) {
+    // renderReader has already removed the row that opened this preview.
+    if ($("attachment-preview-save")?.hidden === false) showPdfPreviewSourceChanged();
+    return;
+  }
   closeAttachmentPreview();
 }
 
@@ -10919,7 +10949,7 @@ function pdfPreviewError(error, inCompose) {
   return inCompose ? message : message + " Save or Open it instead.";
 }
 
-async function previewAttachment(email, file, composeBytes, draftPdf) {
+async function previewAttachment(email, file, composeBytes, draftPdf, source) {
   const kind = composeBytes ? "pdf" : attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
   if (email && attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
@@ -11034,12 +11064,17 @@ async function previewAttachment(email, file, composeBytes, draftPdf) {
       stage,
       signal: controller.signal,
       onFirstPage() {
-        if (gen !== attachmentPreviewToken) return;
+        if (!current() || controller.signal.aborted || !$("attachment-preview").open) return;
         if (status) status.hidden = true;
+        if (!inCompose && source) {
+          if (source.isCurrent()) updatePdfPreviewSave(source);
+          else showPdfPreviewSourceChanged();
+        }
       },
     });
   } catch (error) {
     if (!current() || controller.signal.aborted) return;
+    updatePdfPreviewSave(null);
     attachmentPreviewFileId = "";
     const message = pdfPreviewError(error, inCompose);
     if (!message || !status) return;
@@ -11146,6 +11181,12 @@ function renderAttachments(pane, email) {
     const label = file.filename || "attachment";
     const actionLabel = nameCounts.get(label) > 1 ? `${label}, attachment ${index + 1} of ${files.length}` : label;
     const kind = file.id ? attachmentPreviewKind(file) : "";
+    const save = () => useAttachment("mail:downloadAttachment", email, file);
+    const source = kind === "pdf" && email.id && pane === $("reader") ? {
+      isCurrent: () => item.isConnected && pane.contains(item),
+      save,
+    } : null;
+    const preview = () => attachmentAction(() => previewAttachment(email, file, null, null, source));
     const name = document.createElement(kind ? "button" : "span");
     name.className = "attachment-name";
     name.textContent = label;
@@ -11153,7 +11194,7 @@ function renderAttachments(pane, email) {
     if (kind) {
       name.type = "button";
       name.setAttribute("aria-label", "Preview " + actionLabel);
-      name.addEventListener("click", () => attachmentAction(() => previewAttachment(email, file)));
+      name.addEventListener("click", preview);
     }
     main.appendChild(name);
     if (size) {
@@ -11166,8 +11207,8 @@ function renderAttachments(pane, email) {
     if (file.id) {
       const actions = document.createElement("div");
       actions.className = "attachment-actions";
-      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => previewAttachment(email, file))));
-      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, preview));
+      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(save)));
       actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       item.appendChild(actions);
     }
