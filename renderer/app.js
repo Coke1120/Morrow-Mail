@@ -17898,11 +17898,30 @@ function presentCompose(seed) {
   return pending;
 }
 
-function publishComposeTitle(text) {
+function publishComposeTitle(text, windowLabel) {
   if (!isComposeWindow()) return;
-  const title = String(text || "New message").trim() || "New message";
-  document.title = title + " — Morrow Mail";
+  if (windowLabel === undefined) {
+    const control = $("compose-window-label-control");
+    const input = $("compose-window-label");
+    if (control) control.hidden = true;
+    if (input) input.value = "";
+  }
+  const base = String(text || "New message").trim() || "New message";
+  const title = windowLabel ? windowLabel + " — " + base : base;
+  const pageTitle = title + " — Morrow Mail";
+  if (windowLabel !== undefined && document.title === pageTitle) return;
+  document.title = pageTitle;
   if (api && typeof api.setComposeTitle === "function") api.setComposeTitle(title).catch(() => {});
+}
+
+function updateComposeWindowLabel(event) {
+  if (event.isComposing || !$("compose").open || state.composeQueued
+      || $("compose-window-label-control")?.hidden !== false) return;
+  const input = event.currentTarget;
+  const clean = input.value.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, "")
+    .slice(0, input.maxLength).replace(/[\uD800-\uDFFF]/gu, "");
+  if (input.value !== clean) input.value = clean;
+  publishComposeTitle("Resume draft", clean.trim());
 }
 
 function dismissComposeSurface() {
@@ -18206,6 +18225,11 @@ async function openCompose(seed) {
   paintQuoteBody();
   state.composeBaseline = fields.body && !fields.draftId ? "" : composeSnapshot();
   openDialog("compose");
+  if (fields.ordinaryDraftResume === true && fields.draftId && isComposeWindow()) {
+    // Keep the dialog's initial focus on its existing compose controls.
+    const control = $("compose-window-label-control");
+    if (control) control.hidden = false;
+  }
   scheduleComposeLayout();
   // Start both before the user can type: identity resolution snapshots the
   // recipient edit versions and must not mistake edits during history loading
@@ -18348,6 +18372,7 @@ async function prepareDraftCompose(email, extra) {
     }
   }
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+    ...(!extra ? { ordinaryDraftResume: true } : {}),
     draftRevision: draft.draftRevision,
     fromAddress: draft.fromAddress,
     fromDisplayName: draft.fromDisplayName,
@@ -29929,7 +29954,18 @@ function wire() {
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("schedule-at").addEventListener("change", syncScheduleFields);
+  const windowLabel = $("compose-window-label");
+  if (windowLabel && typeof windowLabel.addEventListener === "function") {
+    windowLabel.addEventListener("input", updateComposeWindowLabel);
+    windowLabel.addEventListener("compositionend", updateComposeWindowLabel);
+    windowLabel.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.stopPropagation();
+      if (!event.isComposing) event.preventDefault();
+    });
+  }
   $("compose").addEventListener("close", () => {
+    if (!$("compose").open && $("compose-window-label-control")?.hidden === false) publishComposeTitle("Resume draft");
     stopDraftWrite();
     closeComposeAi();
   });
