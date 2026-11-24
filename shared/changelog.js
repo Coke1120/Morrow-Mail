@@ -10,7 +10,7 @@
     "0.4.20": [
       "Compare two PDF quotes side by side in separate message windows. Preview a PDF you just attached before saving the draft.",
       "Find downloaded drafts by recipient across pages. When the recipient column is hidden, preview the recipients directly in the draft list.",
-      "Format selected text in Compose and undo your edits. Clearing the toolbar search brings you back to the Inbox.",
+      "Format selected text in Compose and undo your edits. Clearing the toolbar search restores the current message list.",
       "When one mail action is left to undo, the confirmation shows the sender and subject of the affected message.",
       "Native mail notifications filter invisible control characters and discard stale IMAP alerts after an account change.",
     ],
