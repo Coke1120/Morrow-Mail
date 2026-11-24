@@ -139,8 +139,173 @@ const output = process.env.MORROW_UI_OUTPUT || path.join(require('os').tmpdir(),
   await page.setViewportSize({width:1440,height:900});
   await page.evaluate(()=>{document.documentElement.style.setProperty('--list','740px');state.prefs.compactList=false;renderList();document.getElementById('message-list').scrollLeft=0;});
   await page.screenshot({path:path.join(output,'comfortable.png')});
+
+  const setupDrafts = () => page.evaluate(async () => {
+   const folders = {primary: [
+    {id:'INBOX',name:'Inbox',wellKnownName:'inbox'},
+    {id:'provider-drafts',name:'Unsent',wellKnown:'drafts'},
+    {id:'custom-drafts',name:'Drafts'},
+   ]};
+   state.accounts[0].folders = folders;
+   state.accounts.push({id:'other',email:'other@fixture.invalid',folders});
+   state.localAccount = {id:LOCAL_ACCOUNT_ID,isLocal:true,folders:{primary:[{id:'custom-drafts',name:'Drafts'}]}};
+   globalThis.draftReads = [];
+   globalThis.draftRows = [
+    {id:'supplier',to:['supplier@fixture.invalid']},
+    {id:'approval',to:[{name:'Approval Team',address:'approval@fixture.invalid'},'another-approval-recipient@fixture.invalid']},
+    {id:'empty',subject:'Approval without a recipient',to:[]},
+   ].map(row => ({
+    accountId:'fixture',folderId:'provider-drafts',subject:'Approval',from:'owner@fixture.invalid',
+    cc:['cc@fixture.invalid'],bcc:['bcc@fixture.invalid'],isDraft:true,textBody:'Synthetic draft.',
+    ...row,
+   }));
+   call = async (channel, params) => {
+    if (channel === 'mail:listFromCache') {
+     const scoped = draftRows.filter(row => row.accountId === params.accountId && row.folderId === params.folderId);
+     const emails = filteredEmails(scoped, params.listFilter);
+     return {emails,total:emails.length,initialSyncDone:true};
+    }
+    if (channel === 'mail:openEmail') {
+     draftReads.push(params.emailId);
+     return {email:draftRows.find(row => row.id === params.emailId)};
+    }
+    if (channel === 'mail:searchLocal') return draftRows;
+    if (channel === 'mail:listScheduled') return new Promise(resolve => { globalThis.finishOutbox = resolve; });
+    return null;
+   };
+   wireMailColumnEditor();
+   await selectFolder('fixture','provider-drafts');
+  });
+  const draftsToggle = page.getByRole('button',{name:'Show draft recipients',exact:true});
+  const draftPreviews = page.locator('.draft-recipient-preview');
+  const draftSnapshot = () => page.evaluate(() => ({
+   hidden:state.mailHiddenColumns, sort:state.listSort, filter:$('list-filter').value,
+   offset:state.listOffset, total:state.listTotal, selected:state.selectedIds,
+   reader:readerCurrentId(), generation:listGen,
+  }));
+
+  // Opt in at the leftmost position, then open exactly the intended draft.
+  await setupDrafts();
+  assert.equal(await draftsToggle.count(),0,'visible global Recipient needs no Drafts toggle');
+  await page.evaluate(() => changeMailColumnVisibility('recipient', false));
+  await page.setViewportSize({width:1200,height:800});
+  await page.evaluate(async () => {
+   document.documentElement.style.setProperty('--list','360px');
+   $('list-filter').value = 'approval@fixture.invalid';
+   await loadList(false,0);
+  });
+  assert.equal(await page.locator('.message-row').count(),0,'the downloaded view filter still excludes To');
+  await page.evaluate(async () => {
+   $('list-filter').value = 'Approval';
+   await loadList(false,0);
+   commitSelection({ids:['supplier'],anchor:'supplier'});
+   $('message-list').scrollLeft = 0;
+   globalThis.approvalButton = document.querySelector('[data-email-id="approval"] button.message');
+  });
+  assert.equal(await draftPreviews.count(),0);
+  assert.equal(await page.locator('[data-mail-column="recipient"]').count(),0);
+  assert.equal(await page.getByRole('button',{name:/approval@fixture\.invalid/}).count(),0);
+  const beforeReveal = await draftSnapshot();
+  await draftsToggle.press('Space');
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'true');
+  assert.equal(await draftsToggle.evaluate(node => node === document.activeElement),true);
+  assert.deepEqual(await draftSnapshot(),beforeReveal);
+  assert.deepEqual(await draftPreviews.allTextContents(),[
+   'To: supplier@fixture.invalid',
+   'To: Approval Team <approval@fixture.invalid>, another-approval-recipient@fixture.invalid',
+   'To: (no recipient)',
+  ]);
+  for (const compact of [true,false]) {
+   const fits = await page.evaluate(compact => {
+    state.prefs.compactList = compact;
+    renderList();
+    const list = $('message-list');
+    const left = list.getBoundingClientRect().left;
+    const right = left + list.clientWidth;
+    const listHead = $('list-head').getBoundingClientRect();
+    const toggle = $('draft-recipients').getBoundingClientRect();
+    const textFits = [...list.querySelectorAll('.draft-recipient-preview')].every(node => {
+     const range = document.createRange();
+     range.selectNodeContents(node);
+     const row = node.closest('button.message').getBoundingClientRect();
+     const lines = [...range.getClientRects()];
+     return lines.length > 0 && lines.every(line => line.left >= left && line.right <= right && line.bottom <= row.bottom);
+    });
+    return list.scrollLeft === 0 && textFits && toggle.left >= listHead.left && toggle.right <= listHead.right;
+   }, compact);
+   assert.ok(fits,`Draft To text and toggle fit the narrow list with compact=${compact}`);
+  }
+  assert.equal(await page.evaluate(() => approvalButton === document.querySelector('[data-email-id="approval"] button.message')),true);
+  assert.deepEqual(await page.evaluate(() => draftReads),[]);
+  await page.getByRole('button',{name:/To: Approval Team/}).click();
+  await page.waitForFunction(() => state.email?.id === 'approval');
+  assert.deepEqual(await page.evaluate(() => draftReads),['approval']);
+  const afterReading = await draftSnapshot();
+  await draftsToggle.press('Space');
+  assert.equal(await draftPreviews.count(),0);
+  assert.deepEqual(await draftSnapshot(),afterReading);
+
+  // Refresh cached rows and clear the reveal across scopes and layout changes.
+  await draftsToggle.click();
+  await page.evaluate(() => {
+   state.emails = state.emails.map(row => row.id === 'approval' ? {...row,to:['updated@fixture.invalid']} : row);
+   state.emails.push({...draftRows[0],id:'stale',accountId:'other'});
+   renderList();
+  });
+  assert.equal(await page.locator('[data-email-id="approval"] .draft-recipient-preview').textContent(),'To: updated@fixture.invalid');
+  assert.equal(await page.locator('[data-email-id="stale"] .draft-recipient-preview').count(),0);
+  await page.evaluate(() => { state.prefs.mailView = {layout:'bottom'}; applyMailView(); });
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'false');
+  assert.equal(await draftPreviews.count(),0);
+  await draftsToggle.click();
+  await page.evaluate(() => { $('search-query').value = 'Approval'; return applySearch(); });
+  assert.equal(await draftsToggle.count(),0);
+  assert.equal(await draftPreviews.count(),0);
+  assert.equal(await page.locator('[data-email-id="approval"]').count(),1,'the same draft can appear in search without its preview');
+  await page.evaluate(() => selectFolder('fixture','provider-drafts'));
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'false');
+  await draftsToggle.click();
+  await page.evaluate(() => selectFolder('other','provider-drafts'));
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'false');
+  for (const [accountId,folderId] of [['fixture','INBOX'],['fixture','custom-drafts'],['local','custom-drafts']]) {
+   await page.evaluate(([accountId,folderId]) => selectFolder(accountId === 'local' ? LOCAL_ACCOUNT_ID : accountId,folderId),[accountId,folderId]);
+   assert.equal(await draftsToggle.count(),0);
+   assert.equal(await draftPreviews.count(),0);
+  }
+  await page.evaluate(() => selectFolder('fixture','provider-drafts'));
+  await draftsToggle.click();
+  await page.evaluate(() => { globalThis.outboxNavigation = selectOutbox(); });
+  assert.equal(await draftsToggle.count(),0);
+  assert.equal(await draftPreviews.count(),0,'the preview clears before Outbox rows arrive');
+  await page.evaluate(() => { finishOutbox({rows:[],outboxTotal:0}); return outboxNavigation; });
+  await page.evaluate(() => selectFolder('fixture','provider-drafts'));
+  await draftsToggle.click();
+  await page.evaluate(() => showFeatures());
+  assert.equal(await draftPreviews.count(),0);
+  await page.evaluate(() => showMail());
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'false');
+
+  // Restoring the column and restarting both clear the temporary choice.
+  await draftsToggle.click();
+  await page.evaluate(() => changeMailColumnVisibility('recipient', true));
+  assert.equal(await draftsToggle.count(),0);
+  assert.equal(await draftPreviews.count(),0);
+  assert.equal(await page.locator('[data-mail-column="recipient"]').count(),3);
+  await page.evaluate(() => changeMailColumnVisibility('recipient', false));
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'false');
+  await draftsToggle.click();
+  await page.reload();
+  await initialize();
+  await setupDrafts();
+  assert.equal(await draftsToggle.getAttribute('aria-pressed'),'false');
+  assert.equal(await draftPreviews.count(),0);
+  assert.equal(await page.locator('[data-mail-column="recipient"]').count(),0,'the global hidden preference survives restart');
+
+  await page.setViewportSize({width:1440,height:900});
   await page.evaluate(()=>showFeatures());
   const columnHelp=page.locator('.feature-card').filter({has:page.getByRole('heading',{name:'Mail columns and sorting',exact:true})});
+  assert.match(await columnHelp.textContent(),/Show draft recipients/);
+  assert.match(await page.locator('#mail-columns-help').textContent(),/Show draft recipients/);
   assert.match(await columnHelp.textContent(),/Date shows Today or Yesterday/);
   assert.match(await page.locator('#mail-columns-help').textContent(),/Date column shows Today or Yesterday/);
   assert.match(await columnHelp.textContent(),/Both headers sort by the full timestamp, including the date/);

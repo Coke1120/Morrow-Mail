@@ -1867,6 +1867,11 @@ function paintMailColumnEditor() {
 }
 function wireMailColumnEditor() {
   $("mail-columns-open").addEventListener("click", () => { openDialog("mail-columns"); paintMailColumnEditor(); });
+  $("draft-recipients").addEventListener("click", () => {
+    const scope = draftRecipientView();
+    draftRecipientScope = draftRecipientScope === scope ? "" : scope;
+    paintDraftRecipients();
+  });
   $("mail-columns-close").addEventListener("click", () => closeDialog("mail-columns"));
   $("mail-columns-reset").addEventListener("click", () => changeMailColumnOrder(window.morrowMailColumns.defaults).catch(() => {}));
   $("mail-columns-show-all").addEventListener("click", () => {
@@ -1970,6 +1975,47 @@ function mailRecipientText(email) {
   if (typeof email.to === "string") return email.to.trim();
   return (Array.isArray(email.to) ? email.to : []).map(value => typeof value === "string" ? value
     : (value?.name && value?.address ? `${value.name} <${value.address}>` : value?.address || "")).filter(Boolean).join(", ");
+}
+
+let draftRecipientScope = "";
+function draftRecipientView() {
+  if (state.view !== "mail" || state.query || state.outbox || state.allInbox
+    || state.accountId === LOCAL_ACCOUNT_ID || !state.mailHiddenColumns.includes("recipient")) return "";
+  const folder = selectedFolderNode();
+  return canonicalFolderRole(folder?.wellKnownName || folder?.wellKnown) === "drafts"
+    ? JSON.stringify([state.accountId, folder.id, effectiveMailViewLayout()]) : "";
+}
+
+function paintDraftRecipients(focusFallback = $("mail-columns-open")) {
+  const button = $("draft-recipients");
+  if (!button) return;
+  const scope = draftRecipientView();
+  if (draftRecipientScope !== scope) draftRecipientScope = "";
+  const showing = !!draftRecipientScope;
+  const wasShowing = button.getAttribute("aria-pressed") === "true";
+  if (!scope && document.activeElement === button) focusFallback?.focus({ preventScroll: true });
+  button.hidden = !scope;
+  if (showing !== wasShowing) button.setAttribute("aria-pressed", String(showing));
+  if (!showing) {
+    if (wasShowing) for (const preview of $("message-list").querySelectorAll(".draft-recipient-preview")) preview.remove();
+    return;
+  }
+  // Update cached row buttons in place so revealing To keeps focus and selection.
+  for (const { row } of messageRows.values()) {
+    const email = row.mailMessage;
+    let preview = row.querySelector(".draft-recipient-preview");
+    if (email.outbox || email.accountId !== state.accountId || email.folderId !== state.folderId) {
+      preview?.remove();
+      continue;
+    }
+    if (!preview) {
+      preview = document.createElement("span");
+      preview.className = "draft-recipient-preview";
+      row.querySelector(".row-main").append(preview);
+    }
+    const text = "To: " + (mailRecipientText(email) || "(no recipient)");
+    if (preview.textContent !== text) preview.textContent = text;
+  }
 }
 
 function mailListRequest(view) {
@@ -4099,6 +4145,7 @@ function applyMailView() {
     const restore = mailViewScroll.get(layout) || position;
     list.scrollLeft = restore.left;
     list.scrollTop = restore.top;
+    if (draftRecipientScope) paintDraftRecipients();
   }
   const handle = shell.querySelector('[data-split="messages"]');
   if (handle) {
@@ -6277,6 +6324,7 @@ function onFolderNavKey(event) {
 }
 
 function renderAccounts() {
+  paintDraftRecipients();
   observeCrossMailboxMoveContext();
   renderSettingsAccounts();
   if (state.view === "mail") refreshMailVacation();
@@ -8998,6 +9046,7 @@ function renderList() {
       previous = row;
     }
   }
+  paintDraftRecipients();
   refreshMailListDates();
   const motionKey = [state.accountId || "", state.folderId || "", state.query, state.listOffset, state.allInbox ? "all" : "", state.outbox ? "outbox" : "", state.allInboxUnreadOnly ? "unread" : "", state.allInboxStarredOnly ? "starred" : ""].join("\0");
   if (motionKey !== listMotionKey) {
@@ -26492,6 +26541,7 @@ function markRail(view) {
     features: "rail-shortcuts",
     folders: "rail-folders",
   }[view];
+  paintDraftRecipients($(current));
   for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-shortcuts", "rail-log", "rail-folders"]) {
     const node = $(id);
     if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
