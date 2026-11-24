@@ -1,5 +1,5 @@
 // Compose opens in its own window. The mail shell stays usable.
-// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing]
+// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing | --draft-window-labels]
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -53,6 +53,18 @@ const account = {
   },
 };
 
+const labelDrafts = [1, 2].map(index => ({
+  id: "label-draft-" + index,
+  accountId: account.id,
+  isDraft: true,
+  bodyComplete: true,
+  fromAddress: account.email,
+  to: ["fixture-buyer-" + index + "@example.invalid"],
+  subject: "Identical saved subject",
+  textBody: "Private fixture text " + index,
+  attachments: [],
+}));
+
 const composeContext = {
   fromAddress: "ada.lovelace@example.com",
   sendAs: [{ email: "ada.lovelace@example.com", source: "account" }],
@@ -98,6 +110,8 @@ function mailData(channel, payload) {
   if (channel === "mail:listFromCache" || channel === "mail:listFromNetwork") return { emails: [message], total: 1, initialSyncDone: true };
   if (channel === "mail:openEmail") {
     if (savedDraft && payload?.emailId === savedDraft.id) return { email: savedDraft };
+    const labelDraft = labelDrafts.find(draft => draft.id === payload?.emailId);
+    if (labelDraft) return { email: labelDraft };
     return { email: message, threadMessages: [message] };
   }
   if (channel === "mail:listThreadMessages") return [earlierMessage, message].map(({ textBody, htmlBody, ...row }) => ({ ...row, hasBody: true }));
@@ -135,14 +149,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor(win, expression, label) {
+async function waitFor(win, expression, label, ready = () => true) {
   const start = Date.now();
   let last = null;
   while (Date.now() - start < 15000) {
     if (win.isDestroyed()) throw new Error(label + " window closed");
     try {
       last = await win.webContents.executeJavaScript(expression, true);
-      if (last) return last;
+      if (last && ready()) return last;
     } catch (error) {
       last = String(error.message || error);
     }
@@ -170,14 +184,19 @@ async function shot(win, name) {
   return file;
 }
 
+// A renderer can disappear before executeJavaScript returns its acknowledgement.
+function whenClosed(win) {
+  return new Promise(resolve => win.once("closed", () => resolve(false)));
+}
+
 async function closeClean(win) {
   if (win.isDestroyed()) return;
-  const closed = new Promise((resolve) => win.once("closed", () => resolve(true)));
+  const closed = whenClosed(win);
   win.close();
   const start = Date.now();
   while (!win.isDestroyed() && Date.now() - start < 8000) {
-    const review = await win.webContents.executeJavaScript(`!!(document.getElementById("compose-close-review") && document.getElementById("compose-close-review").open)`, true).catch(() => false);
-    if (review) await win.webContents.executeJavaScript(`document.getElementById("draft-close-discard").click()`, true);
+    const review = await Promise.race([closed, win.webContents.executeJavaScript(`!!document.getElementById("compose-close-review")?.open`, true).catch(() => false)]);
+    if (review) await Promise.race([closed, win.webContents.executeJavaScript(`document.getElementById("draft-close-discard").click()`, true)]);
     await sleep(40);
   }
   if (!win.isDestroyed()) throw new Error("compose window stayed open");
@@ -298,6 +317,71 @@ async function assertComposeFormatting(win) {
   await waitFor(win, `${body}.includes("rgb(40, 103, 189)")`, "undo default restores color");
 }
 
+async function checkDraftWindowLabels(host, opener) {
+  const generic = "Resume draft — Morrow Mail";
+  const field = 'document.getElementById("compose-window-label")';
+  const hidden = 'document.getElementById("compose-window-label-control").hidden';
+  const run = (win, expression) => win.webContents.executeJavaScript(expression);
+  const expectTitle = (win, title) => waitFor(win, 'document.title === ' + JSON.stringify(title),
+    "matching DOM and native window title", () => win.getTitle() === title);
+  const openDraft = async ({ id, accountId }, extra) => {
+    const existing = new Set(host.records.keys());
+    await run(opener, `resumeDraft(${JSON.stringify({ id, accountId })}, ${JSON.stringify(extra)})`);
+    const record = [...host.records.values()].find(record => !existing.has(record.win.webContents.id));
+    assert.ok(record, "resumeDraft opens a native window");
+    await waitFor(record.win, '!state.composeInitializing && document.getElementById("compose").open', "resumed draft ready");
+    await expectTitle(record.win, generic);
+    assert.equal(await run(record.win, field + ".value"), "");
+    assert.equal(await run(record.win, hidden), !!extra);
+    return record.win;
+  };
+  const typeLabel = (win, label) => run(win, `(() => {
+    const input = ${field};
+    input.value = ${JSON.stringify(label)};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return input.value;
+  })()`);
+
+  const approval = await openDraft(labelDrafts[0]);
+  const other = await openDraft(labelDrafts[1]);
+  const snapshot = await run(approval, "composeSnapshot()");
+  assert.equal(await typeLabel(approval, "Ap\u202epro\u0007val"), "Approval");
+  const approvalTitle = "Approval — " + generic;
+  await expectTitle(approval, approvalTitle);
+  assert.equal(await run(approval, "composeSnapshot()"), snapshot, "label changes leave draft content and dirty state alone");
+  await expectTitle(other, generic);
+  const otherLabel = "<b>Review</b>".repeat(4).slice(0, 32);
+  assert.equal(await typeLabel(other, "<b>Review</b>".repeat(4)), otherLabel);
+  await expectTitle(other, otherLabel + " — " + generic);
+  await run(other, 'writeComposeBody("Unsaved fixture edit")');
+  await expectTitle(other, otherLabel + " — " + generic);
+  const selected = [other, approval].find(win => win.getTitle() === approvalTitle);
+  assert.equal(await run(selected, '$("compose-to").value'), labelDrafts[0].to[0]);
+
+  for (const modifiers of [{}, { metaKey: true }, { ctrlKey: true }]) {
+    const key = JSON.stringify({ key: "Enter", bubbles: true, cancelable: true, ...modifiers });
+    assert.equal(await run(approval, field + '.dispatchEvent(new KeyboardEvent("keydown", ' + key + '))'), false);
+    assert.equal(await run(approval, '$("compose-preview").open'), false, "Enter in the label never previews send");
+  }
+  await typeLabel(approval, "");
+  await expectTitle(approval, generic);
+  await typeLabel(approval, "Approval");
+  await expectTitle(approval, approvalTitle);
+  assert.equal(await run(approval, "requestComposeClose()"), true, "label alone does not prompt to discard");
+  await expectTitle(approval, generic);
+  assert.equal(await run(approval, field + ".value"), "");
+  assert.equal(await run(approval, hidden), true);
+  await closeClean(approval);
+  await closeClean(await openDraft(labelDrafts[0]));
+  await closeClean(await openDraft(labelDrafts[0], { status: "Recovered fixture" }));
+
+  assert.equal(await run(other, "scheduleMail(new Date(Date.now() + 3600000))"), true);
+  await expectTitle(other, "Scheduled receipt — Morrow Mail");
+  assert.equal(await run(other, hidden), true);
+  assert.equal(await run(other, field + ".value"), "");
+  await closeClean(other);
+}
+
 async function checkEditing(host) {
   app.on("window-all-closed", () => {});
   const { id } = host.open({ title: "Editing smoke", kind: "reply", quoteEmail: message,
@@ -387,6 +471,13 @@ app.whenReady().then(async () => {
   const shellRole = await shellWin.webContents.executeJavaScript(`document.documentElement.dataset.window || ""`, true);
   assert.equal(shellRole, "");
 
+  if (process.argv.includes("--draft-window-labels")) {
+    await checkDraftWindowLabels(host, shellWin);
+    console.log("draft-window-labels-ok");
+    app.exit(0);
+    return;
+  }
+
   await shellWin.webContents.executeJavaScript(`document.getElementById("compose-open").click()`, true);
   await waitFor(shellWin, `document.getElementById("compose").open !== true`, "shell compose stays closed");
   let opened = [];
@@ -453,7 +544,7 @@ app.whenReady().then(async () => {
   assert.equal(stillOpen, true);
   dirty.close();
   await waitFor(dirty, `document.getElementById("compose-close-review").open === true`, "dirty confirm again");
-  await dirty.webContents.executeJavaScript(`document.getElementById("draft-close-discard").click()`, true);
+  await Promise.race([whenClosed(dirty), dirty.webContents.executeJavaScript(`document.getElementById("draft-close-discard").click()`, true)]);
   const gone = Date.now();
   while (!dirty.isDestroyed() && Date.now() - gone < 8000) await sleep(40);
   assert.equal(dirty.isDestroyed(), true);
@@ -538,7 +629,7 @@ app.whenReady().then(async () => {
     document.getElementById("compose-send").click();
   `, true);
   await waitFor(reply, `document.getElementById("compose-preview").open === true`, "send preview");
-  await reply.webContents.executeJavaScript(`document.getElementById("compose-preview-confirm").click()`, true);
+  await Promise.race([whenClosed(reply), reply.webContents.executeJavaScript(`document.getElementById("compose-preview-confirm").click()`, true)]);
   const undoStart = Date.now();
   while (!reply.isDestroyed() && Date.now() - undoStart < 15000) await sleep(50);
   assert.equal(reply.isDestroyed(), true, "undo delay closes the compose window");
@@ -547,6 +638,7 @@ app.whenReady().then(async () => {
   assert.equal(queued[0].payload.outbox, true);
   assert.equal(sentChannels.filter((channel) => channel === "mail:send").length, 0);
 
+  await checkDraftWindowLabels(host, shellWin);
   console.log(JSON.stringify({ ok: true, shots: [shellShot, discardShot, replyShot], geometry, consoleNotes }));
   app.exit(0);
 }).catch((error) => {
