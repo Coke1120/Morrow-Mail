@@ -481,8 +481,11 @@ async function receivingDraftInboxPicker() {
   const sources = [{ id: "source", from: "Source <source@example.invalid>", subject: "Source quote",
     date: "2026-11-24T08:00:00Z", files: [file] }];
   const olderCursor = "opaque-older-page";
+  const olderFile = { id: "3", filename: "Older quote.pdf", size: 7 };
+  const olderLocal = { ...local, id: "older-blob", storageUrl: "local:older-blob", filename: olderFile.filename };
+  const olderPage = review => ({ sources: [{ ...sources[0], id: "older-source", files: [{ ...olderFile, proof: review.id }] }], nextCursor: null });
   const calls = [];
-  let seed, pending, pendingList, pendingPin;
+  let seed, pending, pendingList, pendingPin, showOlderFile;
   f.window.morrow = { openComposeWindow(fields) { seed = fields; }, async invoke(channel, params) {
     calls.push({ channel, params });
     let data;
@@ -492,26 +495,31 @@ async function receivingDraftInboxPicker() {
       assert.equal(params.inboxAttachmentReview.bodyEpoch, 0);
       if (params.checkDraft) data = { current: true };
       else if (pendingList) data = await pendingList.promise;
-      else if (params.cursor === olderCursor) data = { sources: [], nextCursor: null };
+      else if (params.cursor === olderCursor) data = showOlderFile ? olderPage(params.inboxAttachmentReview) : { sources: [], nextCursor: null };
       else {
         assert.equal(params.cursor, null);
         data = { sources, nextCursor: olderCursor };
       }
     } else if (channel === "mail:prepareDraft") {
       assert.equal(params.strictLocal, true);
-      const choice = { emailId: "source", partId: "2", proof: file.proof };
+      const isOlder = params.parts[0].emailId === "older-source";
+      const chosen = isOlder ? olderFile : file;
+      const choice = { emailId: isOlder ? "older-source" : "source", partId: chosen.id,
+        proof: isOlder ? params.inboxAttachmentReview.id : file.proof };
+      const contentProof = isOlder ? `checked-${choice.proof}` : "checked-bytes";
       if (params.pinSelection) {
         assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [choice]);
         if (pendingPin) await pendingPin.promise;
-        data = { attachments: [{ contentProof: "checked-bytes" }] };
+        data = { attachments: [{ contentProof }] };
       } else {
-        assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [{ ...choice, contentProof: "checked-bytes" }]);
+        assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [{ ...choice, contentProof }]);
         if (pending) await pending.promise;
-        data = { attachments: [{ filename: file.filename, mimeType: local.mimeType, bytes: Buffer.from("fixture"), size: 7 }] };
+        data = { attachments: [{ filename: chosen.filename, mimeType: local.mimeType, bytes: Buffer.from(isOlder ? "terms-7" : "fixture"), size: 7 }] };
       }
     } else if (channel === "mail:uploadAttachment") {
-      assert.equal(Buffer.from(params.fileBytes).toString(), "fixture");
-      data = local;
+      const isOlder = params.filename === olderFile.filename;
+      assert.equal(Buffer.from(params.fileBytes).toString(), isOlder ? "terms-7" : "fixture");
+      data = isOlder ? olderLocal : local;
     } else {
       assert.equal(channel, "mail:cancelAttachmentRequest");
       data = true;
@@ -667,6 +675,106 @@ async function receivingDraftInboxPicker() {
   f.node("draft-close-keep").onclick();
   assert.equal(await closing, false);
   assert.equal(ui.run("state.composeAttachments.length"), 1, "Keep editing preserves the attachment");
+
+  // The explicit continuation commits one batch and replaces the review before loading the older page.
+  const addOlder = f.node("compose-inbox-add-older"), attached = f.node("compose-inbox-attached");
+  const attachmentRows = () => JSON.parse(ui.run("JSON.stringify(state.composeAttachments)"));
+  const checkOlderFile = async () => {
+    const input = checkbox();
+    assert.equal(Boolean(input.checked), false);
+    input.checked = true;
+    await input.listeners.change();
+  };
+  const escape = () => dialog.listeners.cancel({ preventDefault() {} });
+  await openPicker();
+  assert.equal(attached.textContent, `Attached in this editor: ${file.filename}`);
+  assert.equal(addOlder.hidden, true);
+  escape();
+  ui.run('removeComposeAttachment("local:blob")');
+  await choose();
+  assert.equal(attached.hidden, true);
+  assert.equal(addOlder.hidden, false);
+  assert.equal(addOlder.disabled, false);
+  const firstReview = calls.at(-1).params.inboxAttachmentReview;
+  const nextPage = gate();
+  pendingList = nextPage;
+  await addOlder.listeners.click();
+  assert.deepEqual(attachmentRows(), [local]);
+  assert.equal(dialog.open, true);
+  assert.equal(f.node("compose-save").disabled, true);
+  assert.equal(older.disabled, true, "the previous confirmation's finally cannot unlock a pending page");
+  const nextRequest = calls.at(-1).params;
+  assert.equal(nextRequest.cursor, olderCursor);
+  const nextReview = nextRequest.inboxAttachmentReview;
+  assert.notEqual(nextReview.id, firstReview.id);
+  assert.deepEqual({ ...nextReview, id: firstReview.id }, { ...firstReview });
+  assert.deepEqual(Object.keys(nextRequest).sort(), ["cursor", "inboxAttachmentReview", "strictLocal"]);
+  pendingList = null;
+  nextPage.resolve(olderPage(nextReview));
+  await until(() => !newer.disabled);
+  assert.equal(f.document.activeElement, f.node("compose-inbox-sources-title"));
+  assert.match(attached.textContent, /Inbox quote\.pdf/);
+  assert.equal(confirm.disabled, true);
+  const changed = new Error("An Inbox message or attachment changed. Open the picker again to review its files.");
+  changed.code = "inbox_attachment";
+  ui.context.changedSourceError = changed;
+  ui.run("showComposeInboxError(state.composeInboxPicker, changedSourceError, 'Check the file again to retry.')");
+  assert.equal(status.textContent, changed.message, "preserve the host's specific recovery instruction");
+  await checkOlderFile();
+  assert.equal(addOlder.hidden, true, "the last page only offers Add selected files");
+  const secondBatchStart = calls.length;
+  await confirm.listeners.click();
+  assert.equal(calls[secondBatchStart].params.inboxAttachmentReview.id, nextReview.id);
+  assert.equal(calls[secondBatchStart].params.existingBytes, local.size);
+  assert.deepEqual(attachmentRows(), [local, olderLocal]);
+  assert.equal(dialog.open, false);
+  assert.equal(attached.textContent, "");
+  assert.equal(f.node("compose-save").disabled, false);
+
+  // The second batch is bounded by the combined size. Escape discards its check and keeps the first batch.
+  ui.run('removeComposeAttachment("local:blob"); removeComposeAttachment("local:older-blob")');
+  showOlderFile = true;
+  olderFile.size = 25 * 1024 * 1024 - local.size + 1;
+  await choose();
+  await addOlder.listeners.click();
+  await until(() => !newer.disabled);
+  await checkOlderFile();
+  const beforeOversize = calls.length;
+  await confirm.listeners.click();
+  assert.equal(calls.length, beforeOversize);
+  assert.match(status.textContent, /These files are .* together/);
+  escape();
+  assert.deepEqual(attachmentRows(), [local]);
+  assert.equal(dialog.open, false);
+
+  // List and pin failures after a commit keep that batch and allow a retry in the same picker.
+  ui.run('removeComposeAttachment("local:blob")');
+  olderFile.size = olderLocal.size;
+  await choose();
+  const failedList = gate();
+  pendingList = failedList;
+  await addOlder.listeners.click();
+  pendingList = null;
+  failedList.reject(new Error("Synthetic list failure"));
+  await until(() => !older.disabled);
+  assert.match(status.textContent, /Synthetic list failure.*Choose Older to try again/);
+  assert.deepEqual(attachmentRows(), [local]);
+  older.click();
+  await until(() => !newer.disabled);
+  const failedPin = gate();
+  pendingPin = failedPin;
+  const retryInput = checkbox();
+  retryInput.checked = true;
+  const pinFailure = retryInput.listeners.change();
+  failedPin.reject(new Error("Synthetic pin failure"));
+  await pinFailure;
+  pendingPin = null;
+  assert.match(status.textContent, /Synthetic pin failure.*Check the file again to retry/);
+  assert.equal(retryInput.checked, false);
+  assert.deepEqual(attachmentRows(), [local]);
+  await checkOlderFile();
+  await confirm.listeners.click();
+  assert.deepEqual(attachmentRows(), [local, olderLocal]);
   assert.ok(calls.every(({ channel }) => ["mail:openEmail", "mail:listFromCache", "mail:prepareDraft", "mail:cancelAttachmentRequest", "mail:uploadAttachment"].includes(channel)));
 }
 
@@ -698,6 +806,10 @@ function contractAndHelp() {
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8"), css = fs.readFileSync(path.join(root, "renderer/app.css"), "utf8");
   assert.match(html, /id="attachment-preview-stage"[^>]*role="region"[^>]*tabindex="0"/);
   assert.match(html, /id="attachment-preview-pages"[^>]*role="document"/);
+  for (const direction of ["newer", "older"]) {
+    assert.match(html, new RegExp(`id="compose-inbox-${direction}"[^>]*aria-describedby="compose-inbox-paging-help"`));
+  }
+  assert.match(html, /id="compose-inbox-add-older"[^>]*>Add and view older files<\/button>/);
   for (const directive of ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'"]) assert.ok(html.includes(directive));
   assert.doesNotMatch(html, /unsafe-eval|unsafe-inline|unsafe-hashes/);
   assert.match(css, /\.attachment-preview-page \{[^}]*max-height: 4096px;[^}]*object-fit: contain;/);
@@ -712,7 +824,7 @@ function contractAndHelp() {
   assert.equal(bitmap(100, 100, 10000, 2).bitmapHeight, 4096);
   f.window.morrowFeaturesCatalog = require("../renderer/features-catalog"); ui.run("paintFeatureCatalog()");
   const help = f.node("features-catalog").textContent;
-  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/, /verified local PDF in a resumed draft/, /Attach from Inbox in a draft/, /exact To, Cc and Bcc/]) assert.match(help, claim);
+  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/, /verified local PDF in a resumed draft/, /Attach from Inbox in a draft/, /exact To, Cc and Bcc/, /Older and Newer clear unconfirmed checks/, /Add and view older files/]) assert.match(help, claim);
 }
 
 async function run() {
