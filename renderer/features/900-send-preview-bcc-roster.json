@@ -1,0 +1,6 @@
+{
+  "id": "send-preview-bcc-roster",
+  "title": "Check Bcc roster before sending",
+  "category": "Mail",
+  "blurb": "In Preview send or a scheduled send preview, paste one spreadsheet column with one bare email address per row, up to 64,000 characters. Check locally for addresses missing from the draft, extra in Bcc, or exposed in To or Cc. Ambiguous or unreadable addresses need manual review. The check leaves recipients and confirmation unchanged, and closing the preview clears the roster."
+}

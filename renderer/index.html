@@ -2075,6 +2075,17 @@
           <p class="hint">Select a link to highlight its location in the message without opening it.</p>
           <ol id="compose-preview-link-list" aria-label="Links in message order"></ol>
         </details>
+        <details id="compose-preview-bcc-roster">
+          <summary>Check Bcc roster</summary>
+          <div class="preview-roster-controls">
+            <label for="compose-preview-bcc-roster-input">Bcc roster</label>
+            <p class="hint" id="compose-preview-bcc-roster-help">Paste one spreadsheet column with one bare email address per row and no header (up to 64,000 characters). The check compares this preview’s To, Cc and Bcc locally. To edit recipients, cancel the preview. Paste the roster again when you reopen it.</p>
+            <textarea id="compose-preview-bcc-roster-input" aria-describedby="compose-preview-bcc-roster-help" rows="3" autocomplete="off" spellcheck="false"></textarea>
+            <button type="button" class="ghost" id="compose-preview-bcc-roster-check">Check roster</button>
+            <p id="compose-preview-bcc-roster-status" role="status" aria-live="polite"></p>
+            <div id="compose-preview-bcc-roster-findings" role="region" aria-label="Bcc roster findings" tabindex="0" hidden></div>
+          </div>
+        </details>
         <p class="hint">Preview shows the reviewed message with safe formatting. Remote images stay blocked. Finish or cancel AI writing before previewing; changes require a new preview.</p>
         <div class="row">
           <button type="submit" class="primary" id="compose-preview-confirm">Confirm send</button>
@@ -2132,6 +2143,7 @@
     <script src="./agent-actions.js"></script>
     <script src="./compose-attachments.js"></script>
     <script src="./reader-table-columns.js"></script>
+    <script src="./compose-bcc-roster.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
