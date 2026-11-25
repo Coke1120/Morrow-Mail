@@ -42,6 +42,36 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
   assert.equal(new Set([...first.emails, ...second.emails, ...third.emails].map(r => r.id)).size, 420);
   assert.deepEqual((await ask(match)).emails.map(r => r.id), first.emails.map(r => r.id), 'previous page is stable');
   assert.equal(first.nextCursor, null); assert.equal(first.hasMoreInCache, true); assert.equal(third.hasMoreInCache, false);
+  await t.test('a short first page proves the literal total and oldest date in one scan', async t => {
+    const summaries = t.mock.method(db, 'messageSummary');
+    const scoped = { ...scope, filterUnread: true, retainIds: ['a-648'], sortBy: 'subject' };
+    for (const [term, ids, oldest] of [
+      ['nothing here', [], null],
+      ['final-unique', ['a-649'], 100000 - 649],
+      ['Match 064', ['a-649','a-648','a-647','a-645','a-643','a-641'], 100000 - 649],
+    ]) {
+      const page = await ask({ ...scoped, listFilter: term });
+      assert.deepEqual(page.emails.map(row => row.id), ids);
+      assert.equal(page.total, ids.length);
+      assert.equal(page.syncedOldestDateTs, oldest);
+      assert.equal(page.hasMoreInCache, false);
+    }
+    assert.equal(summaries.mock.callCount(), 0);
+    const full = await ask(match);
+    assert.equal(full.total, 420);
+    assert.ok(summaries.mock.callCount() > 0, 'a full first page still needs an exact count');
+  });
+  await t.test('combined folder and mailbox hints count a matching message once', async () => {
+    const box = { accountId: 'a', path: 'INBOX' };
+    const query = { ...scope, listFilter: 'final-unique' };
+    const single = await ask(query);
+    const overlap = await ask({ ...query, mailboxes: [box, box] });
+    assert.equal(overlap.total, 1);
+    assert.equal(overlap.syncedOldestDateTs, single.syncedOldestDateTs);
+    assert.deepEqual([...new Set(overlap.emails.map(row => row.id))], ['a-649']);
+    assert.equal(overlap.geometry.pageSize, overlap.emails.length);
+    assert.equal(overlap.hasMoreInCache, false);
+  });
   const cursor = (await ask(scope)).nextCursor;
   const staleCursor = await ask({ ...match, offset: 200, pageCursor: cursor });
   assert.equal(staleCursor.cursorReset, !!cursor); assert.equal(staleCursor.emails[0].id, 'a-430');

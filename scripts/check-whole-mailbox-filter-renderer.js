@@ -184,6 +184,7 @@ test('request contract preserves scope and flags and suppresses filtered cursors
 });
 test('stale response cannot replace typed query during debounce; clear and navigation discard earlier responses', async t => {
   const f=fixture(t); await f.run('loadList(false,0)');
+  f.document.querySelector('[data-email-id="m1"] .row-check').click();
   f.run('deferCalls=true; globalThis.oldLoad=loadList(false,200)');
   f.input('needle'); f.run('pending.shift()()'); await f.run('oldLoad');
   assert.equal(f.run('state.listOffset'),0); assert.equal(f.run('state.emails[0].id'),'m0');
@@ -191,10 +192,12 @@ test('stale response cannot replace typed query during debounce; clear and navig
   f.input(''); await f.flush(); assert.equal(f.run('pending.length'),2);
   f.run('pending.pop()()'); await tick(); assert.equal(f.run('state.listTotal'),650);
   f.run('pending.shift()()'); await tick(); assert.equal(f.run('state.listTotal'),650);
+  assert.deepEqual(f.json('state.selectedIds'), ['m1']);
   f.input('needle'); await f.flush();
   f.run("state.folderId='Archive'; document.getElementById('list-filter').value=''; globalThis.nav=loadList(false,0)");
   f.run('pending.pop()()'); await f.run('nav');
   f.run('pending.shift()()'); await tick(); assert.equal(f.run('state.folderId'),'Archive'); assert.equal(f.run('state.emails.length'),0);
+  assert.deepEqual(f.json('state.selectedIds'), [], 'filter selection stays in its original folder');
 });
 test('Drafts renders a later To match with Recipient hidden and ignores an obsolete filter after clear', async t => {
   const f = fixture(t);
@@ -229,6 +232,53 @@ test('Drafts renders a later To match with Recipient hidden and ignores an obsol
   f.input('approve@fixture.invalid');
   assert.equal(f.run('shownEmails().length'),0,'bounded toolbar results still filter by text');
 });
+test('typing keeps the displayed page and its selection targets until one result paints', async t => {
+  const f = fixture(t);
+  await f.run('loadList(false,0)');
+  const list = f.document.getElementById('message-list');
+  const original = list.querySelector('.message-row');
+  f.run("commitSelection({ids:['m2'],anchor:'m2'})");
+  f.run('globalThis.paints=0; const paint=renderList; renderList=()=>{ paints++; paint(); }; calls.length=0;');
+  for (const term of ['n', 'ne', 'needle']) f.input(term);
+  assert.equal(f.run('paints'), 0);
+  assert.equal(f.run('calls.length'), 0);
+  assert.equal(list.querySelector('.message-row'), original);
+  assert.equal(f.run('shownEmails()[0].id'), original.dataset.emailId);
+  assert.equal(f.document.getElementById('list-next').disabled, true);
+  f.run("deferCalls=true");
+  await f.flush();
+  f.run("commitSelection({ids:['m1'],anchor:'m1'})");
+  assert.equal(f.run('shownEmails()[0].id'), original.dataset.emailId);
+  f.run('paints=0; pending.shift()()');
+  await tick();
+  assert.equal(f.run('paints'), 1);
+  assert.deepEqual(f.json('calls.map(call => call.params.listFilter)'), ['needle']);
+  assert.equal(list.querySelector('.message-row').dataset.emailId, 'm400');
+  assert.deepEqual(f.json('selectedMessages().map(row => row.id)'), ['m1']);
+});
+
+test('composition submits the committed phrase once and refreshes never query provisional text', async t => {
+  const f = fixture(t);
+  f.run("storeRows[649].subject='發票'");
+  f.input('needle');
+  await f.flush();
+  const field = f.document.getElementById('list-filter');
+  const event = name => new f.document.defaultView.Event(name);
+  field.dispatchEvent(event('compositionstart'));
+  f.run('calls.length=0');
+  f.input('fa');
+  await f.flush();
+  assert.equal(f.run('calls.length'), 0);
+  await f.run('loadList(false,0)');
+  assert.equal(f.run('calls.at(-1).params.listFilter'), 'needle');
+  f.input('發票');
+  field.dispatchEvent(event('compositionend'));
+  f.input('發票'); // Some platforms emit a final input after compositionend.
+  await f.flush();
+  assert.deepEqual(f.json('calls.map(call => call.params.listFilter)'), ['needle','發票']);
+  assert.deepEqual(f.json('shownEmails().map(row => row.id)'), ['m649']);
+});
+
 test('hidden selection survives host filtering and stays part of reviewed Delete targets', async t => {
   const f=fixture(t); await f.run('loadList(false,0)');
   f.run("state.selectedIds=['m1','m2']; state.selectionAnchor='m1'; renderList()");
@@ -238,6 +288,63 @@ test('hidden selection survives host filtering and stays part of reviewed Delete
   assert.equal(f.run('shownEmails().some(row=>state.selectedIds.includes(row.id))'),false);
   f.input(''); await f.flush(); assert.deepEqual(f.json('shellDeleteSelection().map(row=>row.id)'),['m1','m2']);
 });
+
+async function checkedSecondPage(t) {
+  const f = fixture(t);
+  await f.run('loadList(false,0)');
+  // Observe which action the reader resolves without performing either removal.
+  f.run(`state.email=state.emails[0];
+    trashOpen=row=>[row.id]; bulkTrash=rows=>rows.map(row=>row.id);`);
+  await f.run('changeListPage(1)');
+  f.document.querySelector('[data-email-id="m201"] .row-check').click();
+  assert.equal(f.run('state.email.id'), 'm0');
+  assert.deepEqual(f.json('deleteFromReader(state.email)'), ['m201']);
+  return f;
+}
+
+test('clearing before the debounce keeps the checked second-page message as the Delete target', async t => {
+  const f = await checkedSecondPage(t);
+  f.run('calls.length=0');
+  f.input('n');
+  f.input('');
+  assert.equal(f.run('calls.length'), 0);
+  await f.flush();
+  assert.deepEqual(f.json("calls.map(({params})=>[params.listFilter||'',params.offset])"), [['',0]]);
+  assert.equal(f.run('state.emails[0].id'), 'm0');
+  assert.deepEqual(f.json('state.selectedIds'), ['m201']);
+  assert.deepEqual(f.json('deleteFromReader(state.email)'), ['m201']);
+
+  await f.run('changeListPage(1)');
+  assert.deepEqual(f.json('state.selectedIds'), []);
+  f.document.querySelector('[data-email-id="m201"] .row-check').click();
+  await f.run("changeMailListSort('subject')");
+  assert.deepEqual(f.json('state.selectedIds'), [], 'ordinary sorting prunes an off-page selection');
+  assert.deepEqual(f.json('deleteFromReader(state.email)'), ['m0']);
+});
+
+test('a failed filter keeps the checked message when a refresh retries the same phrase', async t => {
+  const f = await checkedSecondPage(t);
+  f.run("const workingCall=call; call=async()=>{throw new Error('Synthetic filter failure')}");
+  f.input('needle');
+  await f.flush();
+  assert.equal(f.run('state.listFilterError'), true);
+  assert.deepEqual(f.json('deleteFromReader(state.email)'), ['m201']);
+  // Let a background refresh supersede the retry without another input event.
+  f.run(`call=workingCall;
+    deferCalls=true;
+    globalThis.retry=loadList(false,0);
+    globalThis.refresh=loadList(false,0);`);
+  assert.equal(f.run('pending.length'), 2);
+  f.run('pending.shift()()');
+  assert.equal(await f.run('retry'), null);
+  f.run('pending.shift()()');
+  await f.run('refresh');
+  assert.equal(f.run('state.listFilterError'), false);
+  assert.equal(f.run('state.emails[0].id'), 'm400');
+  assert.deepEqual(f.json('state.selectedIds'), ['m201']);
+  assert.deepEqual(f.json('deleteFromReader(state.email)'), ['m201']);
+});
+
 test('actual sorting retains filter-hidden Delete targets but prunes ordinary off-page selection', async t => {
   const f=fixture(t); await f.run('loadList(false,0)');
   f.run("state.selectedIds=['m1','m2']; state.selectionAnchor='m1'; renderList()");
