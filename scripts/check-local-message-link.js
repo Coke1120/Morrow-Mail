@@ -86,7 +86,7 @@ test("a copied key in a second profile cannot open the same IDs", t => {
   assert.deepEqual(service(dir).resolve(link), source);
 });
 
-test("changed or deleted source stays unavailable with a lookalike present", t => {
+test("changed or deleted source stays unavailable with a lookalike present", async t => {
   const dir = profile(t, "identity");
   const exact = new Map([[source.messageId, original], [decoy.messageId, digest("decoy")]]);
   const calls = [];
@@ -100,6 +100,43 @@ test("changed or deleted source stays unavailable with a lookalike present", t =
   assert.equal(links.mint(source), null);
   assert.equal(calls.length, 5);
   assert.ok(calls.every(value => value.accountId === source.accountId && value.messageId === source.messageId));
+
+  const mailbox = profile(t, "mailbox");
+  for (const key of ["MORROW_MAIL_DIR", "MORROW_USER_DATA"]) {
+    const previous = process.env[key];
+    process.env[key] = mailbox;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  const db = require("../host/mail/db");
+  const engine = require("../host/mail/engine");
+  await db.open(path.join(mailbox, "mail.sqlite"));
+  try {
+    const accountId = "link-mailbox";
+    const date = "2026-11-26T00:00:00.000Z";
+    db.insertAccount({ id: accountId, email: "reader@example.invalid", username: "reader", profile: "custom",
+      authKind: "password", imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
+      smtpHost: "smtp.example.invalid", smtpPort: 465, smtpTls: true, createdAt: Date.parse(date) });
+    db.replaceFolders(accountId, [{ path: "INBOX", name: "Inbox", wellKnown: "inbox" }], "/");
+    const messages = ["Original body", "Same-subject decoy body"].map((textBody, index) => ({
+      uid: index + 1, rfcMessageId: "<link-" + index + "@example.invalid>", threadId: String(index),
+      subject: "Same subject", from: "proofs@example.invalid", fromAddress: "proofs@example.invalid",
+      date, receivedAt: Date.parse(date), listSortTs: Date.parse(date), unread: false,
+      bodyComplete: true, textBody, attachments: [], recipientHeaders: { replyTo: [] },
+    }));
+    db.applyFolderSync(accountId, "INBOX", { validity: 7, messages, uids: [1, 2] });
+    const selected = { accountId, messageId: db.messageByUid(accountId, "INBOX", 1, 7).id };
+    const lookalike = { accountId, messageId: db.messageByUid(accountId, "INBOX", 2, 7).id };
+    const real = service(mailbox, engine.localMessageLinkProof);
+    const realLink = real.mint(selected);
+    assert.ok(realLink);
+    assert.deepEqual(real.resolve(realLink), selected);
+    assert.equal(engine.readLocalMessageLink(selected).data.email.textBody, "Original body");
+    assert.equal(engine.readLocalMessageLink({ ...selected, accountId: "other" }), null);
+    db.deleteMessage(selected.messageId);
+    assert.equal(real.resolve(realLink), null);
+    assert.equal(engine.readLocalMessageLink(selected), null);
+    assert.equal(engine.readLocalMessageLink(lookalike).data.email.textBody, "Same-subject decoy body");
+  } finally { await db.close(); }
 });
 
 test("missing proof or a corrupt existing key cannot produce a new reference", t => {

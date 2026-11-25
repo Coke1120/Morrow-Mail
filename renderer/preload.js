@@ -268,6 +268,7 @@ const INVOKE = [
   "reader:open",
   "reader:pullSeed",
   "reader:copyLocalMessageLink",
+  "reader:clearLocalMessageLink",
   "translate:open",
   "translate:pullSeed",
   "translate:report",

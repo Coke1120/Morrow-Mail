@@ -9396,6 +9396,25 @@ function readerButton(action, label, run, iconNode) {
   return button;
 }
 
+function localMessageLinkButton(email) {
+  const button = readerButton("copy-local-message-link", "Copy local link to this message", async () => {
+    if (readerCurrentId() !== email.id || state.email?.accountId !== email.accountId || state.email?.bodyEpoch !== email.bodyEpoch) {
+      throw new Error("That local message link is unavailable.");
+    }
+    const result = await api.invoke("reader:copyLocalMessageLink", {
+      accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch,
+    });
+    if (result?.ok !== true) throw new Error(result?.message || "That local message link is unavailable.");
+    showStatus("Local link copied. It opens in this Morrow profile.");
+  }, strokeIcon(["M10 13a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-2 2", "M14 11a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l2-2"]));
+  const account = state.accounts.find(item => item.id === email.accountId);
+  const folder = foldersOf(account).find(item => item.id === email.folderId);
+  const role = canonicalFolderRole(folder?.wellKnownName);
+  button.disabled = !email.bodyComplete || !!email.bodyWarning || email.folderId === "local-folder:trash" ||
+    ["deleteditems", "junkemail", "drafts"].includes(role);
+  return button;
+}
+
 let sentFollowups;
 
 function renderActions(pane, email) {
@@ -9405,6 +9424,7 @@ function renderActions(pane, email) {
       readerButton("move", "Move locally", () => openLocalTransfer([email], "move")),
       readerButton("copy-local", "Copy locally", () => openLocalTransfer([email], "copy"), strokeIcon(["M9 9h12v12H9z", "M5 15H3V3h12v2"])),
       readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
+      localMessageLinkButton(email),
       readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
@@ -9490,7 +9510,9 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, summary, timeline, besideStar, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, summary, timeline);
+  if (!email.isDraft) bar.appendChild(localMessageLinkButton(email));
+  bar.append(besideStar, archive, trash, menus);
   if (email.dsnRedraftAvailable) {
     const review = readerButton("dsn-redraft", "Review delivery report", () => openDsnRedraft(email),
       strokeIcon(["M3 5h18v14H3z", "M3 6l9 7 9-7", "M12 15v1"]));
@@ -15126,6 +15148,7 @@ function readerCurrentId() {
 
 function invalidateReaderOpen() {
   clearMessageSummary();
+  if (!isReaderWindow()) api?.invoke?.("reader:clearLocalMessageLink")?.catch?.(() => {});
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
@@ -15393,7 +15416,8 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) });
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}),
+      includeThread: state.prefs.conversation !== false, bindReaderLocalLink: true, ...(full ? { full: true, retry: true } : {}) });
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -19130,6 +19154,7 @@ async function bootReaderWindow() {
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
   renderReader(false);
+  if (seed.openedFromLocalLink) return;
   pumpBodyRefreshes();
   const openedId = email.id;
   loadSnoozed().then(() => loadProviderFolders(accountGen)).then(() => {

@@ -283,6 +283,7 @@ function createReaderHost(options) {
   function observeOpen(event, params) {
     const record = records.get(event.sender.id);
     if (!record && opts.isShellFrame?.(event)) {
+      if (params?.bindReaderLocalLink !== true) return null;
       const observation = { sender: event.sender, frame: event.senderFrame, email: null };
       shellOpen = observation;
       return reply => {
@@ -304,6 +305,10 @@ function createReaderHost(options) {
           email?.id === record.seed.messageId && email.accountId === record.seed.accountId &&
           Number.isSafeInteger(email.bodyEpoch) && email.bodyEpoch >= 0) document.bodyEpoch = email.bodyEpoch;
     };
+  }
+
+  function clearShellLocalLink(event) {
+    if (opts.isShellFrame?.(event)) shellOpen = null;
   }
 
   function readLink(event, params, cached = false) {
@@ -465,13 +470,14 @@ function createReaderHost(options) {
     ipcMain.handle("reader:pullSeed", (event) => {
       const record = records.get(event.sender.id);
       if (!record) return null;
-      return { accountId: record.seed.accountId, messageId: record.seed.messageId };
+      return { accountId: record.seed.accountId, messageId: record.seed.messageId,
+        ...(record.readLocalLink ? { openedFromLocalLink: true } : {}) };
     });
     ipcMain.handle("reader:arrangePair", arrangePair);
     return { open: open, records: records };
   }
 
-  return { open, register, records, receiptRecord, receiptSource, observeOpen, readLink, copyLocalLink };
+  return { open, register, records, receiptRecord, receiptSource, observeOpen, readLink, copyLocalLink, clearShellLocalLink };
 }
 
 module.exports = {

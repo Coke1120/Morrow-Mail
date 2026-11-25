@@ -14,6 +14,7 @@ const { init: initMail, answer: mailAnswer, startBackgroundSync, resolveResumedD
   localMessageLinkProof, readLocalMessageLink, dataFile: mailDataFile } = require("./mail/engine");
 const { SCHEME: MESSAGE_LINK_SCHEME, createLocalMessageLinks } = require("./local-message-link");
 const COPY_LOCAL_MESSAGE_LINK = "reader:copyLocalMessageLink";
+const CLEAR_LOCAL_MESSAGE_LINK = "reader:clearLocalMessageLink";
 const { startupFailureDialog, startupStatusHtml, startupProgressScript, isStartupExternalUrl } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
@@ -105,8 +106,7 @@ function openMessageLink(url) {
   }
   if (showingLinkNotice) return;
   showingLinkNotice = true;
-  revealShell(shellWindow);
-  dialog.showMessageBox(shellWindow, { type: "info", message: "That local message link is unavailable.", buttons: ["OK"] })
+  dialog.showMessageBox({ type: "info", message: "That local message link is unavailable.", buttons: ["OK"] })
     .catch(() => {}).finally(() => { showingLinkNotice = false; });
 }
 
@@ -275,6 +275,7 @@ function attachIpc(preloadFile) {
   for (const name of readerWindows.CHANNELS) directHost.add(name);
   directHost.add("reader:openFailed");
   directHost.add(COPY_LOCAL_MESSAGE_LINK);
+  directHost.add(CLEAR_LOCAL_MESSAGE_LINK);
   for (const name of translateWindows.CHANNELS) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
@@ -1082,6 +1083,7 @@ app.whenReady().then(async () => {
     });
     readerHost.register();
     ipcMain.handle(COPY_LOCAL_MESSAGE_LINK, readerHost.copyLocalLink);
+    ipcMain.handle(CLEAR_LOCAL_MESSAGE_LINK, readerHost.clearShellLocalLink);
     if (mode === "bundled") {
       try {
         messageLinks = createLocalMessageLinks({ profileDir: path.dirname(mailDataFile()), readProof: localMessageLinkProof });
