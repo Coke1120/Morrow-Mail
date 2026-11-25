@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Message PDF preview</title>
+  <link rel="stylesheet" href="./receipt-pdf-preview.css">
+  <script defer src="./pdf-preview.bundle.js"></script>
+  <script defer src="./receipt-pdf-preview.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Message PDF preview</h1>
+    <div class="actions">
+      <button id="cancel" type="button">Close</button>
+      <button id="save" type="button" disabled>Save PDF…</button>
+    </div>
+    <p id="status" role="status">Preparing preview…</p>
+  </header>
+  <main id="stage" aria-label="PDF pages" tabindex="0">
+    <div id="pages"></div>
+  </main>
+</body>
+</html>
