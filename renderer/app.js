@@ -9282,8 +9282,127 @@ function renderActions(pane, email) {
   besideStar.append(star);
   renderTranslate(besideStar, email);
   bar.append(reply, replyAll, suggest, forward, summary, timeline, besideStar, archive, trash, menus);
+  if (email.dsnRedraftAvailable) {
+    const review = readerButton("dsn-redraft", "Review delivery report", () => openDsnRedraft(email),
+      strokeIcon(["M3 5h18v14H3z", "M3 6l9 7 9-7", "M12 15v1"]));
+    review.setAttribute("aria-haspopup", "dialog");
+    review.setAttribute("aria-controls", "dsn-redraft");
+    bar.appendChild(review);
+  }
   appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+let dsnRedraftView = null;
+
+function paintDsnRedraft() {
+  const view = dsnRedraftView;
+  const ready = !!view?.review && !view.saved;
+  const to = $("dsn-redraft-to"), confirm = $("dsn-redraft-confirm"), save = $("dsn-redraft-save");
+  $("dsn-redraft-review").hidden = save.hidden = !ready;
+  to.disabled = confirm.disabled = !ready || view.saving;
+  save.disabled = !ready || view.saving || !to.value || !confirm.checked;
+  $("dsn-redraft-open").hidden = !view?.saved;
+  const close = $("dsn-redraft-close");
+  close.disabled = !!view?.saving;
+  close.textContent = ready ? "Cancel" : "Close";
+  $("dsn-redraft-status").textContent = view?.status || "";
+}
+
+function acceptDsnRedraft(view, data) {
+  if (data?.draftId) {
+    view.saved = data;
+    view.status = data.alreadySaved ? "A corrected draft is already available in this mailbox’s Drafts."
+      : "Corrected draft saved on this computer in this mailbox’s Drafts.";
+    return;
+  }
+  if (!data?.review) throw new Error("This report could not be reviewed. Check the original in Sent.");
+  view.review = data.review;
+  view.status = "Verify the original mail and failed address, then look up the replacement independently.";
+  $("dsn-redraft-mailbox").textContent = data.mailbox;
+  $("dsn-redraft-from").textContent = window.morrowComposePolicy.senderPreview(data.fromAddress, data.fromDisplayName);
+  $("dsn-redraft-date").textContent = `${shownWhen(new Date(data.date))} (${data.date})`;
+  $("dsn-redraft-failed").textContent = data.failedAddress;
+  $("dsn-redraft-subject").textContent = data.subject || "(no subject)";
+  const preview = $("dsn-redraft-body");
+  preview.textContent = data.htmlBody ? "" : data.body;
+  preview.classList.toggle("is-html", !!data.htmlBody);
+  if (data.htmlBody) appendSafeMailHtml(preview, data.htmlBody, false);
+}
+
+async function openDsnRedraft(email) {
+  const dialog = $("dsn-redraft");
+  if (!email.dsnRedraftAvailable || !dialog || dialog.open) return;
+  const view = { source: { accountId: email.accountId, emailId: email.id, bodyEpoch: email.bodyEpoch }, status: "Checking the report and Sent…" };
+  dsnRedraftView = view;
+  $("dsn-redraft-to").value = "";
+  $("dsn-redraft-confirm").checked = false;
+  $("dsn-redraft-body").textContent = "";
+  paintDsnRedraft();
+  openDialog("dsn-redraft");
+  $("dsn-redraft-title").focus();
+  try {
+    const data = await call("mail:dsnRedraft", { action: "review", ...view.source });
+    if (dsnRedraftView !== view || !dialog.open || dialog.dataset.closing) return;
+    acceptDsnRedraft(view, data);
+  } catch (error) { view.status = error.message; }
+  if (dsnRedraftView === view && dialog.open) paintDsnRedraft();
+}
+
+async function saveDsnRedraft(event) {
+  event.preventDefault();
+  const view = dsnRedraftView;
+  if (!view?.review || view.saved || view.saving || $("dsn-redraft").dataset.closing || $("dsn-redraft-save").disabled) return;
+  if (state.email?.id !== view.source.emailId || state.email.accountId !== view.source.accountId || state.email.bodyEpoch !== view.source.bodyEpoch) {
+    view.review = null;
+    view.status = "The open message changed. Reopen the report to start a new review.";
+    paintDsnRedraft();
+    return;
+  }
+  const to = $("dsn-redraft-to").value, confirmed = $("dsn-redraft-confirm").checked;
+  view.saving = true;
+  view.status = "Saving the corrected draft…";
+  paintDsnRedraft();
+  try {
+    const data = await call("mail:dsnRedraft", { action: "save", ...view.source, review: view.review, to, confirmed });
+    if (!data?.draftId) throw new Error("The corrected draft could not be saved. Reopen the report to review it again.");
+    acceptDsnRedraft(view, data);
+  } catch (error) {
+    view.status = error.message;
+    if (["dsn_changed", "dsn_manual", "dsn_delayed"].includes(error.code)) view.review = null;
+  } finally {
+    view.saving = false;
+    if (dsnRedraftView === view && $("dsn-redraft").open) {
+      paintDsnRedraft();
+      if (view.saved) $("dsn-redraft-open").focus();
+      else if (view.review) $("dsn-redraft-to").focus();
+      else $("dsn-redraft-close").focus();
+    }
+  }
+}
+
+function wireDsnRedraft() {
+  const dialog = $("dsn-redraft");
+  if (!dialog) return;
+  $("dsn-redraft-form").addEventListener("submit", saveDsnRedraft);
+  $("dsn-redraft-to").addEventListener("input", () => {
+    $("dsn-redraft-confirm").checked = false;
+    paintDsnRedraft();
+  });
+  $("dsn-redraft-confirm").addEventListener("change", paintDsnRedraft);
+  $("dsn-redraft-close").addEventListener("click", () => closeDialog("dsn-redraft"));
+  $("dsn-redraft-open").addEventListener("click", () => guard(async () => {
+    const saved = dsnRedraftView?.saved;
+    if (!saved) return;
+    await closeDialog("dsn-redraft");
+    await resumeDraft({ id: saved.draftId, accountId: saved.accountId }, { status: "Corrected draft saved on this computer. Review before sending." });
+  }));
+  dialog.addEventListener("close", () => {
+    if (dialog.open) return;
+    dsnRedraftView = null;
+    $("dsn-redraft-body").textContent = "";
+    $("reader")?.querySelector('[data-action="dsn-redraft"]')?.focus();
+  });
 }
 
 function summarySource(email) {
@@ -10135,11 +10254,12 @@ function renderBody(pane, email, refresh) {
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
-  } else if (!isLocalMail(email) && !email?.isDraft && (email?.unsubscribeChecked === false
-      || state.accounts.some(account => account.id === email?.accountId && account.mailTransport === "gmail_api"))) {
+  } else if (!isLocalMail(email) && !email?.isDraft && (email?.unsubscribeChecked === false || email?.dsnRedraftAvailable
+      || state.accounts.some(account => account.id === email?.accountId && (account.mailTransport === "gmail_api"
+        || account.folders?.primary?.some(folder => folder.id === email.folderId && folder.wellKnownName === "sentitems"))))) {
     // Older corrupted bodies can contain no replacement characters and carry no
-    // warning. Legacy caches can also lack unsubscribe headers. Keep reloading
-    // explicit and available without scanning or downloading on ordinary open.
+    // warning. Older Sent caches may lack delivery-failure review evidence.
+    // Keep reloading explicit without a download on ordinary open.
     pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
@@ -14782,7 +14902,7 @@ function applyCachedBody(email) {
       || target.email.bodyWarning !== body.bodyWarning || target.email.encodingWarning !== body.encodingWarning || target.email.bodyComplete !== body.bodyComplete;
     const metadata = {};
     for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
-      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft", "unsubscribe", "unsubscribeChecked"]) {
+      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft", "unsubscribe", "unsubscribeChecked", "dsnRedraftAvailable"]) {
       if (Object.hasOwn(email, field)) metadata[field] = email[field];
     }
     changed ||= Object.entries(metadata).some(([field, value]) => JSON.stringify(target.email[field]) !== JSON.stringify(value));
@@ -29638,6 +29758,10 @@ function wire() {
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "dsn-redraft" && dsnRedraftView?.saving) {
+        event.preventDefault();
+        return;
+      }
       if (dialog.id === "google-onboarding") {
         event.preventDefault();
         dismissGoogleOnboarding();
@@ -30310,6 +30434,7 @@ function wire() {
   });
   $("compose-preview-cancel").addEventListener("click", () => cancelComposePreview());
   $("compose-preview").addEventListener("close", () => { previewDraftState = null; });
+  wireDsnRedraft();
   $("undo-schedule").addEventListener("click", () => {
     undoCancelScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });

@@ -1,0 +1,6 @@
+[
+  "dsn-redraft",
+  "Correct an invalid recipient from a delivery failure",
+  "Mail",
+  "Open a delivery report in the Inbox and choose Review delivery report. For a permanent invalid address (5.1.1), Morrow looks up the original Message-ID in this mailbox’s Sent folder and checks the failed recipient. Review the From address, time, subject and body. Look up the new address in an independent directory, enter it as New To, confirm it and choose Save corrected draft. The local, unsent draft keeps the original sender and body, including supported formatting and links, with only the new recipient. Open it from the review or Drafts. Delays ask you to wait. Missing, ambiguous or attached originals require manual review. Cancel closes the review."
+]
