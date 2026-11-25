@@ -1992,6 +1992,12 @@ applyPref("text", control, "#7C3AED");
 assert.strictEqual(readPref("text", control), "#7C3AED");
 applyPref("select", control, "dark");
 assert.strictEqual(readPref("select", control), "dark");
+applyPref("bool-select", control, true);
+assert.strictEqual(control.value, "true");
+assert.strictEqual(readPref("bool-select", control), true);
+applyPref("bool-select", control, false);
+assert.strictEqual(control.value, "false");
+assert.strictEqual(readPref("bool-select", control), false);
 applyPref("text", control, null);
 assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
@@ -2006,7 +2012,7 @@ for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(used.has(getChannel) && used.has(setChannel), `renderer does not call ${setChannel}`);
   assert.ok(settingsSrc.includes('"' + getChannel + '"'), `settings store missing ${getChannel}`);
   assert.ok(settingsSrc.includes('"' + setChannel + '"'), `settings store missing ${setChannel}`);
-  assert.ok(kind === "select" || kind === "text" || kind === "bool" || kind === "seconds" || kind === "days");
+  assert.ok(kind === "select" || kind === "text" || kind === "bool" || kind === "bool-select" || kind === "seconds" || kind === "days");
   prefKinds.add(kind);
 }
 assert.ok(prefKinds.has("select") && prefKinds.has("text") && prefKinds.has("bool") && prefKinds.has("seconds"));
@@ -2041,7 +2047,10 @@ assert.ok(functionSource(appJs, "fetchAiModels").includes("applyFetchedModels"))
 assert.ok(functionSource(appJs, "fetchAiModels").includes("host:aiListModels"));
 assert.ok(!appJs.includes("ai-model-list"));
 assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
-assert.ok(settingsHtml.includes("Test connection sends a short model request") && settingsHtml.includes("Fetch models only reads the selected provider"));
+const aiSettingsHtml = settingsHtml.slice(settingsHtml.indexOf('id="settings-ai"'), settingsHtml.indexOf('id="settings-mailbox"'));
+assert.doesNotMatch(aiSettingsHtml, /type="checkbox"|id="ai-connection-details"/);
+assert.match(functionSource(main, "registerHostAi"), /Say hello in five words or fewer/);
+assert.match(functionSource(appJs, "fetchAiModels"), /host:aiListModels/);
 // #158: remote-image privacy, visible fold loading, and field-level errors.
 assert.match(settingsHtml, /id="pref-images"[^>]*aria-describedby="pref-images-help"/);
 const remoteImagesHelp = settingsHtml.slice(settingsHtml.indexOf('id="pref-images-help"')).split("</p>")[0];
