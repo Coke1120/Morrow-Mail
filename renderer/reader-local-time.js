@@ -12,11 +12,12 @@
   const monthNames = englishNames(months, "sept");
   const weekdayNames = englishNames(weekdays, "tues", "weds", "thur", "thurs");
   const numericOffset = String.raw`[+-]\d{2}(?::?\d{2})?`;
-  const proseZone = String.raw`(?:(?:UTC|GMT)(?: *${numericOffset})?|${numericOffset})`;
+  const namedZone = String.raw`(?:UTC|GMT)(?: *${numericOffset})?`;
+  const proseZone = String.raw`(?:${namedZone}|\+\d{2}(?::?\d{2})?|\( *(?:${namedZone}|${numericOffset}) *\))`;
   const stampSeconds = String.raw`(?::(?<second>\d{2})(?:\.(?<fraction>\d+))?)?`;
 
   const isoStamp = new RegExp([
-    String.raw`^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[T ]`,
+    String.raw`^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})(?<separator>[T ])`,
     String.raw`(?<hour>\d{2}):(?<minute>\d{2})${stampSeconds}`,
     String.raw`(?: *(?<zone>Z|${numericOffset}))?$`,
   ].join(""), "i");
@@ -26,7 +27,7 @@
     String.raw`(?:(?<dayFirst>\d{1,2}) (?<monthAfter>${monthNames})\.?|(?<monthFirst>${monthNames})\.? (?<dayAfter>\d{1,2}))`,
     String.raw`(?: *, *| )(?<year>\d{4}) (?:at )?`,
     String.raw`(?<hour>\d{1,2})(?::(?<minute>\d{2})${stampSeconds})?(?: *(?<meridiem>[ap]\.? *m\.?))?`,
-    String.raw`(?: *(?<zone>${proseZone}|\( *${proseZone} *\)))?\.?$`,
+    String.raw`(?: *(?<zone>${proseZone}))?\.?$`,
   ].join(""), "i");
 
   function namedIndex(names, value) {
@@ -103,7 +104,10 @@
     const selection = text.trim().replace(/\s+/g, " ").replace(/−/g, "-");
     const iso = isoStamp.exec(selection);
     const parts = (iso ?? proseStamp.exec(selection))?.groups;
-    if (!parts) return clarify("unsupported-format");
+    // In plain prose or a space-separated stamp, a bare minus can mark a time range.
+    if (!parts || (parts.separator === " " && parts.zone?.startsWith("-"))) {
+      return clarify("unsupported-format");
+    }
 
     const { weekday, meridiem, zone, fraction = "" } = parts;
     const year = Number(parts.year);

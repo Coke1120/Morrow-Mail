@@ -10421,7 +10421,6 @@ let readerLocalTimeSource = null;
 function sameReaderLocalTimeSource(email, source) {
   return email && source && !email.isDraft && !email.outbox && !email.bodyError
     && email.id === source.id && email.accountId === source.accountId
-    && (email.bodyEpoch ?? 0) === (source.bodyEpoch ?? 0)
     && email.htmlBody === source.htmlBody && email.textBody === source.textBody;
 }
 

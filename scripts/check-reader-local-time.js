@@ -16,6 +16,9 @@ test("converts both named-month deadlines", () => {
   const dayFirst = "Entries close Monday, 14 September 2026 at 5:00 p.m. (UTC−07:00).";
   assert.deepEqual(convertSelection(dayFirst, hongKong),
     expected(dayFirst, "2026-09-15T00:00:00.000Z", "15 Sept 2026", "08:00", true));
+  const parenthesizedOffset = "14 September 2026 at 17:00 (-07:00)";
+  assert.deepEqual(convertSelection(parenthesizedOffset, hongKong),
+    expected(parenthesizedOffset, "2026-09-15T00:00:00.000Z", "15 Sept 2026", "08:00", true));
 
   const monthFirst = "\u00a0Thu. Oct.\u00a01, 2026\nat 14:15 ( GMT +1030 ).\t";
   assert.deepEqual(convertSelection(monthFirst, hongKong),
@@ -44,6 +47,8 @@ test("asks for clarification on missing offsets, ambiguous inputs and unsupporte
   for (const source of [
     "2026-02-12",
     "09/10/2026 17:00 UTC",
+    "14 September 2026 at 09:00-11:00",
+    "2026-09-14 09:00-11:00",
     "2026-02-12T19:42:00Z 2026-02-12T19:43:00Z",
     "14 September 2026 at 17:00 UTC or 15 September 2026 at 17:00 UTC",
     "2026-02-12T19:42:00Z Deadline 14 September 2026 at 17:00 UTC",
