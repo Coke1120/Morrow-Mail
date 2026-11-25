@@ -4,6 +4,7 @@ const readerState = require("./reader-window-state");
 
 const CHANNELS = ["reader:open", "reader:pullSeed", "reader:arrangePair"];
 const OPEN_FAILED = "That message could not be opened.";
+const LINK_UNAVAILABLE = "That local message link is unavailable.";
 const ARRANGE_FAILED = "Could not place the reader windows side by side.";
 const READER_WIDTH = 960;
 const READER_HEIGHT = 760;
@@ -136,6 +137,7 @@ function createReaderHost(options) {
   const { BrowserWindow, ipcMain, shell, screen } = require("electron");
   const opts = options || {};
   const records = new Map();
+  let shellOpen = null;
   let boundsChangeOrder = 0;
 
   function trackReaderBounds(record, originShift) {
@@ -280,6 +282,16 @@ function createReaderHost(options) {
   // the Reader. Subsequent opens cannot rebind an existing document.
   function observeOpen(event, params) {
     const record = records.get(event.sender.id);
+    if (!record && opts.isShellFrame?.(event)) {
+      const observation = { sender: event.sender, frame: event.senderFrame, email: null };
+      shellOpen = observation;
+      return reply => {
+        const email = reply?.data?.email;
+        if (shellOpen === observation && reply?.success === true && email?.id === params?.emailId) {
+          observation.email = { id: email.id, accountId: email.accountId, bodyEpoch: email.bodyEpoch };
+        }
+      };
+    }
     const document = record?.receiptDocument;
     const frame = event.senderFrame;
     if (!document || document.openStarted || frame !== document.frame ||
@@ -292,6 +304,30 @@ function createReaderHost(options) {
           email?.id === record.seed.messageId && email.accountId === record.seed.accountId &&
           Number.isSafeInteger(email.bodyEpoch) && email.bodyEpoch >= 0) document.bodyEpoch = email.bodyEpoch;
     };
+  }
+
+  function readLink(event, params, cached = false) {
+    const record = records.get(event.sender.id);
+    if (!record?.readLocalLink) return undefined;
+    if (event.senderFrame === record.win.webContents.mainFrame && event.senderFrame?.url === record.url &&
+        params?.emailId === record.seed.messageId && params?.accountId === record.seed.accountId) {
+      try {
+        const result = record.readLocalLink();
+        if (result?.success === true && (!cached || params.bodyEpoch === result.data.email.bodyEpoch)) return result;
+      } catch { /* invalid or removed source */ }
+    }
+    return { success: false, error: { code: "message-link-unavailable", message: LINK_UNAVAILABLE } };
+  }
+
+  function copyLocalLink(event, params) {
+    const record = records.get(event.sender.id);
+    const detached = record && event.senderFrame === record.win.webContents.mainFrame && receiptSource(record.win);
+    const current = !record && opts.isShellFrame?.(event) && shellOpen?.sender === event.sender &&
+      shellOpen.frame === event.senderFrame ? shellOpen.email : null;
+    const source = detached || (current && { accountId: current.accountId, messageId: current.id, bodyEpoch: current.bodyEpoch });
+    if (!source || source.messageId !== params?.messageId || source.accountId !== params?.accountId ||
+        source.bodyEpoch !== params?.bodyEpoch) return { ok: false, message: LINK_UNAVAILABLE };
+    return opts.copyLocalLink?.(source) || { ok: false, message: LINK_UNAVAILABLE };
   }
 
   function receiptDocumentCurrent(record, document) {
@@ -355,7 +391,7 @@ function createReaderHost(options) {
     win.on("closed", retire);
   }
 
-  function open(seed, opener) {
+  function open(seed, opener, readLocalLink = null) {
     const clean = sanitizeReaderSeed(seed);
     let index = 0;
     for (const record of records.values()) {
@@ -384,7 +420,7 @@ function createReaderHost(options) {
     });
     try { win.webContents.setZoomLevel(0); } catch { /* the page still opens at the default zoom */ }
     const id = win.webContents.id;
-    const record = { win, seed: clean, boundsTimer: null, temporaryBounds: null, arranging: false };
+    const record = { win, seed: clean, readLocalLink, boundsTimer: null, temporaryBounds: null, arranging: false };
     records.set(id, record);
     trackReaderBounds(record, originShift);
     let failed = false;
@@ -435,7 +471,7 @@ function createReaderHost(options) {
     return { open: open, records: records };
   }
 
-  return { open, register, records, receiptRecord, receiptSource, observeOpen };
+  return { open, register, records, receiptRecord, receiptSource, observeOpen, readLink, copyLocalLink };
 }
 
 module.exports = {

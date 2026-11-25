@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen, Notification } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, protocol, ipcMain, session, Menu, powerMonitor, nativeImage, shell, screen, Notification } = require("electron");
 require("./performance-diagnostics").startMonitoring();
 const fs = require("fs");
 const os = require("os");
@@ -10,7 +10,10 @@ const { loadConfig, publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULT
 const { complete, extractJson, modelIds, listModels } = require("./openai-client");
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:aiConsentStatus", "host:aiConsentGrant", "host:aiConsentRevoke", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
-const { init: initMail, answer: mailAnswer, startBackgroundSync, resolveResumedDraftOwner } = require("./mail/engine");
+const { init: initMail, answer: mailAnswer, startBackgroundSync, resolveResumedDraftOwner,
+  localMessageLinkProof, readLocalMessageLink, dataFile: mailDataFile } = require("./mail/engine");
+const { SCHEME: MESSAGE_LINK_SCHEME, createLocalMessageLinks } = require("./local-message-link");
+const COPY_LOCAL_MESSAGE_LINK = "reader:copyLocalMessageLink";
 const { startupFailureDialog, startupStatusHtml, startupProgressScript, isStartupExternalUrl } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
@@ -66,6 +69,74 @@ let shellWindow = null;
 let shellSession = null;
 let shellOpening = null;
 let readerHost = null;
+let messageLinks = null;
+const pendingMessageLinks = [];
+let showingLinkNotice = false;
+
+function queueMessageLink(url) {
+  if (pendingMessageLinks.length < 8) pendingMessageLinks.push(url);
+  if (shellWindow) consumeMessageLinks();
+  else if (shellSession && !updateGate.closed) openShellWindow().catch(() => {});
+}
+
+function queueMessageLinkArgs(args = []) {
+  const candidates = args.filter(value => typeof value === "string" && value.toLowerCase().startsWith(MESSAGE_LINK_SCHEME + ":"));
+  if (!candidates.length) return false;
+  queueMessageLink(candidates.length === 1 ? candidates[0] : null);
+  return true;
+}
+
+function consumeMessageLinks() {
+  if (!shellWindow || shellWindow.isDestroyed()) return;
+  for (const url of pendingMessageLinks.splice(0)) openMessageLink(url);
+}
+
+function openMessageLink(url) {
+  if (updateGate.closed) return;
+  const target = shellSession?.mode === "bundled" && messageLinks?.resolve(url);
+  if (target && readerHost) {
+    try {
+      readerHost.open(target, null, () => {
+        const current = messageLinks.resolve(url);
+        return current && readLocalMessageLink(current);
+      });
+      return;
+    } catch { /* the unavailable notice below has no source details */ }
+  }
+  if (showingLinkNotice) return;
+  showingLinkNotice = true;
+  revealShell(shellWindow);
+  dialog.showMessageBox(shellWindow, { type: "info", message: "That local message link is unavailable.", buttons: ["OK"] })
+    .catch(() => {}).finally(() => { showingLinkNotice = false; });
+}
+
+function registerWindowsMessageLink() {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (!portable) return app.isDefaultProtocolClient(MESSAGE_LINK_SCHEME) || app.setAsDefaultProtocolClient(MESSAGE_LINK_SCHEME);
+  if (!path.isAbsolute(portable) || path.extname(portable).toLowerCase() !== ".exe" || !fs.existsSync(portable)) return false;
+  if (app.isDefaultProtocolClient(MESSAGE_LINK_SCHEME, portable)) return true;
+  // Portable launches use the outer executable and leave an installed
+  // client's existing association alone.
+  if (app.getApplicationNameForProtocol(MESSAGE_LINK_SCHEME + "://open/")) return false;
+  return app.setAsDefaultProtocolClient(MESSAGE_LINK_SCHEME, portable);
+}
+
+function copyLocalMessageLink(source) {
+  const unavailable = { ok: false, message: "That local message link is unavailable." };
+  if (!messageLinks || updateGate.closed) return unavailable;
+  try {
+    if (readLocalMessageLink(source)?.data.email.bodyEpoch !== source.bodyEpoch) return unavailable;
+    const url = messageLinks.mint(source);
+    if (!url) return unavailable;
+    if (app.isPackaged && process.platform === "win32" && !registerWindowsMessageLink()) {
+      return { ok: false, message: "Windows could not register Morrow Mail for local message links." };
+    }
+    clipboard.writeText(url);
+    return { ok: true };
+  } catch (error) {
+    return error?.code === "local-message-link-storage" ? { ok: false, message: error.message } : unavailable;
+  }
+}
 const saveReceiptPdf = createReceiptPdf({
   electron: { BrowserWindow, dialog, session },
   sourceFor: win => readerHost?.receiptSource(win),
@@ -75,9 +146,15 @@ const saveReceiptPdf = createReceiptPdf({
 if (!singleInstance) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    presentShell();
+  app.on("second-instance", (_event, commandLine) => {
+    if (!queueMessageLinkArgs(commandLine)) presentShell();
   });
+  app.on("open-url", (event, url) => {
+    if (typeof url !== "string" || !url.toLowerCase().startsWith(MESSAGE_LINK_SCHEME + ":")) return;
+    event.preventDefault();
+    queueMessageLink(url);
+  });
+  queueMessageLinkArgs(process.argv.slice(1));
   // Dock icon, and macOS relaunch of an already running app.
   app.on("activate", () => {
     presentShell();
@@ -197,12 +274,15 @@ function attachIpc(preloadFile) {
   for (const name of composeWindows.CHANNELS) directHost.add(name);
   for (const name of readerWindows.CHANNELS) directHost.add(name);
   directHost.add("reader:openFailed");
+  directHost.add(COPY_LOCAL_MESSAGE_LINK);
   for (const name of translateWindows.CHANNELS) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
     ipcMain.handle(channel, (event, ...args) => updateGate.run(() => {
       const observe = channel === "mail:openEmail" ? readerHost?.observeOpen(event, args[0]) : null;
-      const reply = bus.handle(event, channel, ...args);
+      const linked = channel === "mail:openEmail" || channel === "mail:readCachedBody"
+        ? readerHost?.readLink(event, args[0], channel === "mail:readCachedBody") : undefined;
+      const reply = linked === undefined ? bus.handle(event, channel, ...args) : linked;
       return observe ? Promise.resolve(reply).then(result => {
         observe(result);
         return result;
@@ -210,6 +290,14 @@ function attachIpc(preloadFile) {
     }));
     ipcMain.on(channel, (event, ...args) => {
       if (updateGate.closed) { event.returnValue = null; return; }
+      if (channel === "mail:openEmail" || channel === "mail:readCachedBody") {
+        const linked = readerHost?.readLink(event, args[0], channel === "mail:readCachedBody");
+        if (linked !== undefined) {
+          if (channel === "mail:openEmail") readerHost.observeOpen(event, args[0])?.(linked);
+          event.returnValue = linked;
+          return;
+        }
+      }
       bus.send(event, channel, ...args);
       // sendSync reads event.returnValue. Leaving it unset comes back as an
       // object, and locale resolution calls .split on that.
@@ -555,6 +643,7 @@ function openShellWindow() {
       win.on("closed", () => {
         if (shellWindow === win) shellWindow = null;
       });
+      consumeMessageLinks();
       return win;
     })
     .finally(() => {
@@ -987,8 +1076,17 @@ app.whenReady().then(async () => {
       htmlFile: FIRST_PARTY_HTML,
       icon: APP_ICON,
       backgroundColor: () => (shellSession && shellSession.mode === "asar" ? "#193c34" : "#e7f0e4"),
+      isShellFrame: event => shellSession?.mode === "bundled" && fromShellFrame(shellWindow, event) &&
+        event.senderFrame.url === require("node:url").pathToFileURL(FIRST_PARTY_HTML).href,
+      copyLocalLink: copyLocalMessageLink,
     });
     readerHost.register();
+    ipcMain.handle(COPY_LOCAL_MESSAGE_LINK, readerHost.copyLocalLink);
+    if (mode === "bundled") {
+      try {
+        messageLinks = createLocalMessageLinks({ profileDir: path.dirname(mailDataFile()), readProof: localMessageLinkProof });
+      } catch { /* profile storage unavailable */ }
+    }
     translateWindows.createTranslateHost({
       getParent: () => shellWindow,
       preloadFile: () => shellSession && shellSession.preloadFile,
