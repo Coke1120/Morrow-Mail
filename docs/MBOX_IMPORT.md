@@ -68,13 +68,20 @@ destinations keep independent copies. Missing/reused Message-ID is safe; distinc
 same-ID content remains separate. Changed headers, line endings, padding and
 status headers mean different bytes and are imported separately.
 
-**Imported** counts only complete durable message commits; **Skipped** includes
-duplicates and explicitly counted Thunderbird deleted entries. **Failed** counts
+**Imported** counts only complete durable message commits. **Skipped** shows
+the total and the individual counts for duplicates and Thunderbird-deleted
+entries. Moved originals stay in their current folders. Use the **Local Folders**
+search scope to find them by subject or message text. **Failed** counts
 entries safely isolated by confirmed boundaries. Ambiguous framing/read/storage
 failures stop the job with a partial summary, rather than count unknown input as
 successful. The first 50 entry failures show source byte ranges; the latest 100
 jobs appear in the dialog. Progress distinguishes examined phase bytes from input
 offsets committed with mail. Staging/verification is indeterminate overall progress.
+
+The selected job in **Saved import jobs** shows its current status. For a job
+that completed, including one that completed with errors, choose **Open original
+destination** to view the recorded folder in Mail. This also works from saved
+history. If that folder is unavailable, the result stays open with its counts.
 
 Before reading a file, Morrow copies it in 64 KiB chunks to a mode-0600 private
 snapshot, hashes it and compares source inode/device/size/mtime/ctime before and
