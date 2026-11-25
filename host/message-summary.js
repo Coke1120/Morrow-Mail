@@ -140,7 +140,7 @@ function createSummaryService({ readMessage, complete = (...args) => require("./
       const check = () => {
         if (controller?.signal.aborted) throw error("summary-cancelled", "Summary cancelled or timed out. Choose Summary to try again.");
         if (plan.stamp !== aiContext.stamp() || plan.stamp !== require("./ai-consent").getConsent().stamp()) {
-          throw error("ai-consent-required", "AI settings or permission changed. Choose Summary again after reviewing AI data permission.");
+          throw error("ai-consent-required", "The saved AI connection changed. Choose Summary again.");
         }
         if (sourceVersion(readMessage(params)) !== plan.version) throw error("message_changed", "The message content changed. Choose Summary again for the current text.");
       };

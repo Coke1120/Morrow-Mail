@@ -24,8 +24,6 @@ const accountSettings = window.morrowChatgptSettings.mount({
   consentContainer: document.getElementById("ai-data-settings"),
   invoke: (channel, input) => authActions[channel](input),
   onChange: changed,
-  onSave: saveConnection,
-  onReviewConnection: () => baseUrl.focus(),
   onContext: () => { operation++; statusNode.textContent = ""; },
   onMode: chatgpt => { document.getElementById("api-fields").hidden = chatgpt; },
 });
@@ -111,9 +109,9 @@ document.getElementById("fetch").onclick = async () => {
 };
 document.getElementById("test").onclick = async () => {
   const input = draft(), owner = ++operation, view = viewRevision, context = accountSettings.context();
-  statusNode.textContent = "Contacting the model… This uses the selected provider's usage.";
+  statusNode.textContent = "Checking the saved connection…";
   try {
-    const result = await bridge.test(input);
+    const result = await bridge.test({ ...input, ...(input.authMode === "chatgpt" ? { accountId: accountSettings.accountId() } : {}) });
     if (current(owner, view, input, context)) statusNode.textContent = result.ok ? `Connected. ${result.preview}` : result.message;
     else if (owner === operation && view === viewRevision) statusNode.textContent = "Settings changed. Test the current settings again.";
   } catch (error) {

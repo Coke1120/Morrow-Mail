@@ -439,8 +439,8 @@ function registerHostAi() {
   ipcMain.handle("host:aiSaveConfig", (_event, input) => updateGate.run(() => saveConfig(input)));
   ipcMain.handle("host:aiTest", async (_event, input) => {
     try {
-      // Renderer sends the visible form values so a dirty form is tested as
-      // shown. Blank fields keep using the saved config.
+      // Check the visible target against the saved connection before sending a
+      // fixed test prompt. Blank inputs keep the saved fields.
       const saved = loadConfig();
       const draft = input && typeof input === "object" ? input : {};
       const cfg = {
@@ -450,11 +450,14 @@ function registerHostAi() {
         model: typeof draft.model === "string" && draft.model.trim() ? draft.model.trim() : saved.model,
         apiKey: typeof draft.apiKey === "string" && draft.apiKey.trim() ? draft.apiKey.trim() : saved.apiKey,
       };
+      if (cfg.authMode === "chatgpt" && (!draft.accountId || draft.accountId !== auth().status().activeId)) {
+        throw new Error("The active ChatGPT account changed. Refresh the connection and test again.");
+      }
       if (cfg.authMode !== "chatgpt" && !cfg.apiKey) throw new Error("Add an API key in Morrow Mail → AI Setup.");
-      const text = await complete([
+      const text = await require("./ai-context").operation(() => complete([
         { role: "system", content: "Reply with one short sentence and nothing else." },
         { role: "user", content: "Say hello in five words or fewer." },
-      ], { temperature: 0, config: cfg });
+      ], { temperature: 0, config: cfg }));
       const preview = String(text).replace(/\s+/g, " ").trim().slice(0, 160);
       return { ok: true, preview: preview || "The model returned an empty reply." };
     } catch (error) {

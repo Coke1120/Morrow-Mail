@@ -138,7 +138,7 @@ function createAuth({ store = createStore(), fetcher = (...args) => fetch(...arg
     const active = data.registrations.find(r => r.id === data.activeId);
     return {
       available: store.available(), phase: pending?.phase || lastLogin.phase,
-      message: lastLogin.message, pending: !!pending, activeId: data.activeId,
+      message: lastLogin.message, pending: !!pending, activeId: data.activeId, connectionRevision: requestEpoch,
       connected: !!active?.connected && !ended.has(active?.id) && !signingOut.has(active?.id), planEnabled: planEnabled(active),
       expiresAt: active?.expiresAt || null, usagePaused: paused.has(active?.id),
       backgroundConsent: active?.backgroundConsent === true,

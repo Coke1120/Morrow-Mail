@@ -9600,7 +9600,7 @@ function messageSummaryError(view, error) {
   if (messageSummary !== view || !summaryMatches(state.email, view)) return;
   view.error = error instanceof Error ? error.message : String(error);
   view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
-    || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+    || /AI Setup|AI connection|API key|ChatGPT/i.test(view.error);
 }
 
 function finishMessageSummary(view) {
@@ -9726,7 +9726,7 @@ function renderMessageSummary(pane, email) {
   context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
   const scope = document.createElement("p");
   scope.className = "hint";
-  scope.textContent = "Check important details against the message. Uses your saved AI connection and AI data permission. Only this message's downloaded text and quoted history are included. Attachment files, linked pages and other messages are excluded. English summaries follow ASD-STE100-inspired plain-language principles; formal compliance is not verified. Cancellation cannot recall data already sent.";
+  scope.textContent = "Check important details against the message. Uses your saved AI connection. Only this message's downloaded text and quoted history are included. Attachment files, linked pages and other messages are excluded. English summaries follow ASD-STE100-inspired plain-language principles; formal compliance is not verified. Cancellation cannot recall data already sent.";
   const coverage = document.createElement("p");
   coverage.className = "hint"; coverage.dataset.role = "summary-coverage";
   const limits = document.createElement("p");
@@ -21137,7 +21137,7 @@ function prefRows() {
     ["pref-sync-horizon", "morrow:configGetSyncHorizonDays", "morrow:configSetSyncHorizonDays", "days"],
     ["pref-compact-list", "morrow:configGetCompactMessageList", "morrow:configSetCompactMessageList", "bool"],
     ["pref-snooze", "morrow:configGetSnoozeEffective", "morrow:configSetSnoozeEffective", "bool"],
-    ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool"],
+    ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool-select"],
     ["pref-agent-read-done", "morrow:configGetMarkReadCompletesAgentTodos", "morrow:configSetMarkReadCompletesAgentTodos", "bool"],
     ["pref-folder-chips", "morrow:configGetShowFolderChips", "morrow:configSetShowFolderChips", "bool"],
     ["pref-gmail-folders", "morrow:configGetSidebarGmailFoldersExpanded", "morrow:configSetSidebarGmailFoldersExpanded", "bool"],
@@ -21147,6 +21147,7 @@ function prefRows() {
 
 function readPref(kind, control) {
   if (kind === "bool") return control.checked === true;
+  if (kind === "bool-select") return control.value === "true";
   if (kind === "seconds" || kind === "days") {
     const raw = String(control.value).trim();
     if (!/^-?\d+$/.test(raw)) return raw;
@@ -21160,7 +21161,7 @@ function applyPref(kind, control, value) {
     control.checked = value === true;
     return;
   }
-  control.value = value == null ? "" : String(value);
+  control.value = kind === "bool-select" ? String(value === true) : value == null ? "" : String(value);
 }
 
 function syncAccentPicker(value) {
@@ -21270,10 +21271,10 @@ async function loadBrainSettings() {
   if (version !== brainSettingsVersion || !$("settings").open) return;
   $("pref-brain-refresh").value = status.cadence;
   $("brain-refresh-permission").textContent = status.cadence === "manual"
-    ? "Manual only keeps automatic refresh off. Explicit AI actions still need AI data permission in Settings → AI."
+    ? "Manual only keeps automatic refresh off. Refresh and Rebuild are available on request."
     : status.backgroundAllowed
-    ? "Background AI permission is allowed for the saved connection. Changing frequency never grants permission."
-    : "Automatic refresh is paused until background AI data permission is allowed in Settings → AI. Changing frequency never grants permission.";
+    ? "Automatic processing is on for the saved connection."
+    : "Automatic refresh is paused. To enable it, choose Run background AI in Settings → AI.";
   $("brain-refresh-last").textContent = status.lastSuccessAt
     ? "Last successful refresh: " + formatBrainTime(status.lastSuccessAt) : "No successful profile refresh yet.";
   $("brain-refresh-next").textContent = status.running
@@ -21686,8 +21687,6 @@ function mountChatgptSettings() {
     chatgptSettings = window.morrowChatgptSettings.mount({
       container, consentContainer: $("ai-data-settings") || container, compact: true,
       invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
-      onSave: saveAiSettings,
-      onReviewConnection: () => $("ai-base").focus(),
       onContext: () => { aiOperation++; setAiStatus("", false); },
       onMode: (chatgpt) => {
         for (const id of ["ai-api-base-field", "ai-api-model-field", "ai-api-key-field"]) if ($(id)) $(id).hidden = chatgpt;
@@ -21915,11 +21914,9 @@ async function testAiConnection() {
   const view = aiViewRevision;
   const input = aiSettingsDraft();
   const context = chatgptSettings?.context?.();
-  // Test what the form shows, including unsaved edits. A blank key still falls
-  // back to the saved key on the host, matching Save and Fetch models.
-  setAiStatus(aiDirty() ? "Testing the unsaved values in this form…" : "Contacting the model…", false);
+  setAiStatus("Checking the saved connection…", false);
   try {
-    const result = await api.invoke("host:aiTest", input);
+    const result = await api.invoke("host:aiTest", { ...input, ...(input.authMode === "chatgpt" ? { accountId: chatgptSettings.accountId() } : {}) });
     if (!aiRequestCurrent(operation, view, input, context)) {
       if (operation === aiOperation && view === aiViewRevision) setAiStatus("Settings changed. Test the current settings again.", false);
       return;
@@ -28771,7 +28768,7 @@ function botProactiveForm(grant) {
   for (const input of [url, fields.platform, clear, allow]) input.addEventListener("input", showAuthentication);
   showAuthentication();
   const review = document.createElement("p"); review.className = "hint";
-  review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from Settings → AI data permission.";
+  review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from automatic processing in Settings → AI.";
   form.append(review);
   for (const input of [...Object.values(fields), ...accountInputs]) {
     if (input !== allow) input.addEventListener("input", () => { allow.checked = false; showAuthentication(); });

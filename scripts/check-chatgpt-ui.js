@@ -30,6 +30,10 @@ class Element {
     const found = DomUtils.findAll(node => selector.startsWith("#") ? node.attribs?.id === selector.slice(1) : selector === "[data-ai-provider]" ? Object.hasOwn(node.attribs || {}, "data-ai-provider") : false, this.node.children || []);
     return found.map(node => this.document.wrap(node));
   }
+  insertAdjacentHTML(position, html) {
+    assert.equal(position, "beforeend");
+    for (const child of parseDocument(html).children) this.appendChild(this.document.wrap(child));
+  }
   replaceChildren(...nodes) { this.node.children = nodes.map(node => node.node); for (const child of this.node.children) child.parent = this.node; }
   appendChild(node) { this.node.children ||= []; this.node.children.push(node.node); node.node.parent = this.node; return node; }
   append(...nodes) { for (const node of nodes) this.appendChild(node); }
@@ -94,8 +98,7 @@ async function run() {
   assert.equal($("chatgpt-login").textContent, "Continue with ChatGPT");
   assert.equal(calls.filter(row => row.channel === "host:chatgptStart").length, 0, "selecting the option never opens the browser");
   assert.equal($("ai-api-key-field").hidden, true);
-  assert.equal($("ai-consent-manual").checked, false);
-  assert.equal($("ai-consent-background").checked, false);
+  assert.equal($("ai-automatic-processing").value, "manual");
   assert.equal(ui.run("aiDirty()"), true);
   snapshot = { ...snapshot, available: false, message: "Synthetic secure storage locked" };
   await $("chatgpt-refresh").fire("click");
@@ -129,8 +132,8 @@ async function run() {
   snapshot = { ...snapshot, pending: false, connected: true, planEnabled: true, activeId: "synthetic-account", accounts: [{ id: "synthetic-account", label: "Synthetic account · 123456", connected: true }], message: "Connected", welcome: true };
   await ui.run("chatgptSettings.refresh()");
   assert.equal($("chatgpt-signout").disabled, false);
-  assert.equal($("chatgpt-welcome").hidden, false);
-  assert.equal($("ai-consent-allow").disabled, true, "unsaved mode must be saved before permission");
+  assert.equal($("chatgpt-welcome"), null);
+  assert.equal($("ai-automatic-processing").disabled, true, "save the selected mode before enabling background AI");
   await ui.run("fetchAiModels()");
   assert.deepEqual($("chatgpt-model").options.map(row => row.textContent), ["Choose an available ChatGPT model", "Synthetic Sol"]);
   $("chatgpt-model").value = "synthetic-sol"; await $("chatgpt-model").fire("change");
@@ -138,18 +141,18 @@ async function run() {
   assert.equal(config.authMode, "chatgpt"); assert.equal(config.chatgptModel, "synthetic-sol");
   assert.equal(config.baseUrl, "https://synthetic.invalid/v1"); assert.equal(config.model, "original-model");
   await new Promise(done => setImmediate(done));
-  $("ai-consent-manual").checked = true; await $("ai-consent-manual").fire("change");
-  $("ai-consent-background").checked = true;
-  await $("ai-consent-allow").fire("click");
+  $("ai-automatic-processing").value = "automatic";
+  await $("ai-automatic-processing").fire("change");
   assert.equal(calls.at(-1).input.background, true);
-  assert.match($("ai-consent-status").textContent, /Background AI allowed/);
+  assert.equal($("ai-automatic-processing").value, "automatic");
   await ui.run("testAiConnection()");
   assert.equal(calls.at(-1).input.authMode, "chatgpt");
   assert.equal(calls.at(-1).input.chatgptModel, "synthetic-sol");
   await $("chatgpt-signout").fire("click");
   assert.match($("chatgpt-status").textContent, /revocation not confirmed/);
-  await $("ai-consent-revoke").fire("click");
-  assert.equal($("ai-consent-background").checked, false);
+  $("ai-automatic-processing").value = "manual";
+  await $("ai-automatic-processing").fire("change");
+  assert.equal($("ai-automatic-processing").value, "manual");
   $("ai-auth-mode").value = "api_key"; await $("ai-auth-mode").fire("change");
   await ui.run("saveAiSettings()");
   assert.equal($("chatgpt-panel").hidden, true);
@@ -158,18 +161,17 @@ async function run() {
   assert.equal(config.authMode, "api_key");
   const feature = require("../renderer/features-catalog").items.find(row => row.id === "ai-connection");
   assert.ok(feature);
-  for (const claim of ["Sign in with ChatGPT", "Cancel", "paste-back", "separate background opt-in", "Native and live", "newer edits unsaved", "fresh retry", "current settings", "AI data permission"]) assert.ok(feature.blurb.includes(claim), claim);
-  for (const claim of ["ChatGPT", "credentials are not exposed", "API key/custom endpoint", "no general-purpose"]) assert.ok($("cli-ai-connection").textContent.includes(claim), claim);
+  for (const claim of ["Sign in with ChatGPT", "Run background AI", "Timeline and Case", "one-time callback"]) assert.ok(feature.blurb.includes(claim), claim);
+  assert.match($("cli-ai-connection").textContent, /saved connection.*start an AI action/);
   ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   ui.run("paintFeatureCatalog()");
   assert.match($("features-catalog").textContent, /ChatGPT or API key/);
-  assert.match($("features-catalog").textContent, /Background profile refresh/);
-  assert.match($("features-catalog").textContent, /Save keeps newer edits unsaved/);
+  assert.match($("features-catalog").textContent, /Run background AI/);
   assert.match($("chatgpt-manual").textContent, /fresh attempt immediately/);
-  assert.match($("ai-connection-details").textContent, /edits made while saving remain unsaved/);
+  assert.equal($("ai-connection-details"), null);
   for (const source of [html, setup]) assert.ok(source.includes("chatgpt-settings.js"));
   assert.ok(setup.includes('id="ai-account-settings"'));
-  assert.ok(setup.includes("Results from older tests or changed settings are ignored."));
+  assert.ok(setup.includes("Save the connection before testing it."));
   assert.ok(!/localStorage|sessionStorage|console\./.test(component));
   // Execute the actual native Setup controller with the same shared component.
   // This checks its renderer logic; it does not instantiate an Electron window.
