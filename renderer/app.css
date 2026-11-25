@@ -2449,6 +2449,11 @@ button.signature-pick .hint { display: block; font-weight: 400; }
   font-weight: 650;
 }
 
+.agent-mailbox {
+  color: var(--ink-mid);
+  font-size: 12px;
+}
+
 .agent-item .agent-summary {
   margin-top: 4px;
   color: var(--ink-mid);
