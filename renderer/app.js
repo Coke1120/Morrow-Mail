@@ -10256,9 +10256,11 @@ function renderBody(pane, email, refresh) {
     pane.appendChild(bodyRetryButton(email, refresh));
   } else if (!isLocalMail(email) && !email?.isDraft && (email?.unsubscribeChecked === false || email?.dsnRedraftAvailable
       || state.accounts.some(account => account.id === email?.accountId && (account.mailTransport === "gmail_api"
-        || account.folders?.primary?.some(folder => folder.id === email.folderId && folder.wellKnownName === "sentitems"))))) {
+        || String(email.folderId || "").toUpperCase() === "INBOX"
+        || account.folders?.primary?.some(folder => folder.id === email.folderId
+          && (folder.wellKnownName === "inbox" || folder.wellKnownName === "sentitems")))))) {
     // Older corrupted bodies can contain no replacement characters and carry no
-    // warning. Older Sent caches may lack delivery-failure review evidence.
+    // warning. Older Inbox and Sent caches may lack delivery-failure review evidence.
     // Keep reloading explicit without a download on ordinary open.
     pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }

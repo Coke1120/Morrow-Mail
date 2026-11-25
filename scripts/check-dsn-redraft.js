@@ -111,7 +111,7 @@ function owner(id) {
   return { senderFrame: mainFrame, sender: { id, mainFrame, isDestroyed: () => false } };
 }
 
-async function rendererChecks(invoke, email, waiting, mailAccount, temp) {
+async function rendererChecks(invoke, email, waiting, legacy, mailAccount, temp) {
   const app = fs.readFileSync(require.resolve("../renderer/app.js"), "utf8");
   const preload = fs.readFileSync(require.resolve("../renderer/preload.js"), "utf8");
   const html = fs.readFileSync(path.join(__dirname, "../renderer/index.html"), "utf8");
@@ -120,13 +120,19 @@ async function rendererChecks(invoke, email, waiting, mailAccount, temp) {
   const document = window.document;
   const $ = id => document.getElementById(id);
   const invokes = [];
+  let reloadResult;
   const reviews = owner(7);
   const context = dom.getInternalVMContext();
   try {
     vm.runInNewContext(preload, { require(name) {
       assert.equal(name, "electron");
       return { contextBridge: { exposeInMainWorld(key, api) { window[key] = api; } }, ipcRenderer: {
-        async invoke(channel, payload) { invokes.push([channel, payload]); return invoke(channel, payload, reviews); },
+        async invoke(channel, payload) {
+          invokes.push([channel, payload]);
+          const result = invoke(channel, payload, reviews);
+          if (channel === "mail:openEmail") reloadResult = result;
+          return result;
+        },
         on() {}, removeListener() {}, send() {},
       } };
     } });
@@ -146,11 +152,28 @@ async function rendererChecks(invoke, email, waiting, mailAccount, temp) {
     const fixture = window.fixture;
     fixture.state.accounts = [mailAccount];
     fixture.state.accountId = mailAccount.id;
-    fixture.state.folderId = "INBOX";
-    fixture.state.email = email;
+    fixture.state.folderId = "Archive";
+    fixture.state.email = legacy;
     fixture.wire();
     fixture.renderReader(false);
     const action = () => $("reader").querySelector('[data-action="dsn-redraft"]');
+    assert.equal(action(), null);
+    const reload = $("reader").querySelector('[data-action="retry-body"]');
+    assert.equal(reload?.textContent, "Reload message");
+    assert.equal(reloadResult, undefined, "rendering a cached Inbox report does not reopen it");
+    reload.click();
+    const opens = invokes.filter(([channel]) => channel === "mail:openEmail");
+    assert.equal(opens.length, 1);
+    const [, request] = opens[0];
+    assert.deepEqual([request.accountId, request.emailId, request.full, request.retry], [legacy.accountId, legacy.id, true, true]);
+    await reloadResult;
+    await tick();
+    assert.ok(action(), "the reloaded report can now be reviewed");
+
+    fixture.state.folderId = "INBOX";
+    fixture.state.email = email;
+    fixture.state.thread = [];
+    fixture.renderReader(false);
     assert.equal(action().getAttribute("aria-label"), "Review delivery report");
     assert.equal(action().getAttribute("aria-haspopup"), "dialog");
     assert.equal(action().querySelector("svg").getAttribute("aria-hidden"), "true");
@@ -330,8 +353,19 @@ async function run() {
     assert.equal(count(accountId), 0);
 
     const beforeReport = db.messageById(inbox.id), beforeSent = db.messageById(original.id);
+    const legacySource = await fetched(24, report());
+    await ingest(accountId, "INBOX", [legacySource]);
+    const legacy = find(accountId, "INBOX", legacySource.uid);
+    db.updateMessage(legacy.id, { dsn_redraft_json: null });
+    const cachedReport = (await ipc("mail:openEmail", target(legacy))).data.email;
+    assert.deepEqual([cachedReport.bodyComplete, cachedReport.unsubscribeChecked, cachedReport.dsnRedraftAvailable],
+      [true, true, false]);
+    assert.equal(providerReads, 0, "opening the cached report uses the complete body");
+    fixtureClient = imap([legacySource]);
     await rendererChecks(ipc, opened.data.email, (await ipc("mail:openEmail", target(waiting))).data.email,
-      engine.accountViews().find(account => account.id === accountId), temp);
+      cachedReport, engine.accountViews().find(account => account.id === accountId), temp);
+    fixtureClient = null;
+    assert.equal(providerReads, 1, "Reload message fetches the report once");
     const saved = review(inbox).data;
     assert.equal(saved.alreadySaved, true);
     assert.equal(save(inbox, preview.review, { to: "extra@example.test" }).data.draftId, saved.draftId);
@@ -366,10 +400,11 @@ async function run() {
     assert.equal(review(partial).error.code, "dsn_manual");
     assert.equal(review(find(accountId, "INBOX", 22)).error.code, "dsn_manual", "an attachment in original MIME blocks even without BODYSTRUCTURE");
     assert.equal(review(find(accountId, "INBOX", 23)).error.code, "dsn_manual", "an address in the original recipient’s display name is not evidence");
+    const readsBeforePartial = providerReads;
     fixtureClient = imap([large]);
     assert.equal((await ipc("mail:openEmail", target(partial, { full: true }))).data.email.dsnRedraftAvailable, true);
     fixtureClient = null;
-    assert.equal(providerReads, 1);
+    assert.equal(providerReads - readsBeforePartial, 1);
     await ingest(accountId, "INBOX", [large]);
     const htmlReview = review(partial).data;
     const storedHtml = find(accountId, "Sent", 11).html_body;
