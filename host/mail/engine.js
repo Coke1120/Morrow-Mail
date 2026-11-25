@@ -2,6 +2,7 @@ const { gate: updateGate } = require("../update-quiescence");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const crypto = require("crypto");
 const deliveryReceipt = require("./delivery-receipt");
+const sentFollowup = require("./sent-followup");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -683,6 +684,8 @@ function publicAttachment(item) {
 function listRow(row, generations, memberships, includeDraftTo = false) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
+  delete recipientHeaders.followupReply;
+  delete recipientHeaders.followupConfirmedRecipient;
   const sender = row.from_address || row.from_addr || "";
   const parsedAddress = composePolicy.address(sender);
   const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
@@ -1292,6 +1295,38 @@ const activeFolder = new Map();
 const backgroundCursor = new Map();
 const syncGates = new Map();
 const syncScopes = new Map();
+const followupCoverage = new Map();
+const followups = sentFollowup.createFollowups({
+  db,
+  selfAddresses: account => composeIdentity.accountIdentity(account).sendAs.map(identity => identity.email),
+  hasCoverage: sentFollowupHasCoverage,
+});
+
+function noteFollowupCoverage(account, folderId, started, days, complete) {
+  const key = JSON.stringify([account.id, folderId]);
+  const folder = complete && db.folderByPath(account.id, folderId);
+  if (!folder?.uid_validity || !windowOpen(folder, days)) {
+    followupCoverage.delete(key);
+    return;
+  }
+  followupCoverage.set(key, { started, since: windowStart(days, started), createdAt: account.created_at,
+    epoch: accountEpochs.get(account.id) || 0, validity: folder.uid_validity });
+}
+
+function sentFollowupHasCoverage(account, sentAt, dueAt) {
+  if (!bodyOnline || account.auth_error || !gateOpen(account.id)) return false;
+  const folders = account.profile === "gmail" || account.mail_transport === "gmail_api"
+    ? [db.folderByWellKnown(account.id, "all")].filter(Boolean)
+    : db.foldersFor(account.id).filter(folder => !sentFollowup.excludedReplyFolders.has(folder.well_known));
+  return folders.length > 0 && folders.every(folder => {
+    const key = JSON.stringify([account.id, folder.path]);
+    const proof = followupCoverage.get(key);
+    const state = syncScopes.get(key)?.state;
+    return proof && state !== "error" && state !== "paused" && proof.createdAt === account.created_at
+      && proof.epoch === (accountEpochs.get(account.id) || 0) && proof.validity === folder.uid_validity
+      && proof.started >= Math.max(sentAt, dueAt) && (proof.since == null || proof.since <= sentAt);
+  });
+}
 let syncState = {
   state: "idle",
   phase: "idle",
@@ -1689,7 +1724,7 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
         horizonDays: days,
         uidCursor: cursor,
       }, () => assertAccountCurrent(account));
-      return { paused: false, bootstrapped: true };
+      return { paused: false, bootstrapped: true, followupComplete: true };
     }
     if (pages > 0) await sleep(pageDelayMs());
     assertAccountCurrent(account);
@@ -1718,7 +1753,10 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
     emitFolderSync(account.id, folderPath, true);
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
     pages += 1;
-    if (missing.length <= size) return { paused: false, bootstrapped: true };
+    if (missing.length <= size) {
+      return { paused: false, bootstrapped: true,
+        followupComplete: page.every(uid => fetched.messages.some(message => message.uid === uid)) };
+    }
   }
   return { paused: false, bootstrapped: false };
 }
@@ -1730,6 +1768,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
   const pageCap = limits && limits.oneBatch ? 1 : REFRESH_PAGES.length;
   const deadline = limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs();
   let backlog = false;
+  let completePages = true;
   for (let index = 0; index < pageCap; index += 1) {
     assertAccountCurrent(account);
     if (index > 0 && Date.now() >= deadline) break;
@@ -1746,6 +1785,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
     assertAccountCurrent(account);
     const page = fresh.slice(0, REFRESH_PAGES[index]);
     const fetched = await remote.fetchMessages(client, folder.path, page);
+    completePages &&= page.every(uid => fetched.messages.some(message => message.uid === uid));
     assertAccountCurrent(account);
     const arrivals = folder.well_known === "inbox" && Number(fetched.validity || found.validity) === Number(folder.uid_validity)
       ? fetched.messages.filter(message => {
@@ -1823,7 +1863,12 @@ async function warmFolder(client, account, folder, started, days, limits) {
     flagCursors.set(flagKey, { validity: live.validity, uid: flagUids[flagUids.length - 1] });
   }
   if (flagsChanged) broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
-  return { paused: false, bootstrapped: true };
+  const caughtUp = completePages && Array.isArray(live.uids) && !live.uids.some(uid => uid > next);
+  // A provider can omit a requested UID earlier in a window. The cursor alone
+  // cannot prove absence when an actual due reminder needs an answer.
+  const missing = caughtUp && db.hasDueSentFollowup(account.id, started)
+    && db.missingUidsFor(account.id, folder.path, live.uids, live.validity).length > 0;
+  return { paused: false, bootstrapped: true, followupComplete: caughtUp && !missing };
 }
 
 async function syncFolderPolicy(client, account, folderPath, limits) {
@@ -1852,6 +1897,9 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
       // whole per-user minute, so this pass stays on the smaller paced page.
       const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE,
         deadline: bounds.deadline, shouldYield: () => priorityWaiting(account.id) });
+      // A resumed history page can complete an old observation. Count only a
+      // current, fully drained delta after this mailbox was bootstrapped.
+      noteFollowupCoverage(account, folderPath, started, days, result.followupComplete === true);
       assertAccountCurrent(account);
       notifications.enqueue(account, result.arrivals || []);
       clearStrikes(account.id);
@@ -1868,6 +1916,7 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
         shouldYield: () => Date.now() >= bounds.deadline || priorityWaiting(account.id),
       });
     }
+    noteFollowupCoverage(account, folderPath, started, days, result.followupComplete === true);
     if (!result.paused) clearStrikes(account.id);
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
@@ -2147,6 +2196,7 @@ function idleWake() {
 
 function idleOffline() {
   bodyOnline = false;
+  followupCoverage.clear();
   bodyProgress.changed();
   if (idleController) idleController.offline();
 }
@@ -4679,6 +4729,8 @@ async function fileSentMessage(account, password, options, info, messageId, extr
   const when = new Date();
   const keptId = (info && info.messageId) || messageId;
   const files = (extra && extra.files) || [];
+  const receipt = deliveryReceipt.fromSmtp(info, messageId);
+  const confirmedRecipient = sentFollowup.confirmation(receipt.accepted, receipt.rejected, options);
   if (sent) {
     db.insertMessage({
       id: emailId,
@@ -4704,7 +4756,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       bodyComplete: true,
       dsnRedraft: !files.length && dsn.messageId(keptId)
         ? dsn.originalEvidence(options.html ? (options.text?.trim() ? "both" : "html") : "text", deliveryReceipt.addresses(info?.accepted)) : null,
-      recipientHeaders: { replyTo: [] },
+      recipientHeaders: { replyTo: [], ...(confirmedRecipient ? { followupConfirmedRecipient: confirmedRecipient } : {}) },
       inReplyTo: (extra && extra.inReplyTo) || null,
     });
     if (account.mail_transport === "gmail_api" && info?.providerId) {
@@ -5240,6 +5292,15 @@ function answer(channel, args, event) {
       return ok(cachedList(params));
     case "mail:getSyncStatus":
       return ok(publicSync(params));
+    case "mail:sentFollowups":
+      try {
+        const result = followups.answer(params);
+        if (params?.action !== "open") return ok(result);
+        const row = db.messageById(result.emailId);
+        return ok({ email: detailOf(row) });
+      } catch (error) {
+        return fail("sent_followup", error.message);
+      }
     case "mail:getBodySyncStatus":
       return ok(bodySyncSnapshot());
     case "mail:getIncompleteBodyTarget": {

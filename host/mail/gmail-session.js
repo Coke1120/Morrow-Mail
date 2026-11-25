@@ -209,17 +209,20 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     if (labels.includes("SENT") && !deliveryReport && complete && bodyTreeComplete && inspectedMime && !attachments.length) {
       dsnRedraft = dsn.original(headerBytes, parsed, decodedQuality);
     }
+    const replyHeaders = recipientHeaders(headerBytes, parsed.replyTo, receivedDate ? Number(data.internalDate) : null);
+    const reaction = list.some(part => String(part.mimeType || "").split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json");
+    if (reaction && replyHeaders.followupReply) replyHeaders.followupReply = { kind: "automatic" };
     return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
       inReplyTo: parsed.inReplyTo || null, subject: presented.subject, from: stringAddresses(parsed.from).join(", "),
       fromAddress: parsed.from?.value?.[0]?.address || "",
       fromDisplayName: parsed.from?.value?.[0]?.name || "",
-      to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: recipientHeaders(headerBytes, parsed.replyTo),
+      to: stringAddresses(parsed.to), cc: stringAddresses(parsed.cc), bcc: stringAddresses(parsed.bcc), recipientHeaders: replyHeaders,
       listUnsubscribe: require("./list-unsubscribe").parseHeaders(headerBytes),
       date: date.toISOString(), dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
       listSortTs: date.getTime(), snippet: decoding.snippet(data.snippet || textEncoding.htmlToPlain(presented.textBody || presented.htmlBody).replace(/\s+/g, " ")),
       unread: labels.includes("UNREAD"), starred: labels.includes("STARRED"), isDraft: labels.includes("DRAFT"),
-      replyInferenceEligible: !bodyWarning && inspectedMime && !list.some(part => String(part.mimeType || "").split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json"),
+      replyInferenceEligible: !bodyWarning && inspectedMime && !reaction,
       replied: null, forwarded: null, // Gmail labels expose neither state.
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
       htmlBody: presented.htmlBody, textBody: presented.textBody, decoding: decodedQuality, bodyComplete: complete, bodyWarning, dsnRedraft };
@@ -328,7 +331,10 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       save();
     }
     const replyCandidates = () => selected.provider_id === "SENT" ? db.gmailReplyBackfillPage(account.id, path) : [];
-    const result = () => ({ paused: false, arrivals, bootstrapped: !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken && !replyCandidates().length });
+    const result = (currentDelta = false) => {
+      const bootstrapped = !!state.complete && !state.pending && !state.verifyNeeded && !state.historyPageToken && !replyCandidates().length;
+      return { paused: false, arrivals, bootstrapped, followupComplete: currentDelta && bootstrapped };
+    };
     // Repair only already-cached Sent candidates, at most two full reads per
     // pass, inside the existing twenty-read/time/foreground budget. Adoption
     // commits the MIME inspection and any inferred indicators together; there
@@ -353,6 +359,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       includeSpamTrash: ["TRASH", "SPAM"].includes(selected.provider_id), query: after == null ? "" : `after:${Math.floor(after / 1000)}`, limit };
     if (state.complete && state.historyId) {
       try {
+        const currentDelta = !state.historyPageToken;
         const page = await api.history({ startHistoryId: state.historyId, pageToken: state.historyPageToken || "", limit });
         const changed = new Set(), deleted = new Set(), added = new Set();
         for (const event of page.history) {
@@ -366,7 +373,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
         alive();
         db.transaction(() => { for (const providerId of deleted) db.pruneGmailCopies(account.id, providerId, []); save(); });
         await drainPage();
-        return result();
+        return result(currentDelta);
       } catch (error) { if (error.code !== "history_expired") throw error; state = { verifyNeeded: true }; }
     }
     if (!state.historyId) state = { ...state, horizonDays, historyId: String((await api.profile()).historyId || ""), pageToken: "", complete: false };

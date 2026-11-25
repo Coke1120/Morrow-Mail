@@ -1,0 +1,9 @@
+# Local follow-up reminders for Sent mail
+
+Morrow can remind a user to check a confirmed Sent message sent to one visible To address with no Cc or Bcc in the cached copy. A temporary local Sent copy is eligible only when the transport confirmed that one recipient. The reminder stores the account and exact source identity, the original recipient, and the chosen deadline in the local mail database. One account and source can have one active reminder. If its binding or original copy can no longer be proved, the entry stays available to change or dismiss, and opening the message is disabled.
+
+A reply needs a confirmed delivery in the same account with an exact direct In-Reply-To header, a single matching From address, and a server receive time at or after the original send. Subjects, conversation grouping, read flags and indirect references cannot clear the reminder. Marked automatic replies and delivery reports stay open. The ingest path retains only the small reply proof from the outer headers and existing delivery metadata. Historical or partial headers without enough evidence can leave a reminder at Check mailbox.
+
+At and after the deadline, an unfinished reminder shows No reply seen only when current sync coverage includes that send through the deadline. This requires a committed observation from the current app session for the applicable folders. An offline mailbox, pending history, sync error, unread UID gap or uncertain original can leave it at Check mailbox. The application uses its existing sync schedule and handles positive reply evidence independently of whether a full sync has completed. It makes no extra provider requests for reminders.
+
+The user can open the original downloaded message, change the deadline, or dismiss the entry. These actions are local and do not change send, read, or scheduled mail. Replies from a different address or without a direct reference may need manual dismissal.
