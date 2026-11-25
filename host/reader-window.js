@@ -270,6 +270,91 @@ function createReaderHost(options) {
     try { opener.send("reader:openFailed", { message: OPEN_FAILED }); } catch { /* the opener is gone */ }
   }
 
+  function receiptRecord(win) {
+    if (!win || !isVisibleReader(win)) return null;
+    const record = records.get(win.webContents.id);
+    return record?.win === win && record.url ? record : null;
+  }
+
+  // Capture the epoch from the original seeded open, before its result reaches
+  // the Reader. Subsequent opens cannot rebind an existing document.
+  function observeOpen(event, params) {
+    const record = records.get(event.sender.id);
+    const document = record?.receiptDocument;
+    const frame = event.senderFrame;
+    if (!document || document.openStarted || frame !== document.frame ||
+        !receiptDocumentCurrent(record, document) || params?.includeThread !== false ||
+        params?.accountId !== record.seed.accountId || params?.emailId !== record.seed.messageId) return null;
+    document.openStarted = true;
+    return reply => {
+      const email = reply?.data?.email;
+      if (reply?.success === true && receiptDocumentCurrent(record, document) &&
+          email?.id === record.seed.messageId && email.accountId === record.seed.accountId &&
+          Number.isSafeInteger(email.bodyEpoch) && email.bodyEpoch >= 0) document.bodyEpoch = email.bodyEpoch;
+    };
+  }
+
+  function receiptDocumentCurrent(record, document) {
+    const win = record.win;
+    return !document.controller.signal.aborted && !win.isDestroyed() &&
+      record.receiptDocument === document && records.get(win.webContents.id) === record &&
+      win.webContents.mainFrame === document.frame && !document.frame.detached && document.frame.url === record.url;
+  }
+
+  function receiptSource(win) {
+    const record = receiptRecord(win);
+    const document = record?.receiptDocument;
+    if (document?.bodyEpoch == null || !receiptDocumentCurrent(record, document)) return null;
+    const isCurrent = () => receiptDocumentCurrent(record, document);
+    return {
+      ...record.seed,
+      bodyEpoch: document.bodyEpoch,
+      signal: document.controller.signal,
+      isCurrent,
+      renderedIdentity() {
+        // Read the presentation from app.js's pane-keyed state in the verified
+        // main frame. Mail markup cannot set this choice.
+        if (!isCurrent()) return null;
+        return document.frame.executeJavaScript(`(() => {
+          if (location.href !== ${JSON.stringify(record.url)}) return null;
+          if (typeof state === "undefined" || pendingOpenId || pendingOpenBody || !state.email || state.email.bodyError) return null;
+          const { id, accountId, bodyEpoch } = state.email;
+          const choice = plainBodyViews.get($("reader"));
+          if (choice?.key !== JSON.stringify([accountId, id])) return null;
+          const presentation = choice.plain || !state.email.htmlBody ? "plain" : "html";
+          return { id, accountId, bodyEpoch, presentation };
+        })()`);
+      },
+    };
+  }
+
+  function trackReceiptDocument(record) {
+    const { win } = record;
+    const contents = win.webContents;
+    const retire = () => {
+      record.receiptDocument?.controller.abort();
+      record.receiptDocument = null;
+    };
+    contents.on("did-start-navigation", (details, _url, _inPlace, isMainFrame) => {
+      if (details?.isMainFrame ?? isMainFrame) retire();
+    });
+    contents.on("did-frame-navigate", (_event, url, _code, _status, isMainFrame, processId, routingId) => {
+      if (!isMainFrame) return;
+      retire();
+      const frame = contents.mainFrame;
+      if (url === record.url && frame?.url === record.url &&
+          frame.processId === processId && frame.routingId === routingId) {
+        record.receiptDocument = { frame, controller: new AbortController() };
+      }
+    });
+    contents.on("did-navigate-in-page", (_event, _url, isMainFrame) => {
+      if (isMainFrame) retire();
+    });
+    contents.on("render-process-gone", retire);
+    win.on("close", retire);
+    win.on("closed", retire);
+  }
+
   function open(seed, opener) {
     const clean = sanitizeReaderSeed(seed);
     let index = 0;
@@ -327,7 +412,12 @@ function createReaderHost(options) {
       if (isMainFrame === false) return;
       fail();
     });
-    const loading = mode() === "asar"
+    const external = mode() === "asar";
+    // The optional external renderer has its own UI and preload. The export's
+    // identity query is defined only for the bundled first-party document.
+    if (!external && opts.htmlFile) record.url = require("node:url").pathToFileURL(opts.htmlFile).href + "?role=reader";
+    if (record.url) trackReceiptDocument(record);
+    const loading = external
       ? win.loadURL("morrow://local/index.html?role=reader")
       : win.loadFile(opts.htmlFile, { query: { role: "reader" } });
     loading.catch(fail);
@@ -345,7 +435,7 @@ function createReaderHost(options) {
     return { open: open, records: records };
   }
 
-  return { open: open, register: register, records: records };
+  return { open, register, records, receiptRecord, receiptSource, observeOpen };
 }
 
 module.exports = {

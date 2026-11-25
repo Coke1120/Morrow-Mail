@@ -10,7 +10,7 @@ const { loadConfig, publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULT
 const { complete, extractJson, modelIds, listModels } = require("./openai-client");
 
 const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels", "host:aiConsentStatus", "host:aiConsentGrant", "host:aiConsentRevoke", "host:chatgptStatus", "host:chatgptStart", "host:chatgptCallback", "host:chatgptCancel", "host:chatgptSignOut", "host:chatgptSelect", "host:chatgptPreferences", "host:chatgptResumeUsage"];
-const { init: initMail, startBackgroundSync, resolveResumedDraftOwner } = require("./mail/engine");
+const { init: initMail, answer: mailAnswer, startBackgroundSync, resolveResumedDraftOwner } = require("./mail/engine");
 const { startupFailureDialog, startupStatusHtml, startupProgressScript, isStartupExternalUrl } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
@@ -25,6 +25,7 @@ const updater = require("./updater");
 const windowState = require("./window-state");
 const composeWindows = require("./compose-window");
 const readerWindows = require("./reader-window");
+const { createReceiptPdf } = require("./receipt-pdf");
 const translateWindows = require("./translate-window");
 const { gate: updateGate, requestRendererQuiescence } = require("./update-quiescence");
 const ZOOM_STEP = 0.5;
@@ -64,6 +65,13 @@ const singleInstance = app.requestSingleInstanceLock();
 let shellWindow = null;
 let shellSession = null;
 let shellOpening = null;
+let readerHost = null;
+const saveReceiptPdf = createReceiptPdf({
+  electron: { BrowserWindow, dialog, session },
+  sourceFor: win => readerHost?.receiptSource(win),
+  readCached: params => mailAnswer("mail:readCachedBody", [params]),
+  enabled: () => !updateGate.closed,
+});
 if (!singleInstance) {
   app.quit();
 } else {
@@ -192,7 +200,14 @@ function attachIpc(preloadFile) {
   for (const name of translateWindows.CHANNELS) directHost.add(name);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
-    ipcMain.handle(channel, (event, ...args) => updateGate.run(() => bus.handle(event, channel, ...args)));
+    ipcMain.handle(channel, (event, ...args) => updateGate.run(() => {
+      const observe = channel === "mail:openEmail" ? readerHost?.observeOpen(event, args[0]) : null;
+      const reply = bus.handle(event, channel, ...args);
+      return observe ? Promise.resolve(reply).then(result => {
+        observe(result);
+        return result;
+      }) : reply;
+    }));
     ipcMain.on(channel, (event, ...args) => {
       if (updateGate.closed) { event.returnValue = null; return; }
       bus.send(event, channel, ...args);
@@ -270,9 +285,18 @@ function sendShellAction(action) {
 function installMenu() {
   // Reload stays the View menu role. Zoom stays Plus, =, -, and 0.
   // macOS File → Close Window uses the same close event as the red button.
-  const fileMenu = process.platform === "darwin"
-    ? [{ label: "File", submenu: [{ role: "close" }] }]
-    : [];
+  const receiptItem = {
+    id: "save-receipt-pdf",
+    label: "Save message as PDF…",
+    enabled: false,
+    click: () => {
+      const focused = BrowserWindow.getFocusedWindow();
+      if (readerHost?.receiptRecord(focused)) void saveReceiptPdf(focused);
+    },
+  };
+  const fileMenu = [{ label: "File", submenu: [receiptItem,
+    ...(process.platform === "darwin" ? [{ type: "separator" }, { role: "close" }] : []),
+  ] }];
   const template = [
     {
       label: "Morrow Mail",
@@ -316,7 +340,15 @@ function installMenu() {
     },
     { role: "windowMenu" },
   ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+  const item = menu.getMenuItemById(receiptItem.id);
+  const updateReceiptItem = () => {
+    item.enabled = !!readerHost?.receiptRecord(BrowserWindow.getFocusedWindow());
+  };
+  const scheduleReceiptItemUpdate = () => setImmediate(updateReceiptItem);
+  app.on("browser-window-focus", scheduleReceiptItemUpdate);
+  app.on("browser-window-blur", scheduleReceiptItemUpdate);
 }
 
 function rememberWindow(win, includeZoom) {
@@ -948,14 +980,15 @@ app.whenReady().then(async () => {
       icon: APP_ICON,
       backgroundColor: () => (shellSession && shellSession.mode === "asar" ? "#193c34" : "#e7f0e4"),
     }).register();
-    readerWindows.createReaderHost({
+    readerHost = readerWindows.createReaderHost({
       getParent: () => shellWindow,
       preloadFile: () => shellSession && shellSession.preloadFile,
       mode: () => shellSession && shellSession.mode,
       htmlFile: FIRST_PARTY_HTML,
       icon: APP_ICON,
       backgroundColor: () => (shellSession && shellSession.mode === "asar" ? "#193c34" : "#e7f0e4"),
-    }).register();
+    });
+    readerHost.register();
     translateWindows.createTranslateHost({
       getParent: () => shellWindow,
       preloadFile: () => shellSession && shellSession.preloadFile,
