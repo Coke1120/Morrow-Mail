@@ -3,14 +3,33 @@
 window.morrowReplySelection = (() => {
   function includesObscuredText(body, range) {
     // Chromium can copy text that mail CSS makes transparent or zero-sized.
-    // Mail styles are resolved onto the sanitized elements by the Reader.
-    const view = body.ownerDocument.defaultView;
-    for (const element of body.querySelectorAll("[style], font[color]")) {
-      if (!range.intersectsNode(element) || !element.textContent.trim()) continue;
-      const style = view.getComputedStyle(element);
-      if (style.display === "none" || style.visibility === "hidden") continue;
-      if (style.opacity === "0" || style.fontSize === "0px" || style.color === "transparent" ||
-          /^rgba\([^)]*,\s*0\)$/.test(style.color)) return true;
+    const document = body.ownerDocument;
+    const view = document.defaultView;
+    const nodes = document.createNodeIterator(range.commonAncestorContainer, view.NodeFilter.SHOW_TEXT);
+    const styles = new Map();
+    function styleFor(element) {
+      if (!styles.has(element)) styles.set(element, view.getComputedStyle(element));
+      return styles.get(element);
+    }
+    for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
+      if (!range.intersectsNode(node)) continue;
+      const start = node === range.startContainer ? range.startOffset : 0;
+      const end = node === range.endContainer ? range.endOffset : node.length;
+      if (!node.data.slice(start, end).trim()) continue;
+
+      // A descendant can restore the font size or color of its own text.
+      const style = styleFor(node.parentElement);
+      if (style.visibility === "hidden") continue;
+      let obscured = style.fontSize === "0px" || style.color === "transparent" ||
+        /^rgba\([^)]*,\s*0\)$/.test(style.color);
+      // Ancestor opacity applies to the whole subtree. display:none text is not copied.
+      let element = node.parentElement;
+      for (; element !== body; element = element.parentElement) {
+        const { display, opacity } = styleFor(element);
+        if (display === "none") break;
+        if (opacity === "0") obscured = true;
+      }
+      if (element === body && obscured) return true;
     }
     return false;
   }
