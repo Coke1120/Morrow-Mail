@@ -886,6 +886,10 @@ async function assertReaderWindowMatchesShellActions() {
   shell.state.email = { ...email, bodyComplete: false };
   shell.renderReader(false);
   assert.equal(shell.reader.querySelector('[data-action="copy-local-message-link"]').disabled, true);
+  shell.state.accounts[0].needsReauth = true;
+  shell.state.email = email;
+  shell.renderReader(false);
+  assert.equal(shell.reader.querySelector('[data-action="copy-local-message-link"]').disabled, true);
 }
 
 module.exports = { run: main };

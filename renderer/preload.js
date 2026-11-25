@@ -341,6 +341,9 @@ contextBridge.exposeInMainWorld("morrow", {
   openReaderWindow(seed) {
     return ipcRenderer.invoke("reader:open", seed);
   },
+  openEmailForReader(payload) {
+    return ipcRenderer.invoke("mail:openEmail", { ...payload, bindReaderLocalLink: true });
+  },
   pullReaderSeed() {
     return ipcRenderer.invoke("reader:pullSeed");
   },

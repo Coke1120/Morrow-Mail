@@ -131,6 +131,7 @@ const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
 let pendingOpenBody = false;
+let shellLocalLinkBound = false;
 const latestBodies = new Map();
 const BODY_CACHE_LIMITS = Object.freeze({ entries: 32, bytes: 8 * 1024 * 1024, entryBytes: 2 * 1024 * 1024 });
 let latestBodyBytes = 0;
@@ -3673,8 +3674,8 @@ function envelopeError(result) {
   return null;
 }
 
-async function call(channel, payload) {
-  const result = await api.invoke(channel, payload);
+async function call(channel, payload, invoke) {
+  const result = await (invoke ? invoke(payload) : api.invoke(channel, payload));
   const message = envelopeError(result);
   if (message) {
     const error = new Error(message);
@@ -9410,7 +9411,7 @@ function localMessageLinkButton(email) {
   const account = state.accounts.find(item => item.id === email.accountId);
   const folder = foldersOf(account).find(item => item.id === email.folderId);
   const role = canonicalFolderRole(folder?.wellKnownName);
-  button.disabled = !email.bodyComplete || !!email.bodyWarning || email.folderId === "local-folder:trash" ||
+  button.disabled = !email.bodyComplete || !!email.bodyWarning || !!account?.needsReauth || email.folderId === "local-folder:trash" ||
     ["deleteditems", "junkemail", "drafts"].includes(role);
   return button;
 }
@@ -10319,6 +10320,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   const pane = $("reader");
   const emailView = state.email;
+  if (!pendingOpenId && (!emailView || emailView.bodyError || emailView.outbox)) clearShellReaderLocalLink();
   const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.encodingWarning, emailView?.bodyError,
     emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
     emailView?.unsubscribe?.kind, emailView?.unsubscribe?.destination, emailView?.unsubscribeChecked,
@@ -15146,9 +15148,15 @@ function readerCurrentId() {
   return pendingOpenId || (state.email && state.email.id) || "";
 }
 
+function clearShellReaderLocalLink() {
+  if (!shellLocalLinkBound) return;
+  shellLocalLinkBound = false;
+  api.invoke("reader:clearLocalMessageLink").catch(() => {});
+}
+
 function invalidateReaderOpen() {
   clearMessageSummary();
-  if (!isReaderWindow()) api?.invoke?.("reader:clearLocalMessageLink")?.catch?.(() => {});
+  clearShellReaderLocalLink();
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
@@ -15416,8 +15424,10 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
+    const openForReader = !isReaderWindow() && api?.openEmailForReader;
+    if (openForReader) shellLocalLinkBound = true;
     data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}),
-      includeThread: state.prefs.conversation !== false, bindReaderLocalLink: true, ...(full ? { full: true, retry: true } : {}) });
+      includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) }, openForReader);
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
