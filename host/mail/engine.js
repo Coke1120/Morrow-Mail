@@ -1001,9 +1001,11 @@ function listPayload(params) {
   const now = Date.now();
   const query = queryFrom(params);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
-  // A short first page already contains every literal match. It proves the
-  // exact count and oldest timestamp without scanning the folder a second time.
+  // A named folder combined with explicit mailbox pairs can repeat a row
+  // across SQL branches. Keep the database's independent count for that form.
+  const namedFolder = query.folderId || (query.folderKey && query.folderKey !== "primary");
   const firstFilterPage = query.listFilter && offset === 0 && query.limit === 200
+    && !(namedFolder && query.mailboxes?.length)
     ? db.selectMessages(query, { headersOnly: true, now }) : null;
   const completePage = firstFilterPage !== null && firstFilterPage.length < query.limit;
   const summary = completePage ? {

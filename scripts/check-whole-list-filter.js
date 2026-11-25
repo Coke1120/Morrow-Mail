@@ -61,6 +61,17 @@ test('literal list filter runs before count/sort/pagination in every downloaded 
     assert.equal(full.total, 420);
     assert.ok(summaries.mock.callCount() > 0, 'a full first page still needs an exact count');
   });
+  await t.test('combined folder and mailbox hints count a matching message once', async () => {
+    const box = { accountId: 'a', path: 'INBOX' };
+    const query = { ...scope, listFilter: 'final-unique' };
+    const single = await ask(query);
+    const overlap = await ask({ ...query, mailboxes: [box, box] });
+    assert.equal(overlap.total, 1);
+    assert.equal(overlap.syncedOldestDateTs, single.syncedOldestDateTs);
+    assert.deepEqual([...new Set(overlap.emails.map(row => row.id))], ['a-649']);
+    assert.equal(overlap.geometry.pageSize, overlap.emails.length);
+    assert.equal(overlap.hasMoreInCache, false);
+  });
   const cursor = (await ask(scope)).nextCursor;
   const staleCursor = await ask({ ...match, offset: 200, pageCursor: cursor });
   assert.equal(staleCursor.cursorReset, !!cursor); assert.equal(staleCursor.emails[0].id, 'a-430');
