@@ -1,0 +1,6 @@
+[
+  "reader-table-columns",
+  "Copy selected table columns from mail",
+  "Mail",
+  "In an HTML message, open Choose columns for a simple data table. Select columns in paste order, review the preview, then copy the visible data rows without headers. Paste into spreadsheet cells formatted as Text to keep leading zeros. Use manual copy for unsupported tables or values."
+]

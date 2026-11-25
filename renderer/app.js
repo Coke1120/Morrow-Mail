@@ -10429,7 +10429,10 @@ function renderBody(pane, email, refresh) {
   const body = document.createElement("div");
   const paint = () => {
     body.replaceChildren();
-    appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    const wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    if (pane.id === "reader" && !choice.plain && email?.htmlBody && typeof window !== "undefined") {
+      window.morrowReaderTableColumns?.mount(wrapper, email.htmlBody, parkMailStyleAttributes);
+    }
   };
   if (email?.htmlBody && email?.textBody?.trim()) {
     const toggle = document.createElement("button");

@@ -11,6 +11,7 @@ function mailbox(run) {
   run("check-outlook-sync-auth.js");
   run("check-mail-columns.js");
   run("check-mail-view.js");
+  run("check-reader-table-columns.js");
   run("check-mail-selection.js");
   run("check-dsn-redraft.js");
   run("check-folder-chips.js");
