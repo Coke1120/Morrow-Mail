@@ -1,4 +1,5 @@
 const { addresses } = require("../../shared/compose-policy");
+const { responseEvidence } = require("./sent-followup");
 
 function replyToAddresses(input) {
   const rows = Array.isArray(input) ? input : input?.value || [];
@@ -10,11 +11,17 @@ function replyToAddresses(input) {
 }
 
 // Store only recipient evidence, never the whole transport/header block.
-function recipientHeaders(source, replyTo) {
+function recipientHeaders(source, replyTo, receivedAt = null) {
   const result = { originalTo: [], deliveredTo: [], envelopeTo: [], replyTo: replyToAddresses(replyTo) };
-  const head = Buffer.from(source || "").toString("utf8").split(/\r?\n\r?\n/, 1)[0]
-    .replace(/\r?\n[ \t]+/g, " ");
-  for (const line of head.split(/\r?\n/)) {
+  const raw = Buffer.from(source || "").toString("utf8");
+  const end = raw.search(/\r?\n\r?\n/);
+  const head = (end < 0 ? raw : raw.slice(0, end)).replace(/\r?\n[ \t]+/g, " ");
+  const lines = head.split(/\r?\n/);
+  if (end > 0 && Buffer.byteLength(head) <= 64 * 1024) {
+    const evidence = responseEvidence(lines, receivedAt);
+    if (evidence) result.followupReply = evidence;
+  }
+  for (const line of lines) {
     const colon = line.indexOf(":");
     if (colon < 0) continue;
     const key = line.slice(0, colon).toLowerCase();

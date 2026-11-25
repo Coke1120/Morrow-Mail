@@ -337,6 +337,10 @@ function migrate() {
   run(`CREATE TABLE IF NOT EXISTS mail_notification_state (
     account_id TEXT PRIMARY KEY, state_json TEXT NOT NULL
   )`);
+  run(`CREATE TABLE IF NOT EXISTS sent_followups (
+    account_id TEXT NOT NULL, rfc_id TEXT NOT NULL, due_at INTEGER NOT NULL, source_json TEXT NOT NULL,
+    PRIMARY KEY (account_id, rfc_id)
+  )`);
   run("CREATE INDEX IF NOT EXISTS messages_gmail ON messages(account_id, gmail_id, folder_path)");
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
@@ -739,7 +743,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
-    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions", "imap_dispositions"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions", "imap_dispositions", "sent_followups"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -1339,6 +1343,13 @@ function localOutgoingAttachments(json) {
   return local.length ? local : null;
 }
 
+function retainedFollowupHeaders(row, incoming) {
+  let previous;
+  try { previous = JSON.parse(row.recipient_headers_json || "{}") || {}; } catch { return {}; }
+  if (!(previous.followupUnprovenAdoption || (!(row.uid > 0) && previous.followupConfirmedRecipient))) return {};
+  return { recipientHeaders: { ...incoming.recipientHeaders, followupUnprovenAdoption: true } };
+}
+
 function applyFolderSync(accountId, folderPath, report, budget = null) {
   if (report.gmail) {
     for (const message of report.messages) applyGmailMessage(accountId, [folderPath], message);
@@ -1396,9 +1407,10 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
       if (found?.draft_pending) continue;
       if (found && !message.bodyComplete) {
         const priorBody = get(`SELECT uid, uid_validity, body_complete, html_body, text_body, snippet, body_warning, decoding_json,
-          dsn_redraft_json, rfc_message_id, subject, from_addr, date_iso, to_json, cc_json, bcc_json FROM messages WHERE id = ?`, [found.id]);
+          dsn_redraft_json, rfc_message_id, subject, from_addr, date_iso, to_json, cc_json, bcc_json, recipient_headers_json FROM messages WHERE id = ?`, [found.id]);
         if (priorBody?.body_complete === 1) message = { ...message, htmlBody: priorBody.html_body, textBody: priorBody.text_body,
           snippet: priorBody.snippet, bodyComplete: true, bodyWarning: priorBody.body_warning, decoding: require("./mime-decoding").parse(priorBody.decoding_json),
+          ...retainedFollowupHeaders(priorBody, message),
           ...(priorBody.uid === message.uid && priorBody.uid_validity === report.validity ? { dsnRedraft: dsnForRetainedBody(priorBody, message) } : {}) };
       }
       const id = found ? found.id : (message.id || newMessageId());
@@ -1633,6 +1645,42 @@ function uniqueSentByRfc(accountId, folderPath, rfcMessageId) {
   const rows = all(`SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND rfc_message_id = ? LIMIT 2`,
     [accountId, folderPath, rfcMessageId]);
   return rows.length === 1 ? messageById(rows[0].id) : null;
+}
+
+function sentFollowupSources(accountId, rfcId, bareId) {
+  return all(`SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.gmail_id,
+    m.date_iso, m.date_source, m.subject, m.from_addr, m.from_address, m.to_json, m.cc_json,
+    m.bcc_json, m.recipient_headers_json, m.body_complete FROM messages m
+    JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
+    WHERE m.account_id = ? AND m.rfc_message_id IN (?, ?) AND f.well_known = 'sentitems'
+      AND m.is_draft = 0 AND m.draft_pending = 0 LIMIT 2`, [accountId, rfcId, bareId]);
+}
+
+function sentFollowupReplies(accountId, rfcId, bareId) {
+  return all(`SELECT id, account_id, folder_path, uid, uid_validity, gmail_id, is_draft, draft_pending,
+    from_addr, from_address, in_reply_to, recipient_headers_json, dsn_redraft_json
+    FROM messages WHERE account_id = ? AND in_reply_to IN (?, ?) AND is_draft = 0 LIMIT 201`, [accountId, rfcId, bareId]);
+}
+
+function allSentFollowups() {
+  return all("SELECT * FROM sent_followups ORDER BY due_at, account_id, rfc_id");
+}
+
+function hasDueSentFollowup(accountId, time) {
+  return !!get("SELECT 1 FROM sent_followups WHERE account_id = ? AND due_at <= ? LIMIT 1", [accountId, time]);
+}
+
+function sentFollowupById(accountId, rfcId) {
+  return get("SELECT * FROM sent_followups WHERE account_id = ? AND rfc_id = ?", [accountId, rfcId]);
+}
+
+function saveSentFollowup(accountId, rfcId, dueAt, source) {
+  transaction(() => run(`INSERT INTO sent_followups (account_id, rfc_id, due_at, source_json) VALUES (?, ?, ?, ?)
+    ON CONFLICT (account_id, rfc_id) DO UPDATE SET due_at = excluded.due_at`, [accountId, rfcId, dueAt, source]));
+}
+
+function deleteSentFollowup(accountId, rfcId) {
+  transaction(() => run("DELETE FROM sent_followups WHERE account_id = ? AND rfc_id = ?", [accountId, rfcId]));
 }
 
 function dsnForRetainedBody(prior, incoming) {
@@ -2839,6 +2887,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
         uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
         ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, bodyWarning: message.bodyWarning || found.body_warning,
           decoding: require("./mime-decoding").parse(found.decoding_json),
+          ...retainedFollowupHeaders(found, message),
           ...(found.uid === mapping.local_uid && found.uid_validity === account.gmail_generation
             ? { dsnRedraft: dsnForRetainedBody(found, message) } : {}) } : {}),
         ...(attachments ? { attachments, hasAttachments: true } : {}) };
@@ -3110,6 +3159,13 @@ module.exports = {
   messageByUid,
   messageByRfc,
   uniqueSentByRfc,
+  sentFollowupSources,
+  sentFollowupReplies,
+  allSentFollowups,
+  sentFollowupById,
+  hasDueSentFollowup,
+  saveSentFollowup,
+  deleteSentFollowup,
   pruneMissing,
   insertMessage,
   searchMessages,

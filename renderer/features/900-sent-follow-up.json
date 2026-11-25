@@ -1,0 +1,6 @@
+{
+  "id": "sent-follow-up",
+  "title": "Reminders for unanswered sent mail",
+  "category": "Mail",
+  "blurb": "From a confirmed Sent message to one recipient, choose Remind me if there’s no reply and set a local date and time. Follow-ups shows due reminders and opens the exact downloaded Sent message. A confirmed direct reply from that recipient in the same mailbox clears the reminder even if it was read elsewhere. Similar subjects, delivery reports and marked automatic replies leave it open. Check mailbox means the original or sync coverage could not be verified. Change the date or dismiss the reminder in Morrow. Reminders stay on this device and are reviewed after restart as mail syncs."
+}
