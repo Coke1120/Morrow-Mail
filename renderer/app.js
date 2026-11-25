@@ -28329,6 +28329,10 @@ function saveCalendarChecks(accountId, ids) {
     store[accountId] = ids;
     localStorage.setItem("morrow.calendarChecks", JSON.stringify(store));
   } catch { /* the choice stays for this window */ }
+}
+
+function updateCalendarChecks(accountId, ids) {
+  saveCalendarChecks(accountId, ids);
   const picker = composeCalendarPicker;
   if (picker?.accountId === accountId && !sameComposeCalendarChecks(picker, composeCalendarChecks(accountId))) {
     invalidateComposeCalendarSlots(picker, "Checked calendars changed. Open Offer two times… again.");
@@ -28354,7 +28358,7 @@ function toggleCalendarCheck(input, id) {
   if (input.checked) state.calendarId = id;
   else if (state.calendarId === id) state.calendarId = next[0];
   state.calendarEventId = "";
-  saveCalendarChecks((calendarAccount() && calendarAccount().id) || "", next);
+  updateCalendarChecks((calendarAccount() && calendarAccount().id) || "", next);
   if (state.calendarPayload) paintCalendar(state.calendarPayload);
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
@@ -28676,7 +28680,7 @@ function applyCalendarPayload(payload) {
   if (returned.length) {
     state.calendarIds = returned;
     if (!returned.includes(state.calendarId)) state.calendarId = returned[0];
-    saveCalendarChecks((payload && payload.accountId) || state.calendarAccountId, returned);
+    updateCalendarChecks((payload && payload.accountId) || state.calendarAccountId, returned);
   }
   if (!(payload?.events || []).some((event) => calendarEventKey(event) === state.calendarEventId)) state.calendarEventId = "";
   state.calendarPayload = payload;
@@ -28884,7 +28888,7 @@ async function submitCalendarEvent(event) {
   if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
     state.calendarIds = state.calendarIds.concat(draft.calendarId);
     state.calendarId = draft.calendarId;
-    saveCalendarChecks(account && account.id, state.calendarIds);
+    updateCalendarChecks(account && account.id, state.calendarIds);
   }
   calendarEditingId = "";
   calendarEditingIdentity = null;
