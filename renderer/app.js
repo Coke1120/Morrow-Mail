@@ -10264,6 +10264,7 @@ function renderReader(focus, onlyChanged = false) {
   pane.morrowReaderSignature = signature;
   pane.removeAttribute("aria-busy");
   const email = state.email;
+  syncReaderLocalTime(email);
   if (state.translate && (!email || state.translate.emailId !== email.id)) {
     stopTranslate();
     state.translate = null;
@@ -10415,6 +10416,72 @@ function bodyRetryButton(email, refresh, label = "Retry download") {
 }
 
 const plainBodyViews = new WeakMap();
+let readerLocalTimeSource = null;
+
+function sameReaderLocalTimeSource(email, source) {
+  return email && source && !email.isDraft && !email.outbox && !email.bodyError
+    && email.id === source.id && email.accountId === source.accountId
+    && (email.bodyEpoch ?? 0) === (source.bodyEpoch ?? 0)
+    && email.htmlBody === source.htmlBody && email.textBody === source.textBody;
+}
+
+function syncReaderLocalTime(email) {
+  if (!readerLocalTimeSource || sameReaderLocalTimeSource(email, readerLocalTimeSource)) return;
+  readerLocalTimeSource = null;
+  const dialog = $("reader-local-time");
+  if (!dialog) return;
+  releaseClosingDialog(dialog);
+  dialog.remove();
+}
+
+function openReaderLocalTime(email, text) {
+  if ($("reader-local-time")) return;
+  const dialog = $("reader-local-time-template").content.firstElementChild.cloneNode(true);
+  const input = dialog.querySelector("#reader-time-correction");
+  const correction = dialog.querySelector("#reader-time-clarify");
+  const status = dialog.querySelector("#reader-time-result");
+  dialog.querySelector("#reader-time-original").textContent = text;
+  input.value = text;
+
+  function convert(value) {
+    const result = window.morrowReaderLocalTime.convertSelection(value);
+    correction.hidden = result.status === "ok";
+    const confirmed = dialog.querySelector("#reader-time-confirmed");
+    confirmed.textContent = value !== text && correction.hidden ? `Confirmed timestamp: ${value}` : "";
+    confirmed.hidden = !confirmed.textContent;
+    if (result.status === "ok") {
+      const day = result.dayChanged ? " · Different day from the original" : "";
+      status.textContent = `${result.localDate} · ${result.localTime} · ${result.timeZone} (${result.utcOffset})${day}`;
+    } else {
+      status.textContent = "Enter one clear date and time with its original UTC offset, for example 2026-02-12T19:42:00Z.";
+    }
+  }
+
+  const dismiss = () => closeDialog(dialog.id);
+  dialog.querySelector("form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (correction.hidden) return;
+    if (!sameReaderLocalTimeSource(mailShortcutTarget(), email)) return syncReaderLocalTime(null);
+    convert(input.value);
+    if (correction.hidden) status.focus();
+  });
+  dialog.querySelector("#reader-time-close").addEventListener("click", dismiss);
+  dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
+  dialog.addEventListener("close", () => {
+    dialog.remove();
+    if (readerLocalTimeSource !== email) return;
+    readerLocalTimeSource = null;
+    if (sameReaderLocalTimeSource(mailShortcutTarget(), email) && !topOpenDialog()) {
+      $("reader").querySelector("[data-action='local-time']")?.focus({ preventScroll: true });
+    }
+  });
+  convert(text);
+  readerLocalTimeSource = email;
+  document.body.appendChild(dialog);
+  openDialog(dialog.id);
+  (correction.hidden ? status : input).focus();
+}
+
 function renderBody(pane, email, refresh) {
   if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
@@ -10455,8 +10522,22 @@ function renderBody(pane, email, refresh) {
   paint();
 
   const selection = typeof window !== "undefined" && window.morrowReplySelection;
-  const reply = pane.id === "reader" && !email.isDraft && pane.querySelector(".reader-actions [data-action='reply']");
-  if (!reply || !selection) return;
+  const actions = pane.id === "reader" && !email.isDraft && pane.querySelector(".reader-actions");
+  if (!actions || !selection) return;
+  if (window.morrowReaderLocalTime) {
+    const time = readerButton("local-time", "Show local time", () => {
+      const current = mailShortcutTarget();
+      const text = time.isConnected && sameReaderLocalTimeSource(current, email) && selection.read(wrapper);
+      if (!text) return showStatus("Select a date and time in this message and try again.", true);
+      if (text.length > 256) return showStatus("Select one date and time, up to 256 characters.", true);
+      openReaderLocalTime(current, text);
+    }, strokeIcon(["M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20z", "M12 6v6l4 2"]));
+    time.setAttribute("aria-haspopup", "dialog");
+    time.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
+    actions.insertBefore(time, actions.querySelector(".reader-menus"));
+  }
+  const reply = actions.querySelector("[data-action='reply']");
+  if (!reply) return;
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ghost";
@@ -15213,6 +15294,7 @@ function applyBodyUpdate(payload) {
 }
 
 function paintReaderPending(email) {
+  syncReaderLocalTime(null);
   const pane = $("reader");
   pane.replaceChildren();
   if (isReaderWindow()) pane.appendChild(readerCloseBar());

@@ -52,6 +52,8 @@ test("asks for clarification on missing offsets, ambiguous inputs and unsupporte
     "PST Monday 14 September 2026 at 17:00 UTC",
     "5:00 p.m. local time today",
     "Tomorrow or Monday, 14 September 2026 at 17:00 UTC",
+    "Around Monday, 14 September 2026 at 17:00 UTC",
+    "Pacific Standard Time Monday, 14 September 2026 at 17:00 UTC",
     "The day after Monday, 14 September 2026 at 17:00 UTC",
     "Not Monday, 14 September 2026 at 17:00 UTC",
     "Monday 14 September 2026 at 17:00 UTC or GMT+01:00",

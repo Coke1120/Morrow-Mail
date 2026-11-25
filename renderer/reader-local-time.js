@@ -21,20 +21,13 @@
     String.raw`(?: *(?<zone>Z|${numericOffset}))?$`,
   ].join(""), "i");
   const proseStamp = new RegExp([
-    // Prefer the timestamp itself so a leading weekday stays part of the date.
-    String.raw`^(?:(?<prefix>[a-z][a-z ]{0,59}?):? )??`,
+    String.raw`^(?:(?:entries close|(?:submission )?deadline(?: is)?|due(?: on)?|observed at|starts at|ends at|on):? )?`,
     String.raw`(?:(?<weekday>${weekdayNames})\.?(?: *, *| ))?`,
     String.raw`(?:(?<dayFirst>\d{1,2}) (?<monthAfter>${monthNames})\.?|(?<monthFirst>${monthNames})\.? (?<dayAfter>\d{1,2}))`,
     String.raw`(?: *, *| )(?<year>\d{4}) (?:at )?`,
     String.raw`(?<hour>\d{1,2})(?::(?<minute>\d{2})${stampSeconds})?(?: *(?<meridiem>[ap]\.? *m\.?))?`,
     String.raw`(?: *(?<zone>${proseZone}|\( *${proseZone} *\)))?\.?$`,
   ].join(""), "i");
-  const prefixTimeMarker = new RegExp([
-    String.raw`\b(?:${monthNames}|${weekdayNames}|utc|gmt|z|[ap] ?m|local|now|today|tonight|yesterday|tomorrow)\b`,
-    String.raw`\b(?:noon|midnight|morning|afternoon|evening|hours?|minutes?|seconds?)\b`,
-    String.raw`\b(?:or|not|instead|between|before|after|ago)\b`,
-    String.raw`\b(?:next|last|this) *$`,
-  ].join("|"), "i");
 
   function namedIndex(names, value) {
     const abbreviation = value.slice(0, 3).toLowerCase();
@@ -98,7 +91,7 @@
   const clarify = reason => ({ status: "clarify", reason });
 
   // A complete ISO stamp or English named date fits within 256 characters. Prose
-  // permits a short lead-in without date, time or ambiguity markers and an optional period.
+  // permits common deadline or observation lead-ins and an optional period.
   // Numeric source offsets take ±HH, ±HHMM or ±HH:MM. Success preserves source
   // text and instant precision, with a localized Gregorian date and UTC offset label.
   // `unsupported-format` covers unrecognized, ambiguous or oversized selections.
@@ -110,11 +103,7 @@
     const selection = text.trim().replace(/\s+/g, " ").replace(/−/g, "-");
     const iso = isoStamp.exec(selection);
     const parts = (iso ?? proseStamp.exec(selection))?.groups;
-    const prefix = parts?.prefix ?? "";
-    // A short all-caps token in the lead-in could be an unsupported zone abbreviation.
-    if (!parts || prefixTimeMarker.test(prefix) || /\b[A-Z]{2,5}\b/.test(prefix)) {
-      return clarify("unsupported-format");
-    }
+    if (!parts) return clarify("unsupported-format");
 
     const { weekday, meridiem, zone, fraction = "" } = parts;
     const year = Number(parts.year);
