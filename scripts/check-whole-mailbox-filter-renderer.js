@@ -89,6 +89,138 @@ test('erasing a toolbar search restores the filtered Inbox even when a search re
   assert.equal(f.document.getElementById('list-title').textContent, 'Inbox');
   assert.deepEqual(f.json('state.emails.map(row => row.id)'), ['m649']);
 });
+
+function localFilterFixture(t) {
+  const f = fixture(t);
+  f.run(`state.localAccount={id:LOCAL_ACCOUNT_ID,isLocal:true,name:'Local Folders',folders:{primary:[
+    {id:'saved',name:'Saved',type:'local'}, {id:'other',name:'Other',type:'local'}
+  ]}};
+  storeRows=[
+    {...storeRows[0],id:'saved-1',accountId:LOCAL_ACCOUNT_ID,folderId:'saved',subject:'Receipt',textBody:'Serial %_42',toMe:true},
+    {...storeRows[1],id:'saved-2',accountId:LOCAL_ACCOUNT_ID,folderId:'saved',subject:'Venue details',textBody:'Serial %_42',toMe:false}
+  ];
+  const baseAnswer=answer;
+  answer=(channel,p)=>{
+    if(channel==='mail:searchLocal') return storeRows.filter(row=>row.accountId===p.accountId
+      && (!p.filterToMe||row.toMe) && row.textBody.toLowerCase().includes(p.query.toLowerCase()))
+      .map(({textBody,...row})=>row);
+    return baseAnswer(channel,p);
+  };`);
+  const element = id => f.document.getElementById(id);
+  const search = element('search-query');
+  return { ...f, search, filter: element('list-filter'), scope: element('search-account'),
+    widen: element('local-filter-search'), back: element('local-filter-return'),
+    dispatch: (target, name) => target.dispatchEvent(new f.document.defaultView.Event(name, { bubbles: true })),
+  };
+}
+
+test('zero local matches offer explicit body search and both exits restore the literal filter and focus', async t => {
+  const f = localFilterFixture(t);
+  await f.run("selectFolder(LOCAL_ACCOUNT_ID,'saved')");
+  f.run("state.searchAccountId='beta'; state.toMeOnly=true; calls.length=0");
+  f.input('  Serial %_42  ');
+  await f.flush();
+  assert.deepEqual(f.json('calls.map(call=>call.channel)'), ['mail:listFromCache']);
+  assert.equal(f.widen.hidden, false);
+  f.widen.focus();
+  assert.equal(f.document.activeElement, f.widen);
+  f.widen.click();
+  await tick();
+  assert.deepEqual(f.json('calls.at(-1)'), { channel:'mail:searchLocal', params:{
+    query:'Serial %_42',limit:100,sortBy:'subject',sortDirection:'asc',accountId:'__morrow_local__',filterToMe:true,
+  } });
+  assert.equal(f.search.value, 'Serial %_42');
+  assert.equal(f.filter.value, '');
+  assert.equal(f.document.activeElement, f.search);
+  assert.equal(f.scope.value, '__morrow_local__');
+  assert.deepEqual(f.json('shownEmails().map(row=>row.id)'), ['saved-1']);
+  assert.equal(f.back.hidden, false);
+  f.back.click();
+  await tick();
+  assert.equal(f.filter.value, '  Serial %_42  ');
+  assert.equal(f.run('state.searchAccountId'), 'beta');
+  assert.equal(f.document.activeElement, f.filter);
+  assert.deepEqual(f.json('calls.at(-1).params'), {
+    accountId:'__morrow_local__',folderId:'saved',limit:200,offset:0,listFilter:'Serial %_42',
+    sortBy:'subject',sortDirection:'asc',filterToMe:true,
+  });
+  assert.equal(f.back.hidden, true);
+
+  f.widen.click();
+  f.scope.value = 'alpha';
+  f.dispatch(f.scope, 'change');
+  await tick();
+  assert.equal(f.run('calls.at(-1).params.accountId'), 'alpha');
+  f.search.value = '';
+  f.dispatch(f.search, 'input');
+  await tick();
+  assert.equal(f.run('state.searchAccountId'), 'alpha');
+  assert.equal(f.run('state.folderId'), 'saved');
+  assert.equal(f.filter.value, '  Serial %_42  ');
+  assert.equal(f.document.activeElement, f.filter);
+});
+
+test('folder navigation abandons the return and ignores a pending local search reply', async t => {
+  const f = localFilterFixture(t);
+  await f.run("selectFolder(LOCAL_ACCOUNT_ID,'saved')");
+  f.run("state.searchAccountId='beta'");
+  f.input('Serial %_42');
+  await f.flush();
+  f.run('deferCalls=true');
+  f.widen.click();
+  assert.equal(f.run('pending.length'), 1);
+  f.run('deferCalls=false');
+  await f.run("selectFolder('alpha','INBOX')");
+  f.run('pending.shift()()');
+  await tick();
+  assert.equal(f.run('state.searchAccountId'), 'beta');
+  assert.equal(f.document.getElementById('list-title').textContent, 'Inbox');
+  assert.equal(f.search.value, '');
+  assert.equal(f.filter.value, '');
+  f.input('Serial %_42');
+  await f.flush();
+  assert.equal(f.widen.hidden, true);
+  assert.equal(f.back.hidden, true);
+});
+
+test('local search offer waits for a successful zero after IME, debounce and refresh', async t => {
+  const f = localFilterFixture(t);
+  await f.run("selectFolder(LOCAL_ACCOUNT_ID,'saved')");
+  f.input('missing');
+  await f.flush();
+  assert.equal(f.widen.hidden, false);
+  f.dispatch(f.filter, 'compositionstart');
+  f.input('Serial %_42');
+  assert.equal(f.widen.hidden, true);
+  f.widen.click();
+  assert.equal(f.run('state.query'), '');
+  f.dispatch(f.filter, 'compositionend');
+  assert.equal(f.widen.hidden, true);
+  f.run('deferCalls=true');
+  await f.flush();
+  assert.equal(f.widen.hidden, true);
+  f.run('pending.shift()()');
+  await tick();
+  assert.equal(f.widen.hidden, false);
+  f.run(`deferCalls=false;
+    const listCall=call;
+    call=async()=>{throw new Error('Synthetic filter failure')};
+    globalThis.failedRefresh=loadList(false,0).catch(()=>{})`);
+  assert.equal(f.widen.hidden, true);
+  await f.run('failedRefresh');
+  assert.equal(f.widen.hidden, true);
+  await f.run('call=listCall; loadList(false,0)');
+  assert.equal(f.widen.hidden, false);
+  f.widen.click();
+  f.dispatch(f.search, 'compositionstart');
+  f.search.value = '';
+  f.dispatch(f.search, 'search');
+  assert.equal(f.run('state.query'), 'Serial %_42');
+  f.search.value = 'revised';
+  f.dispatch(f.search, 'compositionend');
+  assert.equal(f.run('state.query'), 'Serial %_42');
+});
+
 test('filtered All Account Mail Unread pages retain the open reader and show each match once', async t => {
   const f = fixture(t);
   f.run(`state.allInbox=true; state.allInboxUnreadOnly=true;
@@ -399,6 +531,7 @@ test('rendered Features and filter help describe downloaded-view and bounded-mod
   const catalog=f.document.getElementById('features-catalog').textContent;
   assert.match(catalog,/Filter downloaded view matches all saved messages in the selected local folder before paging/);
   assert.match(catalog,/Filter downloaded view matches a case-insensitive literal phrase/);
+  assert.match(catalog,/Search all Local Folders for this text.*across Local Folders/);
   assert.match(catalog,/it also matches any saved To address or name, even when Recipient is hidden/);
   assert.match(catalog,/Ordinary selections remain only for rows on that page; selections retained when filtering also stay selected across later sorts, even when outside that page/);
   assert.doesNotMatch(catalog,/selection remains only for rows on that page/);
@@ -406,6 +539,7 @@ test('rendered Features and filter help describe downloaded-view and bounded-mod
   assert.match(catalog,/A read message held open in Unread appears only on its ordered page/);
   assert.match(catalog,/Per-account Starred and Unread refresh when downloaded mail changes in that account’s folders/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/across all downloaded messages in the selected folder or view/);
+  assert.match(f.document.getElementById('list-filter-help').textContent,/Back to filtered folder or clear the toolbar search/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/matches any saved To name or address/);
   assert.match(f.document.getElementById('list-filter-help').textContent,/Settings → Mail & Sync controls sync history/);
 });
