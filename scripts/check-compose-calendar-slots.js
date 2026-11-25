@@ -114,14 +114,14 @@ function composePickerFixture() {
   };
 }
 
-function calendarListFixture(fetchImpl) {
-  const account = { id: accountId, profile: "gmail", email: "sender@example.invalid" };
+function calendarListFixture(fetchImpl, provider = "google") {
+  const account = { id: accountId, profile: provider === "microsoft" ? "outlook" : "gmail", email: "sender@example.invalid" };
   const grant = JSON.stringify({ accessToken: "synthetic", refreshToken: "synthetic", grantedScopes: "calendar" });
   const modules = {
     "./db": { accountById: id => id === account.id ? account : null },
     "./secrets": { revision: () => 0, getPasswordAsync: async key => key === `${accountId}:calendar` ? grant : null },
     "./oauth": { oauthReady: () => ({ google: true }), accessTokenFor: async () => "synthetic" },
-    "./oauth-config": { providerKey: () => "google", hasPurposeScopes: scopes => scopes === "calendar",
+    "./oauth-config": { providerKey: () => provider, hasPurposeScopes: scopes => scopes === "calendar",
       loadGoogleClient: () => ({ clientId: "synthetic" }), googleGrantMatches: () => true, requireGoogleGrantClient() {} },
     "./calendar-api": {
       ...calendar,
@@ -334,14 +334,15 @@ test("unverified or invalid responses yield no slots and identify affected check
   assert.ok(googleSlots.slots.some(slot => slot.startMs === fourPm.startMs));
   assert.ok(!googleSlots.slots.some(slot => slot.startMs === Date.parse(event.start)));
 
+  const graphEvents = [
+    { id: "fractional", showAs: "tentative",
+      start: { dateTime: day + "T07:30:00.0000000", timeZone: "UTC" },
+      end: { dateTime: day + "T08:00:00.5000000", timeZone: "UTC" } },
+    { ...busy, id: "free", subject: "Free appointment", showAs: "free" },
+  ];
   const graph = await listEventsForIds("microsoft", "synthetic", ["work"], range, async url => {
     assert.ok(new URL(url).searchParams.get("$select").split(",").includes("showAs"));
-    return json({ value: [
-      { id: "fractional", showAs: "tentative",
-        start: { dateTime: day + "T07:30:00.0000000", timeZone: "UTC" },
-        end: { dateTime: day + "T08:00:00.5000000", timeZone: "UTC" } },
-      { ...busy, id: "free", subject: "Free appointment", showAs: "free" },
-    ] });
+    return json({ value: graphEvents });
   });
   assert.equal(graph.events[0].start, day + "T07:30:00Z");
   assert.equal(graph.events[0].end, day + "T08:00:00.5000000Z");
@@ -504,6 +505,35 @@ test("unverified or invalid responses yield no slots and identify affected check
   assert.equal(rejected.success, false);
   assert.equal(rejected.error.code, "provider");
   assert.deepEqual(await list({ ...strict, availabilityOnly: false }), rejected);
+
+  let graphWorkEvents = graphEvents;
+  const listGraph = calendarListFixture(async url => {
+    const path = new URL(url).pathname;
+    if (path === "/v1.0/me/calendars") return json({ value: [
+      { id: "work", name: "Work" }, { id: "personal", name: "Personal" },
+    ] });
+    if (path === "/v1.0/me/calendars/work/calendarView") return json({ value: graphWorkEvents });
+    assert.equal(path, "/v1.0/me/calendars/personal/calendarView");
+    return json({ value: [] });
+  }, "microsoft");
+  const graphComplete = (await listGraph(strict)).data;
+  assert.equal(graphComplete.truncated, false);
+  assert.deepEqual(graphComplete.calendarIds, checkedCalendarIds);
+  assert.equal(Object.hasOwn(graphComplete, "incompleteCalendarIds"), false);
+  assert.deepEqual(graphComplete.events, graph.events);
+  assert.deepEqual(daySlots(day, graphComplete), graphSlots);
+
+  graphWorkEvents = [graphEvents[0], { id: "missing-start", showAs: "busy", end: busy.end }, graphEvents[1]];
+  const graphMissingStart = (await listGraph(strict)).data;
+  assert.equal(graphMissingStart.truncated, false);
+  assert.deepEqual(graphMissingStart.calendarIds, checkedCalendarIds);
+  assert.deepEqual(graphMissingStart.incompleteCalendarIds, ["work"]);
+  assert.deepEqual(graphMissingStart.events, graphComplete.events);
+  assert.deepEqual(daySlots(day, graphMissingStart), { slots: [], unavailableCalendarIds: ["work"] });
+  const graphLegacyMissingStart = (await listGraph({ ...strict, availabilityOnly: false })).data;
+  assert.equal(graphLegacyMissingStart.truncated, false);
+  assert.equal(Object.hasOwn(graphLegacyMissingStart, "incompleteCalendarIds"), false);
+  assert.deepEqual(graphLegacyMissingStart.events, graphComplete.events);
 });
 
 test("adjacent timed events and all-day exclusive civil dates preserve boundary slots", () => {

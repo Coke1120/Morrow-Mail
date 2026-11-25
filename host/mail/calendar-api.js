@@ -270,6 +270,7 @@ async function listGoogleEvents(accessToken, calendarId, range, fetchImpl) {
 
 async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
   const events = [];
+  const result = { events, truncated: true };
   const url = new URL(calendarPath("microsoft", calendarId, "/calendarView"));
   url.searchParams.set("startDateTime", range.timeMin);
   url.searchParams.set("endDateTime", range.timeMax);
@@ -292,13 +293,17 @@ async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
     for (const item of items) {
       const event = normalizeGraphEvent(item, calendarId);
       if (event) events.push(event);
-      if (events.length >= MAX_EVENTS) return { events, truncated: true };
+      else if (item && safeId(item.id)) result.availabilityIncomplete = true;
+      if (events.length >= MAX_EVENTS) return result;
     }
     const rawNext = json["@odata.nextLink"];
-    if (rawNext == null || rawNext === "") return { events, truncated: false };
+    if (rawNext == null || rawNext === "") {
+      result.truncated = false;
+      return result;
+    }
     next = safeNext(rawNext, "graph.microsoft.com");
   }
-  return { events, truncated: true };
+  return result;
 }
 
 async function listEvents(provider, accessToken, calendarId, range, fetchImpl) {
