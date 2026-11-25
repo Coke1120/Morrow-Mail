@@ -16043,72 +16043,26 @@ function ownsComposeInboxPicker(picker) {
   return true;
 }
 
-function syncComposeInboxPicker(picker) {
-  $("compose-inbox-sources").inert = picker.busy;
-  $("compose-inbox-newer").disabled = picker.busy || picker.page === 0;
-  $("compose-inbox-older").disabled = picker.busy || !picker.cursors[picker.page + 1];
-  $("compose-inbox-confirm").disabled = picker.busy || !picker.selected.size;
-}
+let composeInboxPickerController;
 
-function paintComposeInboxSources(picker, sources) {
-  const list = $("compose-inbox-sources");
-  list.replaceChildren();
-  for (const [index, source] of sources.entries()) {
-    const group = document.createElement("fieldset");
-    group.className = "preview-meta";
-    group.dataset.inboxMessageId = source.id;
-    const subject = document.createElement("legend");
-    subject.textContent = source.subject || "(no subject)";
-    const details = document.createElement("p");
-    details.className = "hint";
-    details.id = "compose-inbox-source-details-" + index;
-    details.textContent = `${source.from || "Unknown sender"} · ${shownWhen(new Date(source.date || ""), true) || "Unknown date"}`;
-    group.append(subject, details);
-    for (const file of source.files) {
-      const label = document.createElement("label");
-      label.className = "check";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.dataset.inboxPartId = file.id;
-      input.setAttribute("aria-describedby", details.id);
-      const name = document.createElement("span");
-      const duplicate = source.files.some(other => other !== file && other.filename === file.filename && other.size === file.size);
-      name.textContent = `${file.filename} · ${fileSize(file.size)}${duplicate ? ` · Part ${file.id}` : ""}`;
-      input.addEventListener("change", () => selectComposeInboxFile(picker, source, file, input));
-      label.append(input, name);
-      group.appendChild(label);
-    }
-    list.appendChild(group);
-  }
-}
-
-async function selectComposeInboxFile(picker, source, file, input) {
-  if (picker.busy || !ownsComposeInboxPicker(picker)) return;
-  if (input.checked) {
-    picker.busy = true;
-    picker.requestId = crypto.randomUUID();
-    syncComposeInboxPicker(picker);
-    $("compose-inbox-status").textContent = "Checking selected file…";
-    try {
-      const part = { emailId: source.id, partId: file.id, proof: file.proof };
-      const result = await call("mail:prepareDraft", { strictLocal: true, pinSelection: true,
-        inboxAttachmentReview: picker.review, requestId: picker.requestId, existingBytes: 0, parts: [part] });
-      if (!ownsComposeInboxPicker(picker)) return;
-      const contentProof = result?.attachments?.[0]?.contentProof;
-      if (!contentProof) throw new Error("Select the Inbox file again.");
-      picker.selected.set(file.proof, { ...file, emailId: source.id, contentProof });
-    } catch (error) {
-      input.checked = false;
-      showComposeInboxError(picker, error);
-      return;
-    } finally {
-      picker.busy = false;
-      picker.requestId = null;
-      if (ownsComposeInboxPicker(picker)) syncComposeInboxPicker(picker);
-    }
-  } else picker.selected.delete(file.proof);
-  syncComposeInboxPicker(picker);
-  $("compose-inbox-status").textContent = picker.selected.size ? `${picker.selected.size} selected.` : "Choose files to add to the draft.";
+function getComposeInboxPickerController() {
+  return composeInboxPickerController ??= window.morrowCreateComposeInboxPicker({
+    list: $("compose-inbox-sources"),
+    newer: $("compose-inbox-newer"),
+    older: $("compose-inbox-older"),
+    confirm: $("compose-inbox-confirm"),
+    status: $("compose-inbox-status"),
+    cancel: $("compose-inbox-cancel"),
+    shownWhen, fileSize,
+    owns: ownsComposeInboxPicker,
+    reportError: showComposeInboxError,
+    listPage: (review, cursor) => call("mail:listFromCache", {
+      strictLocal: true, inboxAttachmentReview: review, cursor,
+    }),
+    pinPart: (review, requestId, part) => call("mail:prepareDraft", {
+      strictLocal: true, pinSelection: true, inboxAttachmentReview: review, requestId, existingBytes: 0, parts: [part],
+    }),
+  });
 }
 
 function showComposeInboxError(picker, error) {
@@ -16119,36 +16073,11 @@ function showComposeInboxError(picker, error) {
   } else $("compose-inbox-status").textContent = error?.message || String(error);
 }
 
-async function loadComposeInboxPage(picker, page) {
-  if (!picker || picker.busy || !ownsComposeInboxPicker(picker) || page < 0 || page >= picker.cursors.length) return;
-  picker.busy = true;
-  picker.selected.clear();
-  $("compose-inbox-sources").replaceChildren();
-  syncComposeInboxPicker(picker);
-  $("compose-inbox-status").textContent = "Checking stored Inbox files…";
-  if (picker.loaded) $("compose-inbox-cancel").focus();
-  try {
-    const result = await call("mail:listFromCache", { strictLocal: true, inboxAttachmentReview: picker.review, cursor: picker.cursors[page] });
-    if (!ownsComposeInboxPicker(picker)) return;
-    if (!Array.isArray(result?.sources)) throw new Error("Could not list stored Inbox files. Reopen the picker to try again.");
-    picker.loaded = true;
-    picker.page = page;
-    picker.cursors.length = page + 1;
-    if (result.nextCursor) picker.cursors.push(result.nextCursor);
-    paintComposeInboxSources(picker, result.sources);
-    $("compose-inbox-status").textContent = result.sources.length ? "Choose files to add to the draft."
-      : result.nextCursor ? "No stored Inbox files on this page. Choose Older to keep looking." : "No stored Inbox files on this page.";
-  } catch (error) { showComposeInboxError(picker, error); }
-  finally {
-    picker.busy = false;
-    if (ownsComposeInboxPicker(picker)) syncComposeInboxPicker(picker);
-  }
-}
-
 function openComposeInboxPicker() {
   const draft = currentComposeInboxDraft();
   if (!draft || state.composePending || state.draftWrite?.pending || composeFilesPending()
       || !$("compose").open || $("compose-inbox-picker").open || $("compose-preview").open || $("attachment-preview").open) return;
+  const controller = getComposeInboxPickerController();
   const recipients = inboxPickerRecipients();
   const review = { id: crypto.randomUUID(), draftId: draft.id, accountId: draft.accountId, bodyEpoch: draft.bodyEpoch,
     draftRevision: state.draftRevision, recipients };
@@ -16161,12 +16090,13 @@ function openComposeInboxPicker() {
   openDialog("compose-inbox-picker");
   $("compose-inbox-title").focus();
   syncComposeActions();
-  loadComposeInboxPage(picker, 0);
+  controller.loadPage(picker, 0);
 }
 
 async function confirmComposeInboxFiles() {
   const picker = state.composeInboxPicker;
   if (!picker || picker.busy || !picker.selected.size || !ownsComposeInboxPicker(picker)) return;
+  const controller = getComposeInboxPickerController();
   const selected = [...picker.selected.values()];
   const existing = composeAttachmentList(state.composeAttachments);
   const provider = folderProvider(composeAccount());
@@ -16177,7 +16107,7 @@ async function confirmComposeInboxFiles() {
   }
   picker.busy = true;
   picker.requestId = crypto.randomUUID();
-  syncComposeInboxPicker(picker);
+  controller.sync(picker);
   $("compose-inbox-cancel").focus();
   $("compose-inbox-status").textContent = "Checking selected Inbox files…";
   try {
@@ -16223,7 +16153,7 @@ async function confirmComposeInboxFiles() {
   finally {
     picker.requestId = null;
     picker.busy = false;
-    if (ownsComposeInboxPicker(picker)) syncComposeInboxPicker(picker);
+    if (ownsComposeInboxPicker(picker)) controller.sync(picker);
   }
 }
 
@@ -16236,7 +16166,7 @@ function wireComposeInboxPicker() {
   for (const [id, step] of [["compose-inbox-newer", -1], ["compose-inbox-older", 1]]) {
     $(id).addEventListener("click", () => {
       const picker = state.composeInboxPicker;
-      if (picker) loadComposeInboxPage(picker, picker.page + step);
+      if (picker) getComposeInboxPickerController().loadPage(picker, picker.page + step);
     });
   }
   dialog.addEventListener("cancel", event => { event.preventDefault(); closeComposeInboxPicker(); });

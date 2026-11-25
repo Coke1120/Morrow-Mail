@@ -480,8 +480,9 @@ async function receivingDraftInboxPicker() {
   const local = { id: "blob", storageUrl: "local:blob", filename: file.filename, size: file.size, mimeType: "application/pdf" };
   const sources = [{ id: "source", from: "Source <source@example.invalid>", subject: "Source quote",
     date: "2026-11-24T08:00:00Z", files: [file] }];
+  const olderCursor = "opaque-older-page";
   const calls = [];
-  let seed, pending;
+  let seed, pending, pendingList, pendingPin;
   f.window.morrow = { openComposeWindow(fields) { seed = fields; }, async invoke(channel, params) {
     calls.push({ channel, params });
     let data;
@@ -489,12 +490,19 @@ async function receivingDraftInboxPicker() {
     else if (channel === "mail:listFromCache") {
       assert.equal(params.strictLocal, true);
       assert.equal(params.inboxAttachmentReview.bodyEpoch, 0);
-      data = params.checkDraft ? { current: true } : { sources, nextCursor: null };
+      if (params.checkDraft) data = { current: true };
+      else if (pendingList) data = await pendingList.promise;
+      else if (params.cursor === olderCursor) data = { sources: [], nextCursor: null };
+      else {
+        assert.equal(params.cursor, null);
+        data = { sources, nextCursor: olderCursor };
+      }
     } else if (channel === "mail:prepareDraft") {
       assert.equal(params.strictLocal, true);
       const choice = { emailId: "source", partId: "2", proof: file.proof };
       if (params.pinSelection) {
         assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [choice]);
+        if (pendingPin) await pendingPin.promise;
         data = { attachments: [{ contentProof: "checked-bytes" }] };
       } else {
         assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [{ ...choice, contentProof: "checked-bytes" }]);
@@ -511,6 +519,8 @@ async function receivingDraftInboxPicker() {
     return { success: true, data };
   } };
   const ui = renderer({ ...f.globals, URLSearchParams, crypto: require("node:crypto").webcrypto });
+  const pickerScript = path.join(root, "renderer/compose-attachments.js");
+  vm.runInContext(fs.readFileSync(pickerScript, "utf8"), ui.context, { filename: pickerScript });
   const dialog = f.node("compose-inbox-picker");
   for (const id of ["compose", "compose-inbox-picker", "compose-close-review"]) {
     const node = f.node(id);
@@ -532,12 +542,16 @@ async function receivingDraftInboxPicker() {
   await ui.run("openCompose(inboxSeed)");
   const confirm = f.node("compose-inbox-confirm");
   const list = f.node("compose-inbox-sources");
-  const choose = async () => {
+  const status = f.node("compose-inbox-status");
+  const openPicker = async () => {
     f.node("compose-attach-inbox").click();
     await until(() => list.childNodes.length > 0);
+  };
+  const checkbox = () => descendants(list, "check")[0].childNodes[0];
+  const checkFile = async () => {
     assert.equal(confirm.disabled, true);
     assert.match(list.textContent, /Source quote.*Source <source@example\.invalid>.*Inbox quote\.pdf · 7 B/);
-    const input = descendants(list, "check")[0].childNodes[0];
+    const input = checkbox();
     assert.equal(input.type, "checkbox");
     assert.equal(input.getAttribute("aria-describedby"), list.childNodes[0].childNodes[1].id);
     assert.equal(Boolean(input.checked), false);
@@ -545,12 +559,28 @@ async function receivingDraftInboxPicker() {
     await input.listeners.change();
     assert.equal(confirm.disabled, false);
   };
+  const choose = async () => {
+    await openPicker();
+    await checkFile();
+  };
   assert.equal(f.node("compose-attach-inbox").disabled, false);
   await choose();
   assert.deepEqual(["to", "cc", "bcc"].map(field => f.node("compose-inbox-" + field).textContent), [
     draft.to[0], draft.cc[0], draft.bcc[0],
   ]);
   assert.equal(f.node("compose-save").disabled, true);
+  const older = f.node("compose-inbox-older"), newer = f.node("compose-inbox-newer");
+  assert.equal(older.disabled, false);
+  older.click();
+  await until(() => !newer.disabled);
+  assert.equal(calls.at(-1).params.cursor, olderCursor);
+  assert.equal(confirm.disabled, true);
+  assert.equal(list.childNodes.length, 0);
+  newer.click();
+  await until(() => list.childNodes.length > 0);
+  assert.equal(calls.at(-1).params.cursor, null);
+  await checkFile();
+
   const before = ui.run("composeSnapshot()");
   pending = gate();
   const cancelled = ui.run("confirmComposeInboxFiles()");
@@ -574,12 +604,64 @@ async function receivingDraftInboxPicker() {
   assert.equal(dialog.open, false);
   assert.equal(ui.run("state.composeAttachments.length"), 0, "a late result for old recipients cannot attach");
 
+  const staleList = gate();
+  pendingList = staleList;
+  f.node("compose-attach-inbox").click();
+  assert.equal(calls.at(-1).channel, "mail:listFromCache");
+  assert.equal(status.textContent, "Checking stored Inbox files…");
+  dialog.listeners.cancel({ preventDefault() {} });
+  pendingList = null;
+  await choose();
+  const currentInput = checkbox();
+  staleList.resolve({ sources: [], nextCursor: null });
+  await tick();
+  assert.ok(list.contains(currentInput), "a late page cannot replace the reopened picker");
+  assert.equal(status.textContent, "1 selected.");
+  assert.equal(confirm.disabled, false);
+  dialog.listeners.cancel({ preventDefault() {} });
+
   await choose();
   pending = null;
   await ui.run("confirmComposeInboxFiles()");
   assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.composeAttachments)")), [local]);
   assert.equal(dialog.open, false);
   assert.equal(f.node("compose-body").value, draft.textBody);
+  ui.run('removeComposeAttachment("local:blob")');
+
+  const unsavedTo = "new-to@example.invalid";
+  const unsavedBody = "Unsaved draft recommendation";
+  const unsavedQuote = "New quotation for this draft";
+  f.node("compose-to").value = unsavedTo;
+  f.node("compose-body").value = unsavedBody;
+  ui.context.unsavedQuote = unsavedQuote;
+  ui.run("state.composeQuote = quoteStateFromSeed({quote: unsavedQuote})");
+
+  await openPicker();
+  const stalePin = gate();
+  pendingPin = stalePin;
+  const oldInput = checkbox();
+  oldInput.checked = true;
+  const pin = oldInput.listeners.change();
+  const pinRequestId = calls.at(-1).params.requestId;
+  dialog.listeners.cancel({ preventDefault() {} });
+  assert.equal(calls.at(-1).channel, "mail:cancelAttachmentRequest");
+  assert.equal(calls.at(-1).params.requestId, pinRequestId);
+  pendingPin = null;
+  await openPicker();
+  stalePin.resolve();
+  await pin;
+  assert.equal(Boolean(checkbox().checked), false, "a late pin cannot select a file after reopening");
+  assert.equal(confirm.disabled, true);
+  assert.equal(status.textContent, "Choose files to add to the draft.");
+
+  assert.equal(f.node("compose-inbox-to").textContent, unsavedTo);
+  await checkFile();
+  await ui.run("confirmComposeInboxFiles()");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.composeAttachments)")), [local]);
+  assert.equal(dialog.open, false);
+  assert.equal(f.node("compose-to").value, unsavedTo);
+  assert.equal(f.node("compose-body").value, unsavedBody);
+  assert.equal(ui.run("state.composeQuote.text"), unsavedQuote);
   const closing = ui.run("requestComposeClose()");
   await until(() => f.node("compose-close-review").open);
   f.node("draft-close-keep").onclick();
