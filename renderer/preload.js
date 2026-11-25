@@ -156,6 +156,7 @@ const INVOKE = [
   "mail:openEmail",
   "mail:unsubscribe",
   "mail:readCachedBody",
+  "mail:sentFollowups",
   "mail:prepareDraft",
   "mail:prepareForward",
   "mail:dsnRedraft",

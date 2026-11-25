@@ -24,7 +24,7 @@ async function run() {
     const source = Buffer.from(`From: ${from}\r\n${parent ? `In-Reply-To: ${parent}\r\n` : ""}${header}\r\nBody`);
     db.insertMessage({ id, accountId, folderPath, uid: ++uid, uidValidity: 77,
       threadId: "deliberately-same-thread", rfcMessageId: rfc(id), dateSource: "header",
-      from, to, cc, bcc, inReplyTo: parent, subject, date: new Date(sentAt).toISOString(), listSortTs: sentAt,
+      from, to, cc, bcc, inReplyTo: parent, subject, bodyComplete: true, date: new Date(sentAt).toISOString(), listSortTs: sentAt,
       recipientHeaders: legacy ? {} : recipientHeaders(source, [], received), ...rest });
   };
   let uid = 0;
@@ -89,6 +89,44 @@ async function run() {
     assert.equal(call("dismiss", { ...club, expectedDueAt: later }), true);
     insert({ id: "unproven-reply", folderPath: "INBOX", from: address("printer"), parent: rfc("current-proof"), legacy: true });
     assert.deepEqual(rows(), [[address("printer"), "check"]]);
+    now = dueAt - 10_000;
+    insert({ id: "partial-sent", textBody: "Only a fragment", bodyComplete: false });
+    assert.equal(set("partial-sent"), true);
+    const partial = { accountId: "editor", messageId: rfc("partial-sent"), expectedDueAt: dueAt };
+    assert.equal(call("list").find(row => row.messageId === partial.messageId).canOpen, false);
+    assert.throws(() => call("open", partial), /complete Sent message/);
+
+    for (const id of ["local-adopted", "local-collision", "local-partial", "local-attachment"]) {
+      insert({ id, uid: 0, date: new Date(sentAt + 713).toISOString(), dateSource: "local", textBody: "Confirmed original",
+        recipientHeaders: { followupConfirmedRecipient: address("printer") } });
+      assert.equal(set(id), true);
+      db.applyFolderSync("editor", "Sent", { validity: 77, keepOthers: true, messages: [{
+        id: "server-" + id, threadId: "server-thread-" + id, uid: ++uid, date: new Date(sentAt).toISOString(), dateSource: "header",
+        from: address("editor"), to: [address("printer")], cc: [], bcc: [], subject, rfcMessageId: rfc(id),
+        textBody: id === "local-collision" ? "Other content" : "Confirmed original", bodyComplete: id !== "local-partial",
+        ...(id === "local-attachment" ? { hasAttachments: true, attachments: [{ filename: "other.txt" }] } : {}),
+      }] });
+    }
+    const adopted = { accountId: "editor", messageId: rfc("local-adopted"), expectedDueAt: dueAt };
+    assert.equal(call("open", adopted).emailId, "local-adopted");
+    for (const id of ["local-collision", "local-partial", "local-attachment"]) {
+      assert.throws(() => call("open", { ...adopted, messageId: rfc(id) }), /could not be verified/);
+    }
+    assert.equal(db.messageById("local-partial").text_body, "Confirmed original");
+    insert({ id: "same-second", folderPath: "INBOX", from: address("printer"), parent: rfc("local-adopted"), received: sentAt });
+    assert.equal(call("list").find(row => row.messageId === adopted.messageId), undefined);
+
+    const reactionSource = Buffer.from(`From: ${address("printer")}\r\nIn-Reply-To: ${rfc("current-proof")}\r\nContent-Type: multipart/alternative; boundary="test"\r\n\r\n--test\r\nContent-Type: text/plain\r\n\r\nLiked\r\n--test\r\nContent-Type: text/vnd.google.email-reaction+json\r\n\r\n{}\r\n--test--\r\n`);
+    const imap = {
+      mailbox: { uidValidity: 77 },
+      getMailboxLock: async () => ({ release() {} }),
+      async *fetch() {
+        yield { uid: 1, source: reactionSource, internalDate: new Date(sentAt), envelope: { from: [{ address: address("printer") }] },
+          bodyStructure: { type: "multipart/alternative", childNodes: [{ type: "text/plain" }, { type: "text/vnd.google.email-reaction+json" }] } };
+      },
+    };
+    const reaction = await require("../host/mail/remote").fetchMessages(imap, "INBOX", [1]);
+    assert.deepEqual(reaction.messages[0].recipientHeaders.followupReply, { kind: "automatic" });
     assert.deepEqual(db.listScheduled(), []);
     console.log("Sent follow-up: printer and club fixtures, cache identity, offline uncertainty, restart, reschedule and dismiss passed.");
   } finally {

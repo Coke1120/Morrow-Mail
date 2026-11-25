@@ -6,6 +6,8 @@ const { address } = require("../../shared/compose-policy");
 const dsn = require("./dsn-report");
 
 const excludedReplyFolders = new Set(["sentitems", "drafts", "deleteditems", "junkemail"]);
+const isReactionMime = type => typeof type === "string"
+  && type.split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json";
 
 function messageId(value) {
   if (typeof value !== "string") return "";
@@ -51,6 +53,9 @@ function responseEvidence(headers, receivedAt = null) {
 function replyState(source, candidates, selfAddresses) {
   const parent = messageId(source.messageId);
   if (!parent || !source.recipient || !Number.isFinite(source.sentAt) || selfAddresses.includes(source.recipient)) return "none";
+  // IMAP INTERNALDATE has second precision, including for a reply to a
+  // message whose local submission timestamp still includes milliseconds.
+  const sentAt = source.imapLocal ? Math.floor(source.sentAt / 1000) * 1000 : source.sentAt;
   let unverified = false;
   for (const row of candidates) {
     if (row.accountId !== source.accountId || row.id === source.id || row.draft
@@ -58,7 +63,7 @@ function replyState(source, candidates, selfAddresses) {
       || messageId(row.inReplyTo) !== parent || (row.evidence?.from || oneAddress(row.from)) !== source.recipient
       || row.evidence?.kind === "automatic" || row.report) continue;
     const proof = row.evidence;
-    if (Number.isFinite(proof?.receivedAt) && proof.receivedAt < source.sentAt) continue;
+    if (Number.isFinite(proof?.receivedAt) && proof.receivedAt < sentAt) continue;
     if (proof?.kind === "ordinary" && proof.parent === parent && Number.isFinite(proof.receivedAt)) return "answered";
     unverified = true;
   }
@@ -79,6 +84,13 @@ function accountBinding(account) {
 function confirmation(accepted, rejected, options) {
   const recipient = singleRecipient(options.to || [], options.cc || [], options.bcc || []);
   return recipient && accepted.length === 1 && !rejected.length && oneAddress(accepted[0]) === recipient ? recipient : "";
+}
+
+function bodyProof(row) {
+  // Metadata alone cannot prove that adopted attachment bytes are the same.
+  if (row?.body_complete !== 1 || row.has_attachments || json(row.attachments_json, []).length) return null;
+  const normalize = value => String(value || "").replace(/\r\n/g, "\n");
+  return createHash("sha256").update(JSON.stringify([row.subject, normalize(row.html_body), normalize(row.text_body)])).digest("hex");
 }
 
 function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now() }) {
@@ -103,11 +115,13 @@ function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now(
     const identities = selfAddresses(account);
     if (!sender || !recipient || !identities.includes(sender) || identities.includes(recipient)
       || !validDate(sentAt) || !["header", "received", "local"].includes(row.date_source)) return null;
-    const confirmedLocal = !row.uid && row.date_source === "local"
-      && json(row.recipient_headers_json)?.followupConfirmedRecipient === recipient;
+    const headers = json(row.recipient_headers_json);
+    if (headers?.followupUnprovenAdoption) return null;
+    const confirmedLocal = !row.uid && row.date_source === "local" && headers?.followupConfirmedRecipient === recipient;
     if (!confirmedLocal && !rowIdentity(account, row, folder)) return null;
-    return { row, identities, source: { id: row.id, accountId: account.id, messageId: rfcId, sentAt, sender,
-      recipient, binding: accountBinding(account) } };
+    const copy = row.uid > 0 ? JSON.stringify([row.folder_path, row.uid, row.uid_validity, row.gmail_id || null]) : null;
+    return { row, identities, source: { id: row.id, accountId: account.id, messageId: rfcId, sentAt, sender, copy,
+      recipient, binding: accountBinding(account), imapLocal: confirmedLocal && account.mail_transport !== "gmail_api" } };
   }
 
   function resolveSaved(account, saved) {
@@ -116,8 +130,11 @@ function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now(
     const result = resolve(account, saved.rfc_id);
     const source = result?.source;
     if (!source || source.id !== prior.id || source.recipient !== prior.recipient || source.sender !== prior.sender) return null;
-    // A confirmed local Sent copy can acquire server timestamp precision on
-    // sync. Keep the timestamp frozen when the user created the reminder.
+    if (prior.copy && prior.copy !== source.copy) return null;
+    // A provider row can adopt the local row ID by RFC ID alone. Require
+    // matching complete content before trusting that transition.
+    if (!prior.copy && source.copy && (!prior.localBody || prior.localBody !== bodyProof(db.messageById(source.id)))) return null;
+    // Keep the confirmed submission time when the provider adopts the row.
     return { ...result, source: prior };
   }
 
@@ -145,7 +162,7 @@ function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now(
     const due = saved.due_at <= now();
     return { accountId: saved.account_id, messageId: saved.rfc_id, dueAt: saved.due_at,
       subject: row?.subject || "(Sent message unavailable)", recipient: source?.recipient || json(saved.source_json)?.recipient || "",
-      canOpen: !!row, state: !due ? "waiting" : reply === "none" && hasCoverage(account, source.sentAt, saved.due_at) ? "due" : "check" };
+      canOpen: row?.body_complete === 1, state: !due ? "waiting" : reply === "none" && hasCoverage(account, source.sentAt, saved.due_at) ? "due" : "check" };
   }
 
   function answer(input = {}) {
@@ -173,6 +190,7 @@ function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now(
     if (input.action === "open") {
       const result = saved && resolveSaved(account, saved);
       if (!result) throw new Error("The original Sent message could not be verified.");
+      if (result.row.body_complete !== 1) throw new Error("Download the complete Sent message first.");
       return { accountId: account.id, emailId: result.row.id, folderId: result.row.folder_path };
     }
     if (input.action === "dismiss" && saved) {
@@ -183,10 +201,11 @@ function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now(
     const result = saved ? resolveSaved(account, saved) : resolve(account, id);
     if (!saved && (!result || result.source.id !== input.emailId)) throw new Error("Choose a confirmed Sent message to one recipient.");
     if (!saved && db.allSentFollowups().length >= MAX_REMINDERS) throw new Error("Dismiss an existing follow-up reminder before adding another.");
+    if (!saved && !result.source.copy) result.source.localBody = bodyProof(db.messageById(result.source.id));
     db.saveSentFollowup(account.id, id, input.dueAt, saved?.source_json ?? JSON.stringify(result.source));
     return true;
   }
   return { answer };
 }
 
-module.exports = { messageId, oneAddress, singleRecipient, responseEvidence, replyState, excludedReplyFolders, confirmation, createFollowups };
+module.exports = { messageId, oneAddress, singleRecipient, responseEvidence, replyState, isReactionMime, excludedReplyFolders, confirmation, createFollowups };

@@ -328,6 +328,7 @@ async function parseSource(source, truncated, envelope, sourceSize) {
       inReplyTo: parsed.inReplyTo || null,
       references: parsed.references || null,
       replyTo: parsed.replyTo || null,
+      reaction: parsed.attachments.some(part => require("./sent-followup").isReactionMime(part.contentType)),
       decoding: decodedQuality,
       dsnRedraft,
       complete: !truncated,
@@ -399,6 +400,11 @@ async function listFolderRecords(client) {
   return { folders, delimiter };
 }
 
+function hasReactionPart(node) {
+  return !!node && (require("./sent-followup").isReactionMime(node.type)
+    || (node.childNodes || []).some(hasReactionPart));
+}
+
 async function readFetched(msg, validity, cap) {
   const envelope = msg.envelope || {};
   const source = msg.source ? Buffer.from(msg.source) : null;
@@ -420,6 +426,12 @@ async function readFetched(msg, validity, cap) {
     ? envelope.date
     : (receivedDate ? msg.internalDate : new Date());
   const uid = Number(msg.uid);
+  const recipientHeaders = require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo,
+    receivedDate ? msg.internalDate.getTime() : null);
+  if (recipientHeaders.followupReply?.kind === "ordinary") {
+    if (parsed?.reaction || hasReactionPart(msg.bodyStructure)) recipientHeaders.followupReply = { kind: "automatic" };
+    else if (!msg.bodyStructure && !parsed?.complete) delete recipientHeaders.followupReply;
+  }
   return {
     uid,
     dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
@@ -434,8 +446,7 @@ async function readFetched(msg, validity, cap) {
     to: formatList(envelope.to),
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
-    recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo,
-      receivedDate ? msg.internalDate.getTime() : null),
+    recipientHeaders,
     listUnsubscribe: source ? require("./list-unsubscribe").parseHeaders(source) : null,
     date: when.toISOString(),
     receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,

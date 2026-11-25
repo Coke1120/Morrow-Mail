@@ -1343,6 +1343,13 @@ function localOutgoingAttachments(json) {
   return local.length ? local : null;
 }
 
+function retainedFollowupHeaders(row, incoming) {
+  let previous;
+  try { previous = JSON.parse(row.recipient_headers_json || "{}") || {}; } catch { return {}; }
+  if (!(previous.followupUnprovenAdoption || (!(row.uid > 0) && previous.followupConfirmedRecipient))) return {};
+  return { recipientHeaders: { ...incoming.recipientHeaders, followupUnprovenAdoption: true } };
+}
+
 function applyFolderSync(accountId, folderPath, report, budget = null) {
   if (report.gmail) {
     for (const message of report.messages) applyGmailMessage(accountId, [folderPath], message);
@@ -1400,9 +1407,10 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
       if (found?.draft_pending) continue;
       if (found && !message.bodyComplete) {
         const priorBody = get(`SELECT uid, uid_validity, body_complete, html_body, text_body, snippet, body_warning, decoding_json,
-          dsn_redraft_json, rfc_message_id, subject, from_addr, date_iso, to_json, cc_json, bcc_json FROM messages WHERE id = ?`, [found.id]);
+          dsn_redraft_json, rfc_message_id, subject, from_addr, date_iso, to_json, cc_json, bcc_json, recipient_headers_json FROM messages WHERE id = ?`, [found.id]);
         if (priorBody?.body_complete === 1) message = { ...message, htmlBody: priorBody.html_body, textBody: priorBody.text_body,
           snippet: priorBody.snippet, bodyComplete: true, bodyWarning: priorBody.body_warning, decoding: require("./mime-decoding").parse(priorBody.decoding_json),
+          ...retainedFollowupHeaders(priorBody, message),
           ...(priorBody.uid === message.uid && priorBody.uid_validity === report.validity ? { dsnRedraft: dsnForRetainedBody(priorBody, message) } : {}) };
       }
       const id = found ? found.id : (message.id || newMessageId());
@@ -1642,7 +1650,7 @@ function uniqueSentByRfc(accountId, folderPath, rfcMessageId) {
 function sentFollowupSources(accountId, rfcId, bareId) {
   return all(`SELECT m.id, m.account_id, m.folder_path, m.uid, m.uid_validity, m.gmail_id,
     m.date_iso, m.date_source, m.subject, m.from_addr, m.from_address, m.to_json, m.cc_json,
-    m.bcc_json, m.recipient_headers_json FROM messages m
+    m.bcc_json, m.recipient_headers_json, m.body_complete FROM messages m
     JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
     WHERE m.account_id = ? AND m.rfc_message_id IN (?, ?) AND f.well_known = 'sentitems'
       AND m.is_draft = 0 AND m.draft_pending = 0 LIMIT 2`, [accountId, rfcId, bareId]);
@@ -2879,6 +2887,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
         uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
         ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, bodyWarning: message.bodyWarning || found.body_warning,
           decoding: require("./mime-decoding").parse(found.decoding_json),
+          ...retainedFollowupHeaders(found, message),
           ...(found.uid === mapping.local_uid && found.uid_validity === account.gmail_generation
             ? { dsnRedraft: dsnForRetainedBody(found, message) } : {}) } : {}),
         ...(attachments ? { attachments, hasAttachments: true } : {}) };

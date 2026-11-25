@@ -9353,6 +9353,8 @@ function readerButton(action, label, run, iconNode) {
   return button;
 }
 
+let sentFollowups;
+
 function renderActions(pane, email) {
   if (isLocalMail(email)) {
     const bar = document.createElement("div"); bar.className = "reader-actions";
@@ -9427,6 +9429,12 @@ function renderActions(pane, email) {
   localCopy.disabled = !!email.isDraft;
   menus.appendChild(localCopy);
   if (snooze) menus.append(snooze);
+  const account = state.accounts.find(item => item.id === email.accountId);
+  const inSent = foldersOf(account).some(folder => folder.id === email.folderId
+    && canonicalFolderRole(folder.wellKnownName) === "sentitems");
+  if (!email.isDraft && inSent && email.to?.length === 1 && !email.cc?.length && !email.bcc?.length) {
+    sentFollowups?.addReaderAction(menus, email);
+  }
   if (email.isDraft) {
     const resume = document.createElement("button");
     resume.type = "button";
@@ -30818,7 +30826,8 @@ function wire() {
 function watchNetwork() {
   if (!api || typeof navigator === "undefined") return;
   const send = () => {
-    api.invoke("mail:setOnline", { online: navigator.onLine !== false }).catch(() => {});
+    api.invoke("mail:setOnline", { online: navigator.onLine !== false })
+      .then(() => sentFollowups?.refresh()).catch(() => {});
   };
   window.addEventListener("online", send);
   window.addEventListener("offline", send);
@@ -30984,6 +30993,11 @@ async function boot() {
     await bootTranslateWindow();
     return;
   }
+  if (api) {
+    sentFollowups = window.morrowSentFollowups?.create({
+      call, paintOriginal: (parent, email) => appendMessageBody(parent, email, false),
+    });
+  }
   if (isReaderWindow()) {
     await bootReaderWindow();
     return;
@@ -30992,6 +31006,7 @@ async function boot() {
     showStatus("Mail preload is unavailable.", true);
     return;
   }
+  sentFollowups?.installList(document.querySelector(".sidebar-mail-actions"));
   api.invoke("morrow:configGetLayoutPanes").then((value) => {
     const panes = layoutPanesPref(value);
     state.prefs.layout = panes;
@@ -31023,7 +31038,10 @@ async function boot() {
     agentPaintPayload = payload;
     if (state.view === "agent") paintAgent(payload, "");
   });
-  api.on("mail:emailsUpdated", onEmailsUpdated);
+  api.on("mail:emailsUpdated", payload => {
+    onEmailsUpdated(payload);
+    sentFollowups?.refresh();
+  });
   api.on("mail:notificationClicked", onMailNotificationClick);
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);
@@ -31032,6 +31050,7 @@ async function boot() {
     rememberSyncStatus(payload);
     paintSyncControl();
     pushDebug("sync", syncDetail(payload) || syncStatusLabel(payload));
+    if (["done", "error", "paused"].includes(payload?.state)) sentFollowups?.refresh();
     // Background sync updates its own control; action receipts stay readable.
   });
   api.on("mail:translate:event", onTranslateEvent);

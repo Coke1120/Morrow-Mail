@@ -48,6 +48,7 @@ function mailbox(run) {
   run("check-pdf-preview.js");
   run("check-forward-attachments.js");
   run("check-responsive-attachments.js");
+  run("check-sent-followup.js");
   run("check-gmail-cache.js");
   run("check-gmail-engine.js");
   run("check-gmail-mail-api-ui.js");

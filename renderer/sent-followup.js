@@ -113,6 +113,7 @@
         const actions = make("div", "", "row");
         const open = button("Open sent message", () => openOriginal(row));
         open.disabled = !row.canOpen;
+        if (!row.canOpen) item.append(make("p", "The complete original is not available in the cache.", "hint"));
         const change = button("Change date", () => edit(row));
         const dismiss = button("Dismiss reminder", async () => {
           const viewing = revision;

@@ -686,6 +686,7 @@ function listRow(row, generations, memberships, includeDraftTo = false) {
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   delete recipientHeaders.followupReply;
   delete recipientHeaders.followupConfirmedRecipient;
+  delete recipientHeaders.followupUnprovenAdoption;
   const sender = row.from_address || row.from_addr || "";
   const parsedAddress = composePolicy.address(sender);
   const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
