@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { listEventsForIds } = require("../host/mail/calendar-api");
 const {
   availableCalendarSlots,
   calendarDayBounds,
@@ -88,7 +89,7 @@ test("a repair visit can use Thursday 18:00 and Saturday 10:00 when work blocks 
     "2027-01-14 18:00–18:30 UTC+08:00\n2027-01-16 10:00–10:30 UTC+08:00");
 });
 
-test("unverified or invalid responses yield no slots and identify affected checked calendars", () => {
+test("unverified or invalid responses yield no slots and identify affected checked calendars", async () => {
   const day = "2027-01-12";
   const event = timed("work", day + "T08:30:00Z", day + "T09:00:00Z");
   const response = payload(day, [event]);
@@ -120,6 +121,64 @@ test("unverified or invalid responses yield no slots and identify affected check
   assert.deepEqual(daySlots(day, response, []), { slots: [], unavailableCalendarIds: [] });
   assert.deepEqual(daySlots(day, response, ["work", "work"]), { slots: [], unavailableCalendarIds: ["work"] });
   assert.equal(calendarDayBounds("2027-02-30"), null);
+
+  const range = calendarDayBounds(day);
+  const busy = { id: "busy", start: { dateTime: event.start }, end: { dateTime: event.end } };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+  for (const [provider, rowsKey, cursorKey, invalid, next] of [
+    ["google", "items", "nextPageToken", "../invalid", "page2"],
+    ["microsoft", "value", "@odata.nextLink", "https://example.invalid/page2", "https://graph.microsoft.com/v1.0/me/calendars/personal/calendarView?$skiptoken=page2"],
+  ]) {
+    const ids = response.calendarIds;
+    const list = fetchImpl => listEventsForIds(provider, "synthetic", ids, range, fetchImpl);
+    const isPersonal = url => url.includes("/calendars/personal/");
+    for (const [cursor, requests] of [[invalid, 1], [[next], 1], [false, 1], [next, 2]]) {
+      let personalRequests = 0;
+      const grouped = await list(async url => {
+        if (!isPersonal(url)) return json({ [rowsKey]: [] });
+        personalRequests++;
+        return json({ [rowsKey]: [], [cursorKey]: cursor });
+      });
+      assert.deepEqual(daySlots(day, { ...response, ...grouped }), { slots: [], unavailableCalendarIds: checkedCalendarIds }, provider);
+      assert.deepEqual(grouped, { events: [], truncated: true, calendarIds: ids, incompleteCalendarIds: ["personal"] });
+      assert.equal(personalRequests, requests);
+    }
+    for (const cursor of [undefined, null, ""]) {
+      const grouped = await list(async () => json({ [rowsKey]: [], [cursorKey]: cursor }));
+      assert.deepEqual(grouped, { events: [], truncated: false, calendarIds: ids });
+      assert.equal(daySlots(day, { ...response, ...grouped }).slots.length, 48);
+    }
+    const fetchPages = status => async url => {
+      if (!isPersonal(url)) return json({ [rowsKey]: [] });
+      if (!url.includes("page2")) return json({ [rowsKey]: [], [cursorKey]: next });
+      return status === 200 ? json({ [rowsKey]: [busy] }) : json({}, status);
+    };
+    const complete = await list(fetchPages(200));
+    assert.deepEqual(complete.events.map(event => [event.calendarId, event.id]), [["personal", "busy"]]);
+    assert.equal(complete.truncated, false);
+    assert.equal(Object.hasOwn(complete, "incompleteCalendarIds"), false);
+    assert.equal(daySlots(day, { ...response, ...complete }).slots.length, 47);
+    await assert.rejects(list(fetchPages(400)), { code: "provider", status: 400 });
+  }
+
+  const mixedIds = ["unchecked", "work", "personal"];
+  let pageRequests = 0;
+  const mixed = await listEventsForIds("google", "synthetic", mixedIds, range, async url => {
+    if (url.includes("/calendars/unchecked/")) {
+      return json({ items: [busy], nextPageToken: "page" + ++pageRequests });
+    }
+    if (url.includes("/calendars/personal/")) return json({ items: Array(500).fill(busy) });
+    return json({ items: [busy] });
+  });
+  assert.equal(pageRequests, 5);
+  assert.deepEqual(mixed.events.map(event => event.calendarId),
+    [...Array(5).fill("unchecked"), "work", ...Array(500).fill("personal")]);
+  assert.deepEqual(mixed.calendarIds, mixedIds);
+  assert.equal(mixed.truncated, true);
+  assert.deepEqual(mixed.incompleteCalendarIds, ["unchecked", "personal"]);
+  assert.deepEqual(daySlots(day, { ...response, ...mixed }, mixedIds), { slots: [], unavailableCalendarIds: mixedIds });
+  assert.deepEqual(await listEventsForIds("google", "synthetic", [], range, assert.fail),
+    { events: [], truncated: false, calendarIds: [] });
 });
 
 test("adjacent timed events and all-day exclusive civil dates preserve boundary slots", () => {

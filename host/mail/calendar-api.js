@@ -229,7 +229,6 @@ async function listCalendars(provider, accessToken, fetchImpl) {
 async function listGoogleEvents(accessToken, calendarId, range, fetchImpl) {
   const events = [];
   let token = "";
-  let truncated = false;
   const seen = new Set();
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const url = new URL(calendarPath("google", calendarId, "/events"));
@@ -252,15 +251,14 @@ async function listGoogleEvents(accessToken, calendarId, range, fetchImpl) {
     for (const item of items) {
       const event = normalizeGoogleEvent(item, calendarId);
       if (event) events.push(event);
-      if (events.length >= MAX_EVENTS) {
-        truncated = true;
-        return { events, truncated };
-      }
+      if (events.length >= MAX_EVENTS) return { events, truncated: true };
     }
-    token = pageToken(json.nextPageToken);
-    if (!token) return { events, truncated };
+    const rawToken = json.nextPageToken;
+    if (rawToken == null || rawToken === "") return { events, truncated: false };
+    token = typeof rawToken === "string" ? pageToken(rawToken) : "";
+    if (!token) break;
   }
-  return { events, truncated: truncated || Boolean(token) };
+  return { events, truncated: true };
 }
 
 async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
@@ -273,13 +271,9 @@ async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
   let next = url.toString();
   const seen = new Set();
   let pages = 0;
-  let truncated = false;
   while (next) {
     pages += 1;
-    if (pages > MAX_PAGES || seen.has(next)) {
-      truncated = true;
-      break;
-    }
+    if (pages > MAX_PAGES || seen.has(next)) break;
     seen.add(next);
     const json = await apiJson(next, accessToken, { fetchImpl });
     const items = Array.isArray(json.value) ? json.value : null;
@@ -293,9 +287,11 @@ async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
       if (event) events.push(event);
       if (events.length >= MAX_EVENTS) return { events, truncated: true };
     }
-    next = safeNext(json["@odata.nextLink"], "graph.microsoft.com");
+    const rawNext = json["@odata.nextLink"];
+    if (rawNext == null || rawNext === "") return { events, truncated: false };
+    next = safeNext(rawNext, "graph.microsoft.com");
   }
-  return { events, truncated };
+  return { events, truncated: true };
 }
 
 async function listEvents(provider, accessToken, calendarId, range, fetchImpl) {
@@ -311,8 +307,8 @@ async function listEvents(provider, accessToken, calendarId, range, fetchImpl) {
 
 async function listEventsForIds(provider, accessToken, calendarIds, range, fetchImpl) {
   const events = [];
-  let truncated = false;
   const fetched = [];
+  const incompleteCalendarIds = [];
   const ids = Array.isArray(calendarIds) ? calendarIds : [];
   const results = new Array(ids.length);
   let cursor = 0, failure = null;
@@ -327,9 +323,10 @@ async function listEventsForIds(provider, accessToken, calendarIds, range, fetch
   for (const [index, listed] of results.entries()) {
     fetched.push(ids[index]);
     if (listed.events.length) events.push(...listed.events);
-    if (listed.truncated) truncated = true;
+    if (listed.truncated) incompleteCalendarIds.push(ids[index]);
   }
-  return { events, truncated, calendarIds: fetched };
+  const truncated = incompleteCalendarIds.length > 0;
+  return { events, truncated, calendarIds: fetched, ...(truncated ? { incompleteCalendarIds } : {}) };
 }
 
 function invalidEvent(message) {
