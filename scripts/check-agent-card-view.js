@@ -44,6 +44,7 @@ async function rendererChecks() {
     sections: [
       { id: "needs-you", name: "Needs You", description: "Messages that need a reply or a decision from you.", items: [
         { messageId: "m1", accountId: "ada", subject: "First deadline", unread: true, from: "Ada <ada@example.test>", summary: "Ada asks for the Friday number before noon.", snippet: "Can you send Friday's number?" },
+        { messageId: "m2", accountId: "grace", subject: "First deadline", unread: true, from: "Ada <ada@example.test>", summary: "Ada asks for the Friday number before noon." },
       ] },
       { id: "fyi", name: "FYI", description: "Newsletters, receipts, and notices to skim.", items: [
         { messageId: "m4", accountId: "ada", subject: "Newsletter", unread: true, from: "News <news@example.test>", summary: "Weekly notes." },
@@ -73,10 +74,19 @@ async function rendererChecks() {
   });
   ui.context.localStorage = dom.window.localStorage;
   const home = document.getElementById("agent-home");
-  ui.run(`agentPaintPayload = ${JSON.stringify(payload)}; paintAgentHome(agentPaintPayload);`);
+  const mailboxLines = (selector) => [...home.querySelectorAll(selector)].map((node) => node.textContent);
+  const expectedMailboxes = ["Receiving mailbox: north@example.test", "Receiving mailbox: south@example.test"];
+  ui.run(`
+    state.view = "agent";
+    state.accountId = "grace";
+    state.accounts = [{ id: "ada", email: "north@example.test" }, { id: "grace", email: "south@example.test" }];
+    agentPaintPayload = ${JSON.stringify(payload)};
+    paintAgentHome(agentPaintPayload);
+  `);
   assert.equal(home.dataset.todoView, "list");
   assert.equal(home.querySelectorAll('[data-testid="agent-card"]').length, 0);
   assert.ok(sectionNamed(home, "Needs You").querySelector('[data-testid="agent-todo-actions"]'));
+  assert.deepEqual(mailboxLines(".agent-item-copy .agent-mailbox"), expectedMailboxes, "List labels only Needs You items by their own receiving account");
   assert.equal(document.getElementById("agent-view-card").getAttribute("aria-pressed"), "false");
 
   ui.run("wireAgentTodoView()");
@@ -109,6 +119,7 @@ async function rendererChecks() {
   assert.equal(document.querySelector(".space-head").querySelector("[aria-describedby]"), null);
   assert.equal(document.querySelector(".space-head").querySelector(".agent-card-detail"), null);
   assert.equal(detail.hidden, true);
+  assert.deepEqual(mailboxLines(".agent-card-face .agent-mailbox"), expectedMailboxes, "Card shows both receiving addresses before disclosure");
   assert.equal(face.getAttribute("title"), "Ada asks for the Friday number before noon.");
   assert.equal(face.getAttribute("aria-describedby"), null);
   assert.equal(calls.length, 0, "painting and switching views does not read or complete mail");
@@ -176,6 +187,19 @@ async function rendererChecks() {
   await tick();
   assert.equal(calls[0].payload.status, "dismissed");
   assert.equal(calls[0].payload.accountId, "ada");
+
+  ui.run(`acceptBodyAccounts([{ id: "ada", email: "new-north@example.test" }, { id: "other", email: "other@example.test" }]);`);
+  const refreshedMailboxes = mailboxLines(".agent-card-face .agent-mailbox");
+  ui.run("acceptBodyAccounts(state.accounts.slice(0, 1));");
+  assert.deepEqual({
+    refreshedMailboxes,
+    singleMailbox: mailboxLines(".agent-mailbox"),
+    retainedFyi: fyi.isConnected,
+  }, {
+    refreshedMailboxes: ["Receiving mailbox: new-north@example.test"],
+    singleMailbox: [],
+    retainedFyi: true,
+  }, "Account refresh updates addresses, drops missing and single-mailbox labels, and retains unrelated cards");
 
   document.getElementById("agent-view-list").click();
   assert.equal(home.dataset.todoView, "list");

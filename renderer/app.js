@@ -14851,6 +14851,10 @@ function acceptBodyAccounts(accounts) {
       { ...target.identity, bodyVersion: account.bodyVersion || 0, attempted: -1 });
   }
   pumpBodyRefreshes();
+  if (state.view === "agent") {
+    const payload = $("agent-home")?.morrowHomePayload;
+    if (payload) paintAgentHome(payload);
+  }
 }
 
 function applyBodyUpdate(payload) {
@@ -24646,6 +24650,13 @@ function styleFollowButton(follow) {
   return button;
 }
 
+function agentMailboxLine(mailbox) {
+  const line = document.createElement("p");
+  line.className = "agent-mailbox";
+  line.textContent = "Receiving mailbox: " + mailbox;
+  return line;
+}
+
 function agentCard(item, options) {
   const card = document.createElement("article");
   card.className = "agent-item";
@@ -24691,6 +24702,7 @@ function agentCard(item, options) {
   subject.className = "agent-subject";
   subject.textContent = (item && item.subject) || "(no subject)";
   copy.appendChild(subject);
+  if (options?.mailbox) copy.appendChild(agentMailboxLine(options.mailbox));
   const summary = String((item && item.summary) || "").trim();
   if (summary) {
     const summaryLine = document.createElement("p");
@@ -25755,14 +25767,15 @@ function paintAgent(payload, errorText) {
 const agentHomeCards = new Map();
 let agentHomeUsed = new Set();
 
-function retainedAgentCard(item, section) {
+function retainedAgentCard(item, section, mailboxes) {
   const key = `${section.id || section.name}\0${item.accountId || ""}\0${item.messageId || item.id || JSON.stringify(item)}`;
+  const mailbox = mailboxes?.get(item.accountId) || "";
   const signature = JSON.stringify([item, section.name, section.title, agentTodoView, agentLooksUnread(item), agentWhen(item.date),
-    agentReplySelection.has(agentSelectionKey(item)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning)]);
+    agentReplySelection.has(agentSelectionKey(item)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning), mailbox]);
   agentHomeUsed.add(key);
   const previous = agentHomeCards.get(key);
   if (previous?.signature === signature) return previous.node;
-  const node = agentTodoCard(item, section);
+  const node = agentTodoCard(item, section, mailbox);
   agentHomeCards.set(key, { node, signature });
   return node;
 }
@@ -25770,6 +25783,7 @@ function retainedAgentCard(item, section) {
 function paintAgentHome(payload) {
   const root = $("agent-home");
   if (!root) return;
+  root.morrowHomePayload = payload;
   syncAgentTodoViewControls();
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
@@ -25783,10 +25797,12 @@ function paintAgentHome(payload) {
     for (const key of agentReplySelection) if (!visible.has(key)) agentReplySelection.delete(key);
     paintAgentActionSurface();
   }
-  const key = JSON.stringify([sections, reason, agentTodoView, [...agentReplySelection], [...agentMarkedRead], [...agentPendingReads.keys()],
+  const mailboxEntries = state.accounts.length > 1 ? state.accounts.map(({ id, email }) => [id, email]) : [];
+  const key = JSON.stringify([sections, reason, agentTodoView, [...agentReplySelection], [...agentMarkedRead], [...agentPendingReads.keys()], mailboxEntries,
     learningApplyStamp(state.agentLearning), state.prefs.markReadCompletesTodos, sections.flatMap(section => (section.items || []).map(item => agentWhen(item.date)))]);
   if (root.morrowHomeKey === key) return;
   root.morrowHomeKey = key;
+  const mailboxes = new Map(mailboxEntries);
   const focused = root.contains(document.activeElement) ? document.activeElement : null;
   const panel = $("agent-panel");
   const scrollTop = panel ? panel.scrollTop : 0;
@@ -25825,6 +25841,7 @@ function paintAgentHome(payload) {
     const tools = document.createElement("div");
     tools.className = "agent-section-tools";
     const role = agentPileRole(section);
+    const receivingMailboxes = role === "reply" ? mailboxes : null;
     if ((role === "fyi" || role === "other") && items.length) tools.appendChild(agentCategoryReadButton(role, items));
     if (items.some(agentSelectionKey)) tools.appendChild(agentReplySelectionTools(block, items, role));
     if (section.collapseView && items.length) {
@@ -25853,12 +25870,12 @@ function paintAgentHome(payload) {
       const grid = document.createElement("div");
       grid.className = "agent-card-grid";
       for (const item of items) {
-        if (item && typeof item === "object") grid.appendChild(retainedAgentCard(item, section));
+        if (item && typeof item === "object") grid.appendChild(retainedAgentCard(item, section, receivingMailboxes));
       }
       if (grid.childNodes.length) block.appendChild(grid);
     } else {
       for (const item of items) {
-        if (item && typeof item === "object") block.appendChild(retainedAgentCard(item, section));
+        if (item && typeof item === "object") block.appendChild(retainedAgentCard(item, section, receivingMailboxes));
       }
     }
     root.appendChild(block);
@@ -26648,7 +26665,7 @@ function bindAgentCardDetail(card) {
   }, true);
 }
 
-function agentSkimCard(item, section) {
+function agentSkimCard(item, section, mailbox) {
   const context = agentMessageContext(item);
   const card = document.createElement("article");
   card.className = "agent-item agent-card";
@@ -26687,7 +26704,9 @@ function agentSkimCard(item, section) {
   const line = document.createElement("p");
   line.className = "agent-card-line";
   line.textContent = reason;
-  face.append(top, subject, line);
+  face.append(top, subject);
+  if (mailbox) face.appendChild(agentMailboxLine(mailbox));
+  face.appendChild(line);
   const learned = agentLearnedLine(item);
   if (learned) face.appendChild(learned);
   const chips = document.createElement("div");
@@ -26731,11 +26750,11 @@ function agentSkimCard(item, section) {
   return card;
 }
 
-function agentTodoCard(item, section) {
+function agentTodoCard(item, section, mailbox) {
   if (section && item && typeof item === "object" && !item.categoryId) item = { ...item, categoryId: section.id || "" };
-  if (!agentMessageContext(item)) return agentCard(item);
-  if (agentTodoView === "card") return agentSkimCard(item, section);
-  const card = agentCard(item, { actions: false });
+  if (!agentMessageContext(item)) return agentCard(item, { mailbox });
+  if (agentTodoView === "card") return agentSkimCard(item, section, mailbox);
+  const card = agentCard(item, { actions: false, mailbox });
   if (agentSelectionKey(item)) {
     const main = card.querySelector(".agent-item-main");
     if (main) main.prepend(agentSelectBox(item));
