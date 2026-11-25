@@ -312,14 +312,17 @@ function createReaderHost(options) {
       signal: document.controller.signal,
       isCurrent,
       renderedIdentity() {
-        // app.js is a classic first-party script. Only read its current identity
-        // fields, and always address the same verified main frame.
+        // Read the presentation from app.js's pane-keyed state in the verified
+        // main frame. Mail markup cannot set this choice.
         if (!isCurrent()) return null;
         return document.frame.executeJavaScript(`(() => {
           if (location.href !== ${JSON.stringify(record.url)}) return null;
           if (typeof state === "undefined" || pendingOpenId || pendingOpenBody || !state.email || state.email.bodyError) return null;
           const { id, accountId, bodyEpoch } = state.email;
-          return { id, accountId, bodyEpoch };
+          const choice = plainBodyViews.get($("reader"));
+          if (choice?.key !== JSON.stringify([accountId, id])) return null;
+          const presentation = choice.plain || !state.email.htmlBody ? "plain" : "html";
+          return { id, accountId, bodyEpoch, presentation };
         })()`);
       },
     };

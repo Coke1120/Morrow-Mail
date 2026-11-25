@@ -82,15 +82,15 @@ function inertHtml(html) {
   return output.join("");
 }
 
-function bodyOf(email) {
+function bodyOf(email, presentation) {
   if (email.bodyComplete !== true || email.hasBody !== true || email.bodyWarning || email.encodingWarning) {
     throw new ReceiptError(INCOMPLETE);
   }
   const html = email.htmlBody || "";
   const plain = email.textBody || "";
   if (Buffer.byteLength(html) + Buffer.byteLength(plain) > MAX_BODY_BYTES) throw new ReceiptError(TOO_LARGE);
-  if (html.trim()) return inertHtml(html);
-  if (!readable(plain)) throw new ReceiptError(NO_TEXT);
+  if (presentation === "html") return inertHtml(html);
+  if (presentation !== "plain" || !readable(plain)) throw new ReceiptError(NO_TEXT);
   if (lineBreakCount(plain) > MAX_EXPLICIT_BREAKS) throw new ReceiptError(TOO_LARGE);
   return `<div class="plain" dir="auto">${escape(plain)}</div>`;
 }
@@ -109,11 +109,11 @@ function storedDate(date) {
   return new Date(stamp).toISOString().replace("T", " ").replace("Z", " UTC");
 }
 
-function receiptHtml(email) {
+function receiptHtml(email, presentation) {
   const subject = email.subject || "(No subject)";
   const sender = email.fromAddress || "Unknown";
   if (Buffer.byteLength(subject) + Buffer.byteLength(sender) > MAX_BODY_BYTES) throw new ReceiptError(TOO_LARGE);
-  const body = bodyOf(email);
+  const body = bodyOf(email, presentation);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>Message receipt</title>

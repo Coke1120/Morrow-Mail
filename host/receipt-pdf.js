@@ -259,17 +259,21 @@ function createReceiptPdf({ electron, readCached, sourceFor, enabled }) {
         check();
         const shown = await withDeadline(source.renderedIdentity, signal, 4000, "The Reader did not respond. Reopen the message and try again.");
         check();
-        if (!matches(shown, source)) throw new ReceiptError(CHANGED);
+        if (!matches(shown, source) || (shown.presentation !== "plain" && shown.presentation !== "html")) {
+          throw new ReceiptError(CHANGED);
+        }
         const reply = readCached({ accountId, emailId, bodyEpoch });
         if (reply?.success !== true || !matches(reply.data?.email, source)) throw new ReceiptError(CHANGED);
-        return reply.data.email;
+        return { email: reply.data.email, presentation: shown.presentation };
       };
-      const email = await read();
+      const { email, presentation } = await read();
       const verify = async () => {
         const current = await read();
-        if (SNAPSHOT_FIELDS.some(key => current[key] !== email[key])) throw new ReceiptError(CHANGED);
+        if (current.presentation !== presentation || SNAPSHOT_FIELDS.some(key => current.email[key] !== email[key])) {
+          throw new ReceiptError(CHANGED);
+        }
       };
-      const bytes = await printPdf(electron, receiptHtml(email), signal);
+      const bytes = await printPdf(electron, receiptHtml(email, presentation), signal);
       await verify();
       await showPreview(electron, parent, bytes, signal, verify);
     } catch (error) {

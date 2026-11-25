@@ -2,5 +2,5 @@
   "receipt-pdf",
   "Save a message as a receipt PDF",
   "Mail",
-  "Choose View → Separate window and open the message. In its Reader, choose File → Save message as PDF… to preview a PDF of that message. A complete, readable cached body is required. Sender, date and message text are included. Images and attachments are omitted. Choose Save PDF… to pick a destination, or close the preview to cancel."
+  "Choose View → Separate window and open the message. In its Reader, choose File → Save message as PDF… to preview the selected HTML or plain-text version. The selected version must contain readable text in the complete cached message. Sender, date and message text are included. Images and attachments are omitted. Choose Save PDF… to pick a destination, or close the preview to cancel."
 ]
