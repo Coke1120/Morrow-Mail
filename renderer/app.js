@@ -120,6 +120,7 @@ const state = {
 let accountGen = 0;
 let listGen = 0;
 let listFilterTimer = null;
+let listFilterEditPending = false;
 let filterBeforeComposition = null;
 let displayedListFilter = "";
 const filterSelection = new Map();
@@ -7487,6 +7488,7 @@ function currentListFilter() {
 }
 
 function clearListFilterInput() {
+  listFilterEditPending = false;
   filterBeforeComposition = null;
   const input = $("list-filter");
   if (input) input.value = "";
@@ -7503,6 +7505,7 @@ function applyListFilter(event) {
   }
   // Invalidate an older response immediately, including during the debounce gap.
   const edit = ++listGen;
+  listFilterEditPending = true;
   state.listOffset = 0;
   state.listCursors = [];
   state.listLoading = true;
@@ -12522,12 +12525,13 @@ async function loadList(fromNetwork, requestedOffset) {
   const scopeChanged = state.listScope !== scope;
   const filterChanged = state.loadedListFilter !== listFilter;
   state.loadedListFilter = listFilter;
-  if (scopeChanged) filterSelection.clear();
   if (filterChanged) {
     state.listOffset = 0;
     state.listCursors = [];
   }
   if (scopeChanged) {
+    listFilterEditPending = false;
+    filterSelection.clear();
     state.listScope = scope;
     state.listOffset = 0;
     state.listTotal = 0;
@@ -12619,10 +12623,12 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     const rows = data?.emails || [];
     const pageSize = data?.geometry?.pageSize ?? rows.length;
-    // Include selections made on the visible page while its replacement was pending.
-    if (!scopeChanged && (filterChanged || displayedListFilter !== listFilter) && state.selectedIds.length) {
+    // An edit can return to the same phrase or need a retry. Capture the current
+    // selection only once its replacement page has actually arrived.
+    if (listFilterEditPending && state.selectedIds.length) {
       for (const email of selectedMessages()) filterSelection.set(String(email.id), email);
     }
+    listFilterEditPending = false;
     // A trailing held row can confirm membership from outside this page.
     state.emails = takeEmails(rows.slice(0, pageSize));
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
