@@ -19,6 +19,12 @@
       value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value);
   }
 
+  function validCheckedCalendarIds(value) {
+    if (!boundedArray(value, MAX_CALENDARS) || !value.length) return false;
+    const ids = new Set(value);
+    return ids.size === value.length && [...ids].every(validId);
+  }
+
   function pad(value) {
     return String(value).padStart(2, "0");
   }
@@ -115,10 +121,9 @@
       slots: [],
       unavailableCalendarIds: [...checked].filter(id => affected.has(id)),
     });
-    if (!checked.size || checked.size !== checkedCalendarIds.length || !validId(accountId) ||
-        payload?.accountId !== accountId || payload.api !== true || payload.truncated !== false ||
-        !boundedArray(payload.calendarIds, MAX_CALENDARS) || !boundedArray(payload.calendars, MAX_CALENDARS) ||
-        !boundedArray(payload.events, MAX_EVENTS)) return unavailable();
+    if (!validCheckedCalendarIds(checkedCalendarIds) || !validId(accountId) ||
+        payload?.accountId !== accountId || payload.api !== true || typeof payload.truncated !== "boolean" ||
+        !boundedArray(payload.calendarIds, MAX_CALENDARS) || !boundedArray(payload.calendars, MAX_CALENDARS)) return unavailable();
 
     const ranges = dayRanges(day);
     if (!ranges.length) return unavailable();
@@ -148,15 +153,17 @@
     for (const id of checked) {
       if (!returned.has(id) || !known.has(id)) affected.add(id);
     }
-    if (Object.hasOwn(payload, "incompleteCalendarIds")) {
+    if (payload.truncated || Object.hasOwn(payload, "incompleteCalendarIds")) {
       const incomplete = payload.incompleteCalendarIds;
-      if (!boundedArray(incomplete, MAX_CALENDARS)) return unavailable();
+      if (!boundedArray(incomplete, MAX_CALENDARS) || (payload.truncated && !incomplete.length) ||
+          new Set(incomplete).size !== incomplete.length) return unavailable();
       for (const id of incomplete) {
         if (!checked.has(id)) return unavailable();
         affected.add(id);
       }
     }
     if (affected.size) return unavailable(affected);
+    if (!boundedArray(payload.events, MAX_EVENTS)) return unavailable();
 
     const busy = [];
     for (const event of payload.events) {
@@ -242,7 +249,11 @@
     return `${slotLine(first)}\n${slotLine(second)}`;
   }
 
-  const api = { calendarDayBounds, availableCalendarSlots, formatCalendarSlotPair };
+  function formatCalendarSlot(slot) {
+    return validHalfHour(slot) ? slotLine(slot) : "";
+  }
+
+  const api = { calendarDayBounds, availableCalendarSlots, formatCalendarSlot, formatCalendarSlotPair, validCheckedCalendarIds };
   if (typeof module === "object" && module.exports) module.exports = api;
   else globalThis.morrowComposeCalendarSlots = api;
 })();

@@ -1,11 +1,16 @@
 const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
 const { test } = require("node:test");
-const { listEventsForIds } = require("../host/mail/calendar-api");
+const { runInNewContext } = require("node:vm");
+const calendar = require("../host/mail/calendar-api");
+const { listEventsForIds } = calendar;
+const { renderer } = require("./check-ux-workflows");
+const slotsApi = require("../renderer/compose-calendar-slots");
 const {
   availableCalendarSlots,
   calendarDayBounds,
   formatCalendarSlotPair,
-} = require("../renderer/compose-calendar-slots");
+} = slotsApi;
 
 process.env.TZ = "Asia/Hong_Kong";
 
@@ -19,7 +24,7 @@ function payload(firstDay, events, lastDay = firstDay) {
     accountId,
     truncated: false,
     calendarIds: [...checkedCalendarIds].reverse(),
-    calendars: [{ id: "work" }, { id: "personal" }, { id: "unchecked" }],
+    calendars: [{ id: "work", name: "Work" }, { id: "personal", name: "Personal" }, { id: "unchecked" }],
     timeMin: calendarDayBounds(firstDay).timeMin,
     timeMax: calendarDayBounds(lastDay).timeMax,
     events,
@@ -37,6 +42,101 @@ function timed(calendarId, start, end) {
 function halfHourAt(value) {
   const startMs = Date.parse(value);
   return { startMs, endMs: startMs + halfHour };
+}
+
+function composePickerFixture() {
+  const palette = new Map();
+  const calls = [];
+  const inserted = [];
+  let checks = { [accountId]: checkedCalendarIds, other: ["unchecked"] };
+  function node(id) {
+    const listeners = new Map();
+    return {
+      id, dataset: {}, value: "", disabled: false, open: false, textContent: "", classList: { toggle() {} },
+      addEventListener(type, fn) { listeners.set(type, fn); },
+      dispatch(type, extra) { return listeners.get(type)?.({ preventDefault() {}, ...extra }); },
+      focus() { document.activeElement = this; },
+      replaceChildren(...options) { this.options = options; this.value = ""; },
+      showModal() { this.open = true; },
+      close() { this.open = false; this.dispatch("close"); },
+    };
+  }
+  const get = id => {
+    if (!palette.has(id)) palette.set(id, node(id));
+    return palette.get(id);
+  };
+  const control = suffix => get(`compose-calendar-slots-${suffix}`);
+  const dialog = get("compose-calendar-slots");
+  const document = {
+    getElementById: get,
+    createElement: node,
+    querySelectorAll: () => [get("compose"), dialog].filter(row => row.open),
+  };
+  get("compose").open = true;
+  get("compose-from").value = "sender@example.invalid";
+  Object.assign(get("compose-editor"), { nodeType: 1, appendChild() {}, isConnected: true, contentEditable: "true" });
+  const window = { ...node("window"), morrowComposeCalendarSlots: slotsApi };
+  const ui = renderer({ window, document, localStorage: { getItem: () => JSON.stringify(checks) },
+    senderAccountId: accountId, inserted, closePending: null,
+    list: (channel, params) => new Promise(resolve => calls.push({ channel, params: JSON.parse(JSON.stringify(params)), resolve })),
+  });
+  ui.run(`
+    state.accountId = 'other';
+    state.accounts = [{ id: senderAccountId, platform: 'imap', bodyEpoch: 1 }];
+    state.composeSession = 1;
+    state.composeMeta = { kind: 'all', accountId: senderAccountId, fromAddress: 'sender@example.invalid' };
+    state.composeIdentity = { accountId: senderAccountId, accountEpoch: 1, sendAs: [{ email: state.composeMeta.fromAddress }] };
+    call = list;
+    const closeCalendarDialog = closeDialog;
+    closeDialog = id => closePending ? closePending.then(() => closeCalendarDialog(id)) : closeCalendarDialog(id);
+    insertComposeCalendarText = (_editor, _range, text) => { inserted.push(text); return true; };
+    wireComposeCalendarSlots();
+    syncComposeCalendarSlots();
+  `);
+  return {
+    dialog, control, calls, inserted, ui,
+    open: () => control("open").dispatch("click"),
+    date(day) {
+      control("date").value = day;
+      return control("date").dispatch("input");
+    },
+    pick(slot) {
+      assert.ok(control("time").options.some(row => row.value === String(slot.startMs)));
+      control("time").value = String(slot.startMs);
+      control("time").dispatch("change");
+      assert.equal(control("add").disabled, false);
+      control("add").dispatch("click");
+    },
+    checks(ids) {
+      checks = { ...checks, [accountId]: ids };
+      window.dispatch("storage", { key: "morrow.calendarChecks", newValue: JSON.stringify(checks) });
+    },
+  };
+}
+
+function calendarListFixture(fetchImpl) {
+  const account = { id: accountId, profile: "gmail", email: "sender@example.invalid" };
+  const grant = JSON.stringify({ accessToken: "synthetic", refreshToken: "synthetic", grantedScopes: "calendar" });
+  const modules = {
+    "./db": { accountById: id => id === account.id ? account : null },
+    "./secrets": { revision: () => 0, getPasswordAsync: async key => key === `${accountId}:calendar` ? grant : null },
+    "./oauth": { oauthReady: () => ({ google: true }), accessTokenFor: async () => "synthetic" },
+    "./oauth-config": { providerKey: () => "google", hasPurposeScopes: scopes => scopes === "calendar",
+      loadGoogleClient: () => ({ clientId: "synthetic" }), googleGrantMatches: () => true, requireGoogleGrantClient() {} },
+    "./calendar-api": {
+      ...calendar,
+      listCalendars: (...args) => calendar.listCalendars(...args, fetchImpl),
+      listEventsForIds: (...args) => calendar.listEventsForIds(...args, fetchImpl),
+    },
+    "./provider-http": require("../host/mail/provider-http"),
+    "./provider-api": {}, "./inbox-rules": {}, "./vacation-api": {}, "./sieve-vacation": {},
+  };
+  const module = { exports: {} };
+  const file = require.resolve("../host/mail/sidecar");
+  runInNewContext(readFileSync(file, "utf8"), {
+    module, Error, require: name => name.startsWith("node:") ? require(name) : modules[name],
+  }, { filename: file });
+  return async params => JSON.parse(JSON.stringify(await module.exports.answer("calendar:list", [params])));
 }
 
 test("12 January 2027 in Hong Kong leaves 16:00 and 17:00 of three cross-zone options", () => {
@@ -68,7 +168,7 @@ test("12 January 2027 in Hong Kong leaves 16:00 and 17:00 of three cross-zone op
   assert.equal(formatCalendarSlotPair(result.slots, options.slice(0, 2)), null);
 });
 
-test("a repair visit can use Thursday 18:00 and Saturday 10:00 when work blocks Wednesday 18:00", () => {
+test("a repair visit can use Thursday 18:00 and Saturday 10:00 when work blocks Wednesday 18:00", async () => {
   const days = ["2027-01-13", "2027-01-14", "2027-01-16"];
   const response = payload(days[0], [
     timed("work", "2027-01-13T10:00:00Z", "2027-01-13T10:30:00Z"),
@@ -87,6 +187,90 @@ test("a repair visit can use Thursday 18:00 and Saturday 10:00 when work blocks 
   assert.deepEqual(candidates, options.slice(1));
   assert.equal(formatCalendarSlotPair(candidates, options.slice(1)),
     "2027-01-14 18:00–18:30 UTC+08:00\n2027-01-16 10:00–10:30 UTC+08:00");
+
+  const f = composePickerFixture();
+  f.open();
+  assert.equal(f.dialog.open, true);
+  assert.equal(f.calls.length, 0);
+  const wed = f.date(days[0]);
+  const thu = f.date(days[1]);
+  assert.deepEqual(f.calls.map(({ channel, params }) => [channel, params]), days.slice(0, 2).map(day => ["calendar:list",
+    { accountId, calendarIds: checkedCalendarIds, ...calendarDayBounds(day), availabilityOnly: true }]));
+  f.calls[1].resolve(response);
+  await thu;
+  f.calls[0].resolve(payload(days[0], []));
+  await wed;
+  f.pick(options[1]);
+  assert.equal(f.control("insert").disabled, true);
+  const sat = f.date(days[2]);
+  assert.equal(f.control("insert").disabled, true);
+  f.calls[2].resolve(response);
+  await sat;
+  f.pick(options[2]);
+  const preview = "2027-01-14 18:00–18:30 UTC+08:00\n2027-01-16 10:00–10:30 UTC+08:00";
+  assert.equal(f.control("preview").textContent, preview);
+  assert.equal(f.control("insert").disabled, false);
+  await f.control("insert").dispatch("click");
+  assert.deepEqual(f.inserted, [preview]);
+
+  f.open();
+  assert.equal(f.control("preview").textContent, "");
+  const abandoned = f.date(days[0]);
+  f.dialog.dispatch("cancel");
+  f.open();
+  f.calls.at(-1).resolve(response);
+  await abandoned;
+  assert.equal(f.control("time").options.length, 1);
+  assert.equal(f.control("insert").disabled, true);
+
+  const readSaturday = f.date(days[2]);
+  f.calls.at(-1).resolve(response);
+  await readSaturday;
+  f.pick(options[2]);
+  f.pick(halfHourAt("2027-01-16T10:30:00+08:00"));
+  const readTruncated = f.date(days[0]);
+  assert.equal(f.control("insert").disabled, true);
+  f.calls.at(-1).resolve({ ...response, truncated: true, incompleteCalendarIds: ["work"] });
+  await readTruncated;
+  assert.equal(f.control("status").textContent, "Could not verify availability for Work.");
+  assert.equal(f.control("preview").textContent, "");
+  assert.equal(f.control("time").options.length, 1);
+
+  for (const [reason, invalidate] of [
+    ["changed checked set", () => { f.checks(["personal"]); f.checks(checkedCalendarIds); }],
+    ["date change", () => { f.date(days[0]); f.control("date").value = days[2]; }],
+    ["sender context replacement", () => f.ui.run("state.composeIdentity = { ...state.composeIdentity }")],
+    ["draft save", () => f.ui.run("state.composePending = true; syncComposeCalendarSlots(); state.composePending = false;")],
+  ]) {
+    if (!f.dialog.open) f.open();
+    const readAgain = f.date(days[2]);
+    f.calls.at(-1).resolve(response);
+    await readAgain;
+    f.pick(options[2]);
+    f.pick(halfHourAt("2027-01-16T10:30:00+08:00"));
+    let finishClose;
+    f.ui.context.closePending = new Promise(resolve => { finishClose = resolve; });
+    const pendingInsert = f.control("insert").dispatch("click");
+    invalidate();
+    finishClose();
+    await pendingInsert;
+    f.ui.context.closePending = null;
+    assert.deepEqual(f.inserted, [preview], `${reason} revokes approval during close`);
+  }
+
+  f.open();
+  const readMissing = f.date(days[0]);
+  f.calls.at(-1).resolve({ ...response, calendars: [{ id: "personal", name: "Personal" }], events: [], incompleteCalendarIds: ["work"] });
+  await readMissing;
+  assert.equal(f.control("status").textContent, "Could not verify availability for work.");
+  assert.equal(f.control("time").options.length, 1);
+  f.control("cancel").dispatch("click");
+
+  f.checks([]);
+  f.open();
+  assert.equal(f.control("date").disabled, true);
+  assert.equal(f.control("status").textContent, "Select calendars for this mailbox in Calendar.");
+  assert.equal(f.control("insert").disabled, true);
 });
 
 test("unverified or invalid responses yield no slots and identify affected checked calendars", async () => {
@@ -102,6 +286,11 @@ test("unverified or invalid responses yield no slots and identify affected check
     ["missing directory entry", { calendars: [{ id: "work" }] }, ["personal"]],
     ["unavailable API", { api: false }],
     ["truncated", { truncated: true }],
+    ["precisely truncated", { truncated: true, incompleteCalendarIds: ["work"] }, ["work"]],
+    ["large truncated response", { truncated: true, incompleteCalendarIds: ["work"], events: Array(10001).fill(event) }, ["work"]],
+    ["empty truncation metadata", { truncated: true, incompleteCalendarIds: [] }],
+    ["duplicate truncation metadata", { truncated: true, incompleteCalendarIds: ["work", "work"] }],
+    ["unexpected truncation metadata", { truncated: true, incompleteCalendarIds: ["unchecked"] }],
     ["unknown truncation", { truncated: undefined }],
     ["wrong sending account", { accountId: "another-account" }],
     ["incomplete calendar", { incompleteCalendarIds: ["personal"] }, ["personal"]],
@@ -139,7 +328,7 @@ test("unverified or invalid responses yield no slots and identify affected check
         personalRequests++;
         return json({ [rowsKey]: [], [cursorKey]: cursor });
       });
-      assert.deepEqual(daySlots(day, { ...response, ...grouped }), { slots: [], unavailableCalendarIds: checkedCalendarIds }, provider);
+      assert.deepEqual(daySlots(day, { ...response, ...grouped }), { slots: [], unavailableCalendarIds: ["personal"] }, provider);
       assert.deepEqual(grouped, { events: [], truncated: true, calendarIds: ids, incompleteCalendarIds: ["personal"] });
       assert.equal(personalRequests, requests);
     }
@@ -176,9 +365,72 @@ test("unverified or invalid responses yield no slots and identify affected check
   assert.deepEqual(mixed.calendarIds, mixedIds);
   assert.equal(mixed.truncated, true);
   assert.deepEqual(mixed.incompleteCalendarIds, ["unchecked", "personal"]);
-  assert.deepEqual(daySlots(day, { ...response, ...mixed }, mixedIds), { slots: [], unavailableCalendarIds: mixedIds });
+  assert.deepEqual(daySlots(day, { ...response, ...mixed }, mixedIds), { slots: [], unavailableCalendarIds: ["unchecked", "personal"] });
   assert.deepEqual(await listEventsForIds("google", "synthetic", [], range, assert.fail),
     { events: [], truncated: false, calendarIds: [] });
+
+  const paths = [];
+  let workState = "complete";
+  const list = calendarListFixture(async (url, init) => {
+    assert.equal(init.method, "GET");
+    const path = new URL(url).pathname;
+    paths.push(path);
+    if (path === "/calendar/v3/users/me/calendarList") {
+      return json({ items: [{ id: "unchecked", primary: true }, { id: "personal", summary: "Personal" },
+        ...(workState === "missing" ? [] : [{ id: "work", summary: "Work" }])] });
+    }
+    if (path.includes("/calendars/work/")) {
+      if (workState === "error") return json({}, 400);
+      return json({ items: [busy], ...(workState === "truncated" ? { nextPageToken: false } : {}) });
+    }
+    if (path.includes("/calendars/unchecked/")) {
+      return json({ items: [{ ...busy, start: { dateTime: day + "T16:00:00+08:00" }, end: { dateTime: day + "T17:30:00+08:00" } }] });
+    }
+    return json({ items: [] });
+  });
+  const strict = { accountId, ...range, calendarIds: checkedCalendarIds, calendarId: "unchecked", availabilityOnly: true };
+  for (const calendarIds of [undefined, [], ["work", "work"], [" work"], [0], [""], ["x".repeat(513)],
+    Array(1), Array.from({ length: 501 }, (_, i) => String(i))]) {
+    assert.equal((await list({ ...strict, calendarIds })).error.code, "invalid");
+  }
+  assert.equal((await list({ ...strict, accountId: undefined, id: accountId })).error.code, "invalid");
+  assert.deepEqual(paths, []);
+
+  const complete = (await list(strict)).data;
+  assert.deepEqual(complete.calendarIds, checkedCalendarIds);
+  assert.deepEqual(complete.events.map(row => row.calendarId), ["work"]);
+  assert.ok(paths.every(path => !path.includes("/calendars/unchecked/")));
+  assert.deepEqual(daySlots(day, complete).slots.filter(slot =>
+    ["16:00", "16:30", "17:00"].some(time => slot.startMs === Date.parse(`${day}T${time}:00+08:00`))),
+  [halfHourAt(day + "T16:00:00+08:00"), halfHourAt(day + "T17:00:00+08:00")]);
+
+  paths.length = 0;
+  workState = "missing";
+  const missing = (await list(strict)).data;
+  assert.deepEqual(paths, ["/calendar/v3/users/me/calendarList"]);
+  assert.deepEqual(missing.events, []);
+  assert.deepEqual(missing.incompleteCalendarIds, ["work"]);
+  assert.equal(missing.truncated, false);
+  assert.deepEqual(daySlots(day, missing), { slots: [], unavailableCalendarIds: ["work"] });
+  const fallback = (await list({ ...strict, calendarIds: ["work"], availabilityOnly: false })).data;
+  assert.deepEqual(fallback.calendarIds, ["unchecked"]);
+  assert.deepEqual(fallback.events.map(row => row.calendarId), ["unchecked"]);
+  assert.equal(Object.hasOwn(fallback, "incompleteCalendarIds"), false);
+
+  workState = "truncated";
+  const truncated = (await list(strict)).data;
+  assert.equal(truncated.truncated, true);
+  assert.deepEqual(truncated.incompleteCalendarIds, ["work"]);
+  assert.deepEqual(daySlots(day, truncated), { slots: [], unavailableCalendarIds: ["work"] });
+  const legacy = (await list({ ...strict, availabilityOnly: undefined })).data;
+  assert.equal(legacy.truncated, true);
+  assert.equal(Object.hasOwn(legacy, "incompleteCalendarIds"), false);
+
+  workState = "error";
+  const rejected = await list(strict);
+  assert.equal(rejected.success, false);
+  assert.equal(rejected.error.code, "provider");
+  assert.deepEqual(await list({ ...strict, availabilityOnly: false }), rejected);
 });
 
 test("adjacent timed events and all-day exclusive civil dates preserve boundary slots", () => {

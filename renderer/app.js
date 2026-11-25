@@ -15237,6 +15237,7 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  if (state.composeMeta) syncComposeCalendarSlots();
   if (state.composeInboxDraft) {
     if (state.composeInboxPicker && !currentComposeInboxDraft()) invalidateComposeInboxPicker();
     syncComposeInboxButton();
@@ -16325,7 +16326,7 @@ function syncComposeRecipientRows() {
 function syncComposeActions() {
   const account = composeAccount();
   const live = isLive(account);
-  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending || composeFilesPending();
+  const locked = composeActionsLocked();
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   const sendButton = $("compose-send");
@@ -16337,11 +16338,15 @@ function syncComposeActions() {
     sendNow.disabled = !live || locked || !!state.composeIdentityError;
   }
   syncComposeInboxButton();
+  syncComposeCalendarSlots();
+}
+
+function composeActionsLocked() {
+  return state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending || composeFilesPending();
 }
 
 function syncCompose() {
   const locked = state.composePending || state.composeQueued;
-  syncComposeActions();
   $("compose-close").disabled = state.composePending;
   for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at", "compose-attach", "compose-file"]) {
     const control = $(id);
@@ -16355,11 +16360,277 @@ function syncCompose() {
     if (control) { control.readOnly = !!state.composePartialReceipt; if (state.composePartialReceipt) control.disabled = false; }
   }
   setComposeFormatLocked(locked);
+  syncComposeActions();
   syncComposeRecipientRows();
   paintComposeAttachments();
   paintComposeNote();
   paintComposeAi();
   if (recipientSuggestInput && (recipientSuggestInput.disabled || recipientSuggestInput.readOnly)) hideRecipientSuggest();
+}
+
+let composeCalendarCaret = null;
+let composeCalendarPicker = null;
+
+function composeCalendarReply() {
+  return !state.botDraftReview && ["reply", "all"].includes(state.composeMeta?.kind);
+}
+
+function composeCalendarSender() {
+  const account = composeAccount();
+  const identity = state.composeIdentity;
+  const from = state.composeMeta?.fromAddress;
+  const editor = $("compose-editor");
+  if (!composeCalendarReply() || !isLive(account) || composeActionsLocked() || sendTimer || composeWindowClosing
+      || state.composeIdentityError || state.composePartialReceipt || !composeEditorLive() || !editor.isConnected
+      || editor.contentEditable !== "true" || !identity || identity.accountId !== account.id || identity.accountEpoch !== account.bodyEpoch
+      || !from || $("compose-from").value !== from || !identity.sendAs?.some(row => row.email === from)) return null;
+  return account;
+}
+
+function composeCalendarChecks(accountId, serialized) {
+  const ids = readCalendarCheckStore(serialized)[accountId];
+  return Array.isArray(ids) ? ids : [];
+}
+
+function sameComposeCalendarChecks(picker, ids) {
+  const checked = new Set(ids);
+  return ids.length === picker.calendarIds.length && picker.calendarIds.every(id => checked.has(id));
+}
+
+function ownsComposeCalendarScope(picker) {
+  const compose = $("compose");
+  const account = composeCalendarSender();
+  return compose.open && compose.dataset.closing !== "1" && state.composeSession === picker.session
+    && account?.id === picker.accountId && state.composeIdentity === picker.identity
+    && state.composeMeta.fromAddress === picker.fromAddress && $("compose-editor") === picker.editor
+    && sameComposeCalendarChecks(picker, composeCalendarChecks(picker.accountId));
+}
+
+function cancelComposeCalendarSlots() {
+  composeCalendarPicker = null;
+  return closeDialog("compose-calendar-slots");
+}
+
+function invalidateComposeCalendarSlots(picker, message) {
+  if (composeCalendarPicker !== picker) return;
+  cancelComposeCalendarSlots();
+  if ($("compose").open && state.composeSession === picker.session) setComposeStatus(message, true);
+}
+
+function syncComposeCalendarSlots() {
+  const button = $("compose-calendar-slots-open");
+  if (!button) return;
+  button.hidden = !composeCalendarReply();
+  const help = $("compose-calendar-slots-help");
+  if (help) help.hidden = button.hidden;
+  button.disabled = !window.morrowComposeCalendarSlots || !composeCalendarSender();
+  const picker = composeCalendarPicker;
+  if (picker && !ownsComposeCalendarScope(picker)) cancelComposeCalendarSlots();
+}
+
+function currentComposeCalendarPicker(picker) {
+  if (!picker || composeCalendarPicker !== picker || !$("compose-calendar-slots").open || picker.inserting) return false;
+  if (ownsComposeCalendarScope(picker)) return true;
+  cancelComposeCalendarSlots();
+  return false;
+}
+
+function composeCalendarPair(picker) {
+  const { formatCalendarSlotPair } = window.morrowComposeCalendarSlots;
+  return formatCalendarSlotPair(picker.picks.flatMap(pick => pick.request.slots), picker.picks.map(pick => pick.slot));
+}
+
+function paintComposeCalendarSlots(picker) {
+  const { formatCalendarSlot } = window.morrowComposeCalendarSlots;
+  const list = $("compose-calendar-slots-time");
+  const picked = new Set(picker.picks.map(pick => pick.slot.startMs));
+  const slots = (picker.request?.slots || []).filter(slot => !picked.has(slot.startMs));
+  list.replaceChildren(option("", "Choose a time"), ...slots.map(slot => option(String(slot.startMs), formatCalendarSlot(slot))));
+  list.disabled = !slots.length || picked.size === 2;
+  $("compose-calendar-slots-add").disabled = true;
+  $("compose-calendar-slots-clear").disabled = !picked.size;
+  const pair = composeCalendarPair(picker);
+  $("compose-calendar-slots-preview").textContent = pair ?? formatCalendarSlot(picker.picks[0]?.slot);
+  $("compose-calendar-slots-status").textContent = picker.status;
+  $("compose-calendar-slots-insert").disabled = !picker.request?.slots || !pair;
+}
+
+function openComposeCalendarSlots() {
+  const account = composeCalendarSender();
+  const calendar = window.morrowComposeCalendarSlots;
+  const dialog = $("compose-calendar-slots");
+  if (!account || !calendar || dialog.open || topOpenDialog()?.id !== "compose") return;
+  const editor = $("compose-editor");
+  const session = state.composeSession;
+  const saved = composeCalendarCaret;
+  const range = document.activeElement === editor ? rememberEditorRange(editor)
+    : saved?.session === session && saved.editor === editor ? saved.range : null;
+  const calendarIds = composeCalendarChecks(account.id);
+  const picker = { session, editor, range, accountId: account.id, identity: state.composeIdentity,
+    fromAddress: state.composeMeta.fromAddress, calendarIds, names: new Map(), picks: [], request: null,
+    status: calendarIds.length ? "" : "Select calendars for this mailbox in Calendar." };
+  composeCalendarPicker = picker;
+  const date = $("compose-calendar-slots-date");
+  date.value = "";
+  date.disabled = !calendar.validCheckedCalendarIds(calendarIds);
+  if (date.disabled && calendarIds.length) picker.status = "Review the checked calendars for this mailbox in Calendar.";
+  paintComposeCalendarSlots(picker);
+  closeComposeAi();
+  $("compose-calendar-slots-open").focus();
+  openDialog(dialog.id);
+  (date.disabled ? $("compose-calendar-slots-cancel") : date).focus();
+}
+
+async function loadComposeCalendarSlots() {
+  const picker = composeCalendarPicker;
+  const date = $("compose-calendar-slots-date");
+  const day = date.value;
+  if (picker?.inserting && day !== picker.request.day) cancelComposeCalendarSlots();
+  if (!currentComposeCalendarPicker(picker) || date.disabled || day === picker.request?.day) return;
+  const calendar = window.morrowComposeCalendarSlots;
+  const range = calendar.calendarDayBounds(day);
+  const request = { day, slots: null };
+  picker.request = request;
+  picker.status = range ? "Checking availability…" : day ? "Choose a valid date." : "";
+  paintComposeCalendarSlots(picker);
+  if (!range) return;
+
+  const { accountId, calendarIds } = picker;
+  let payload;
+  try { payload = await call("calendar:list", { accountId, calendarIds, ...range, availabilityOnly: true }); }
+  catch { /* All checked calendars stay unconfirmed when the read fails. */ }
+  if (!currentComposeCalendarPicker(picker) || picker.request !== request || date.value !== day) return;
+  if (payload?.accountId === accountId) {
+    for (const id of calendarIds) {
+      const name = calendarNameOf(payload.calendars, id);
+      if (typeof name === "string" && name && name !== id) picker.names.set(id, name);
+    }
+  }
+  const { slots, unavailableCalendarIds } = calendar.availableCalendarSlots({ day, accountId, checkedCalendarIds: calendarIds, payload });
+  if (unavailableCalendarIds.length) {
+    const names = unavailableCalendarIds.map(id => picker.names.get(id) || id);
+    picker.picks = [];
+    picker.status = `Could not verify availability for ${names.join(", ")}.`;
+  } else {
+    request.slots = slots;
+    picker.picks = picker.picks.flatMap(pick => {
+      if (pick.request.day !== day) return [pick];
+      const slot = slots.find(candidate => candidate.startMs === pick.slot.startMs);
+      return slot ? [{ request, slot }] : [];
+    });
+    picker.status = slots.length ? "" : "No available times on this date.";
+  }
+  paintComposeCalendarSlots(picker);
+}
+
+function addComposeCalendarSlot() {
+  const picker = composeCalendarPicker;
+  if (!currentComposeCalendarPicker(picker) || picker.picks.length === 2 || picker.request?.day !== $("compose-calendar-slots-date").value) return;
+  const list = $("compose-calendar-slots-time");
+  const request = picker.request;
+  const slot = request.slots?.find(candidate => String(candidate.startMs) === list.value);
+  if (!slot || picker.picks.some(pick => pick.slot.startMs === slot.startMs)) return;
+  picker.picks.push({ request, slot });
+  paintComposeCalendarSlots(picker);
+  if (picker.picks.length === 2) $("compose-calendar-slots-insert").focus();
+  else (list.disabled ? $("compose-calendar-slots-date") : list).focus();
+}
+
+function insertComposeCalendarText(editor, savedRange, text) {
+  const protectedNodes = [...editor.querySelectorAll("[data-compose-signature], [data-compose-reply-quote]")];
+  const boundary = document.createRange();
+  if (protectedNodes.length) boundary.setStartBefore(protectedNodes[0]);
+  boundary.collapse(true);
+  const range = savedRange?.cloneRange() || document.createRange();
+  if (!savedRange || !editor.contains(range.commonAncestorContainer)
+      || (protectedNodes.length && boundary.comparePoint(range.endContainer, range.endOffset) > 0)) range.setStart(editor, 0);
+  range.collapse(true);
+
+  // Keep Chromium from normalizing a caret at the start into a leading
+  // signature or quote, even when all authored content has been deleted.
+  const editable = protectedNodes.map(node => node.getAttribute("contenteditable"));
+  try {
+    for (const node of protectedNodes) node.setAttribute("contenteditable", "false");
+    editor.focus();
+    restoreEditorRange(editor, range);
+    const live = rememberEditorRange(editor);
+    if (document.activeElement !== editor || !live?.collapsed
+        || protectedNodes.some(node => node.contains(live.startContainer))) return false;
+    const anchor = live.startContainer;
+    const element = anchor.nodeType === 1 ? anchor : anchor.parentElement;
+    const block = element.closest("div, p, li, blockquote, pre, td, th, h1, h2, h3, h4, h5, h6") || editor;
+    const before = document.createRange();
+    before.selectNodeContents(block);
+    before.setEnd(anchor, live.startOffset);
+    const after = document.createRange();
+    after.selectNodeContents(block);
+    after.setStart(anchor, live.startOffset);
+    // Keep both proposed times on their own lines when the caret touches existing text.
+    const insertion = (before.toString().trim() ? "\n" : "") + text + (after.toString().trim() ? "\n" : "");
+    return document.execCommand("insertText", false, insertion);
+  } finally {
+    for (const [index, node] of protectedNodes.entries()) {
+      if (editable[index] === null) node.removeAttribute("contenteditable");
+      else node.setAttribute("contenteditable", editable[index]);
+    }
+  }
+}
+
+async function confirmComposeCalendarSlots() {
+  const picker = composeCalendarPicker;
+  if (!currentComposeCalendarPicker(picker)) return;
+  const request = picker.request;
+  if (!request?.slots || request.day !== $("compose-calendar-slots-date").value) return;
+  const pair = composeCalendarPair(picker);
+  if (!pair) return;
+  picker.inserting = true;
+  $("compose-calendar-slots-insert").disabled = true;
+  await closeDialog("compose-calendar-slots");
+  if (composeCalendarPicker !== picker) return;
+  composeCalendarPicker = null;
+  if ($("compose-calendar-slots").open || !ownsComposeCalendarScope(picker) || request.day !== $("compose-calendar-slots-date").value
+      || topOpenDialog()?.id !== "compose") return;
+  let inserted = false;
+  try { inserted = insertComposeCalendarText(picker.editor, picker.range, pair); }
+  catch { /* Leave the editor alone if native insertion is unavailable. */ }
+  if (!inserted) setComposeStatus("Could not insert the proposed times. Open Offer two times… to try again.", true);
+}
+
+function wireComposeCalendarSlots() {
+  const dialog = $("compose-calendar-slots");
+  if (!dialog) return;
+  const editor = $("compose-editor");
+  const trigger = $("compose-calendar-slots-open");
+  editor.addEventListener("focusout", () => {
+    const range = rememberEditorRange(editor);
+    if (range && composeCalendarReply()) composeCalendarCaret = { session: state.composeSession, editor, range };
+  });
+  trigger.addEventListener("mousedown", event => event.preventDefault());
+  trigger.addEventListener("click", openComposeCalendarSlots);
+  for (const event of ["input", "change"]) $("compose-calendar-slots-date").addEventListener(event, loadComposeCalendarSlots);
+  const list = $("compose-calendar-slots-time");
+  list.addEventListener("change", () => { $("compose-calendar-slots-add").disabled = !list.value || list.disabled; });
+  $("compose-calendar-slots-add").addEventListener("click", addComposeCalendarSlot);
+  $("compose-calendar-slots-clear").addEventListener("click", () => {
+    const picker = composeCalendarPicker;
+    if (!currentComposeCalendarPicker(picker)) return;
+    picker.picks = [];
+    paintComposeCalendarSlots(picker);
+    (list.disabled ? $("compose-calendar-slots-date") : list).focus();
+  });
+  $("compose-calendar-slots-insert").addEventListener("click", confirmComposeCalendarSlots);
+  $("compose-calendar-slots-cancel").addEventListener("click", cancelComposeCalendarSlots);
+  dialog.addEventListener("cancel", event => { event.preventDefault(); cancelComposeCalendarSlots(); });
+  dialog.addEventListener("close", () => {
+    if (!dialog.open && !composeCalendarPicker?.inserting) composeCalendarPicker = null;
+  });
+  window.addEventListener("storage", event => {
+    const picker = composeCalendarPicker;
+    if (!picker || (event.key !== "morrow.calendarChecks" && event.key !== null)) return;
+    if (!sameComposeCalendarChecks(picker, composeCalendarChecks(picker.accountId, event.newValue))) {
+      invalidateComposeCalendarSlots(picker, "Checked calendars changed. Open Offer two times… again.");
+    }
+  });
 }
 
 function paintComposeNote() {
@@ -18307,7 +18578,7 @@ async function initializeComposeIdentity(fields) {
     if (!edits || edits.cc === versions.cc) $("compose-cc").value = parties.cc;
   }
   const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot || fields.unsubscribeDraft === true;
-  state.composeIdentity = { ...context, kind: fields.kind || "new",
+  state.composeIdentity = { ...context, accountId: account.id, accountEpoch: account.bodyEpoch, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   for (const field of ["cc", "bcc"]) if (edits && edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;
   paintComposeFromPicker(state.composeIdentity);
@@ -18352,6 +18623,7 @@ function paintComposeIdentity() {
 
 function changeComposeFrom() {
   if (!state.composeIdentity || state.composePending || state.composeQueued || state.composeInitializing) return;
+  if (composeCalendarPicker) cancelComposeCalendarSlots();
   const fromAddress = $("compose-from").value;
   const nextId = composeFromAccountId(fromAddress);
   if (nextId && state.composeMeta && nextId !== state.composeMeta.accountId) return switchComposeMailbox(nextId, fromAddress);
@@ -18390,6 +18662,7 @@ function changeComposeFrom() {
   }
   paintComposeIdentity();
   paintComposeNote();
+  syncComposeCalendarSlots();
 }
 
 async function switchComposeMailbox(accountId, fromAddress) {
@@ -18408,6 +18681,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
   state.composeInitializing = true;
   syncCompose();
   state.composeMeta.accountId = accountId;
+  const account = composeAccount();
   // The previous draft id belongs to the other mailbox. Leave that draft where it is.
   state.draftId = null;
   state.draftRevision = null;
@@ -18426,6 +18700,8 @@ async function switchComposeMailbox(accountId, fromAddress) {
     state.composeMeta.fromDisplayName = rows.find((row) => row.email === fromAddress).displayName || "";
     state.composeIdentity = {
       ...context,
+      accountId,
+      accountEpoch: account?.bodyEpoch,
       kind: previous.identity.kind || "new",
       seeds: previous.identity.seeds,
       signatureFollowsFrom: follows,
@@ -18825,6 +19101,7 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  composeCalendarCaret = null;
   state.composePdfBytes?.clear();
   state.composeInputVersions = { to: 0, cc: 0, bcc: 0, subject: 0, body: 0 };
   state.composeFileJobs = [];
@@ -18981,6 +19258,7 @@ async function requestComposeClose() {
   const preview = $("compose-preview");
   if (preview && preview.open) return false;
   if (state.composePending) return false;
+  if (composeCalendarPicker) await cancelComposeCalendarSlots();
   if (state.composeInboxPicker) await closeComposeInboxPicker();
   if (state.composePdfPreview) closeAttachmentPreview();
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
@@ -28021,9 +28299,10 @@ function paintMiniMonth(year, month) {
   root.append(bar, grid);
 }
 
-function readCalendarCheckStore() {
+function readCalendarCheckStore(serialized) {
   try {
-    const parsed = JSON.parse(localStorage.getItem("morrow.calendarChecks") || "{}");
+    const raw = serialized === undefined ? localStorage.getItem("morrow.calendarChecks") : serialized;
+    const parsed = JSON.parse(raw || "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return parsed;
   } catch {
@@ -28050,6 +28329,10 @@ function saveCalendarChecks(accountId, ids) {
     store[accountId] = ids;
     localStorage.setItem("morrow.calendarChecks", JSON.stringify(store));
   } catch { /* the choice stays for this window */ }
+  const picker = composeCalendarPicker;
+  if (picker?.accountId === accountId && !sameComposeCalendarChecks(picker, composeCalendarChecks(accountId))) {
+    invalidateComposeCalendarSlots(picker, "Checked calendars changed. Open Offer two times… again.");
+  }
 }
 
 function ensureCalendarChecks(account) {
@@ -30188,6 +30471,7 @@ function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
   wireRecipientSuggest();
   wireComposeFormat();
+  wireComposeCalendarSlots();
   wireComposeInboxPicker();
   $("scheduled-more")?.addEventListener("click", () => guard(() => loadScheduled({ more: true })));
   for (const field of ["to", "cc", "bcc", "subject", "body"]) $("compose-" + field).addEventListener("input", () => {
@@ -30245,7 +30529,7 @@ function wire() {
         else closeDialog("quit-scheduled");
         return;
       }
-      if (dialog.id === "compose-close-review" || dialog.id === "compose-inbox-picker") return;
+      if (dialog.id === "compose-close-review" || dialog.id === "compose-inbox-picker" || dialog.id === "compose-calendar-slots") return;
       if (dialog.id === "connect") {
         event.preventDefault();
         dismissConnect();
@@ -30850,6 +31134,7 @@ function wire() {
     });
   }
   $("compose").addEventListener("close", () => {
+    if (!$("compose").open && composeCalendarPicker) cancelComposeCalendarSlots();
     if (!$("compose").open && state.composeInboxPicker) closeComposeInboxPicker();
     if (!$("compose").open && $("compose-window-label-control")?.hidden === false) publishComposeTitle("Resume draft");
     stopDraftWrite();
