@@ -267,6 +267,7 @@ const INVOKE = [
   "compose:setTitle",
   "reader:open",
   "reader:pullSeed",
+  "reader:copyLocalMessageLink",
   "translate:open",
   "translate:pullSeed",
   "translate:report",
