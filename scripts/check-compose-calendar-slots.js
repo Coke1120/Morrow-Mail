@@ -297,7 +297,10 @@ test("unverified or invalid responses yield no slots and identify affected check
     ["malformed incomplete list", { incompleteCalendarIds: null }],
     ["missing events", { events: undefined }],
     ["event from unexpected calendar", { events: [{ ...event, calendarId: "unchecked" }] }],
+    ["free event from unexpected calendar", { events: [{ ...event, calendarId: "unchecked", blocksAvailability: false }] }],
     ["timed event without an offset", { events: [{ ...event, end: day + "T17:00:00" }] }, ["work"]],
+    ["free timed event without an offset", { events: [{ ...event, end: day + "T17:00:00", blocksAvailability: false }] }, ["work"]],
+    ["free all-day event without an end", { events: [{ ...event, start: day, end: "", allDay: true, blocksAvailability: false }] }, ["work"]],
     ["impossible date with an offset", { events: [{ ...event, end: "2027-02-30T17:00:00+08:00" }] }, ["work"]],
     ["late lower bound", { timeMin: "2027-01-11T16:00:00.0000001Z" }],
     ["early upper bound", { timeMax: "2027-01-12T15:59:59Z" }],
@@ -314,6 +317,42 @@ test("unverified or invalid responses yield no slots and identify affected check
   const range = calendarDayBounds(day);
   const busy = { id: "busy", start: { dateTime: event.start }, end: { dateTime: event.end } };
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+  const fourPm = halfHourAt(day + "T16:00:00+08:00");
+  const google = await listEventsForIds("google", "synthetic", ["work"], range, async () => json({ items: [
+    { ...busy, transparency: "Transparent" },
+    { id: "transparent", summary: "Available appointment", transparency: "transparent",
+      start: { date: day }, end: { date: "2027-01-13" } },
+    { id: "transparent-timed", transparency: "transparent",
+      start: { dateTime: day + "T08:00:00Z" }, end: { dateTime: event.start } },
+  ] }));
+  assert.deepEqual(google.events.map(row => [row.id, row.blocksAvailability]), [
+    ["busy", undefined], ["transparent", false], ["transparent-timed", false],
+  ]);
+  assert.equal(google.events[1].title, "Available appointment");
+  const googleSlots = daySlots(day, { ...response, ...google }, ["work"]);
+  assert.equal(googleSlots.slots.length, 47);
+  assert.ok(googleSlots.slots.some(slot => slot.startMs === fourPm.startMs));
+  assert.ok(!googleSlots.slots.some(slot => slot.startMs === Date.parse(event.start)));
+
+  const graph = await listEventsForIds("microsoft", "synthetic", ["work"], range, async url => {
+    assert.ok(new URL(url).searchParams.get("$select").split(",").includes("showAs"));
+    return json({ value: [
+      { id: "fractional", showAs: "tentative",
+        start: { dateTime: day + "T07:30:00.0000000", timeZone: "UTC" },
+        end: { dateTime: day + "T08:00:00.5000000", timeZone: "UTC" } },
+      { ...busy, id: "free", subject: "Free appointment", showAs: "free" },
+    ] });
+  });
+  assert.equal(graph.events[0].start, day + "T07:30:00Z");
+  assert.equal(graph.events[0].end, day + "T08:00:00.5000000Z");
+  assert.equal(Object.hasOwn(graph.events[0], "blocksAvailability"), false);
+  assert.equal(graph.events[1].blocksAvailability, false);
+  assert.equal(graph.events[1].title, "Free appointment");
+  const graphSlots = daySlots(day, { ...response, ...graph }, ["work"]);
+  assert.equal(graphSlots.slots.length, 46);
+  assert.ok(!graphSlots.slots.some(slot => slot.startMs === fourPm.startMs));
+  assert.ok(graphSlots.slots.some(slot => slot.startMs === Date.parse(event.start)));
+
   for (const [provider, rowsKey, cursorKey, invalid, next] of [
     ["google", "items", "nextPageToken", "../invalid", "page2"],
     ["microsoft", "value", "@odata.nextLink", "https://example.invalid/page2", "https://graph.microsoft.com/v1.0/me/calendars/personal/calendarView?$skiptoken=page2"],
@@ -381,7 +420,13 @@ test("unverified or invalid responses yield no slots and identify affected check
     }
     if (path.includes("/calendars/work/")) {
       if (workState === "error") return json({}, 400);
-      return json({ items: [busy], ...(workState === "truncated" ? { nextPageToken: false } : {}) });
+      const items = [
+        { id: "cancelled", status: "cancelled", end: busy.end },
+        { end: busy.end },
+        ...(workState === "missing-start" ? [{ id: "missing-start", end: busy.end }] : []),
+        busy,
+      ];
+      return json({ items, ...(workState === "truncated" ? { nextPageToken: false } : {}) });
     }
     if (path.includes("/calendars/unchecked/")) {
       return json({ items: [{ ...busy, start: { dateTime: day + "T16:00:00+08:00" }, end: { dateTime: day + "T17:30:00+08:00" } }] });
@@ -425,6 +470,34 @@ test("unverified or invalid responses yield no slots and identify affected check
   const legacy = (await list({ ...strict, availabilityOnly: undefined })).data;
   assert.equal(legacy.truncated, true);
   assert.equal(Object.hasOwn(legacy, "incompleteCalendarIds"), false);
+
+  workState = "missing-start";
+  const missingStart = (await list(strict)).data;
+  assert.equal(missingStart.truncated, false);
+  assert.deepEqual(missingStart.incompleteCalendarIds, ["work"]);
+  assert.deepEqual(missingStart.events, complete.events);
+  assert.deepEqual(daySlots(day, missingStart), { slots: [], unavailableCalendarIds: ["work"] });
+  const legacyMissingStart = (await list({ ...strict, availabilityOnly: false })).data;
+  assert.equal(legacyMissingStart.truncated, false);
+  assert.equal(Object.hasOwn(legacyMissingStart, "incompleteCalendarIds"), false);
+  assert.deepEqual(legacyMissingStart.events, complete.events);
+
+  const picker = composePickerFixture();
+  picker.open();
+  const readComplete = picker.date(day);
+  picker.calls.at(-1).resolve(complete);
+  await readComplete;
+  picker.pick(fourPm);
+  picker.pick(halfHourAt(day + "T17:00:00+08:00"));
+  assert.equal(picker.control("insert").disabled, false);
+  const nextDay = "2027-01-13";
+  const readMissingStart = picker.date(nextDay);
+  picker.calls.at(-1).resolve((await list({ ...strict, ...calendarDayBounds(nextDay) })).data);
+  await readMissingStart;
+  assert.equal(picker.control("status").textContent, "Could not verify availability for Work.");
+  assert.equal(picker.control("preview").textContent, "");
+  assert.equal(picker.control("time").options.length, 1);
+  assert.equal(picker.control("insert").disabled, true);
 
   workState = "error";
   const rejected = await list(strict);

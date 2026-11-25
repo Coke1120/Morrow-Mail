@@ -82,6 +82,7 @@ function normalizeGoogleEvent(item, calendarId) {
     start: allDay ? String(start).slice(0, 10) : start,
     end: end ? (allDay ? String(end).slice(0, 10) : end) : "",
     allDay,
+    ...(item.transparency === "transparent" ? { blocksAvailability: false } : {}),
     location: cleanName(item.location) || "",
     description: fullDescription.slice(0, 8000),
     ...(fullDescription.length > 8000 ? { descriptionTruncated: true } : {}),
@@ -93,7 +94,7 @@ function zonedDateTime(value, timeZone, allDay) {
   if (!raw) return "";
   if (allDay) return raw.slice(0, 10);
   if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) return raw;
-  if (String(timeZone || "").toUpperCase() === "UTC") return raw.replace(/\.\d+$/, "") + "Z";
+  if (String(timeZone || "").toUpperCase() === "UTC") return raw.replace(/\.0+$/, "") + "Z";
   return raw;
 }
 
@@ -114,6 +115,7 @@ function normalizeGraphEvent(item, calendarId) {
     start: zonedDateTime(rawStart, startZone, allDay),
     end: rawEnd ? zonedDateTime(rawEnd, endZone, allDay) : "",
     allDay,
+    ...(item.showAs === "free" ? { blocksAvailability: false } : {}),
     location: cleanName(item.location && item.location.displayName) || "",
     description: fullDescription.slice(0, 8000),
     ...(fullDescription.length > 8000 ? { descriptionTruncated: true } : {}),
@@ -228,6 +230,7 @@ async function listCalendars(provider, accessToken, fetchImpl) {
 
 async function listGoogleEvents(accessToken, calendarId, range, fetchImpl) {
   const events = [];
+  const result = { events, truncated: true };
   let token = "";
   const seen = new Set();
   for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -251,14 +254,18 @@ async function listGoogleEvents(accessToken, calendarId, range, fetchImpl) {
     for (const item of items) {
       const event = normalizeGoogleEvent(item, calendarId);
       if (event) events.push(event);
-      if (events.length >= MAX_EVENTS) return { events, truncated: true };
+      else if (item && safeId(item.id) && item.status !== "cancelled") result.availabilityIncomplete = true;
+      if (events.length >= MAX_EVENTS) return result;
     }
     const rawToken = json.nextPageToken;
-    if (rawToken == null || rawToken === "") return { events, truncated: false };
+    if (rawToken == null || rawToken === "") {
+      result.truncated = false;
+      return result;
+    }
     token = typeof rawToken === "string" ? pageToken(rawToken) : "";
     if (!token) break;
   }
-  return { events, truncated: true };
+  return result;
 }
 
 async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
@@ -267,7 +274,7 @@ async function listGraphEvents(accessToken, calendarId, range, fetchImpl) {
   url.searchParams.set("startDateTime", range.timeMin);
   url.searchParams.set("endDateTime", range.timeMax);
   url.searchParams.set("$top", "100");
-  url.searchParams.set("$select", "id,subject,start,end,isAllDay,location,bodyPreview");
+  url.searchParams.set("$select", "id,subject,start,end,isAllDay,location,bodyPreview,showAs");
   let next = url.toString();
   const seen = new Set();
   let pages = 0;
@@ -309,6 +316,7 @@ async function listEventsForIds(provider, accessToken, calendarIds, range, fetch
   const events = [];
   const fetched = [];
   const incompleteCalendarIds = [];
+  let truncated = false;
   const ids = Array.isArray(calendarIds) ? calendarIds : [];
   const results = new Array(ids.length);
   let cursor = 0, failure = null;
@@ -323,10 +331,10 @@ async function listEventsForIds(provider, accessToken, calendarIds, range, fetch
   for (const [index, listed] of results.entries()) {
     fetched.push(ids[index]);
     if (listed.events.length) events.push(...listed.events);
-    if (listed.truncated) incompleteCalendarIds.push(ids[index]);
+    if (listed.truncated) truncated = true;
+    if (listed.truncated || listed.availabilityIncomplete) incompleteCalendarIds.push(ids[index]);
   }
-  const truncated = incompleteCalendarIds.length > 0;
-  return { events, truncated, calendarIds: fetched, ...(truncated ? { incompleteCalendarIds } : {}) };
+  return { events, truncated, calendarIds: fetched, ...(incompleteCalendarIds.length ? { incompleteCalendarIds } : {}) };
 }
 
 function invalidEvent(message) {

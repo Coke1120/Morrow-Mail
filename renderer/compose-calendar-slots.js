@@ -169,17 +169,18 @@
     for (const event of payload.events) {
       const id = event?.calendarId;
       if (!checked.has(id)) return unavailable();
+      const blocksAvailability = event.blocksAvailability !== false;
       if (event.allDay === true) {
         const start = allDayKey(event.start);
         const end = allDayKey(event.end);
         if (!start || !end || end <= start) affected.add(id);
-        else if (start <= day && day < end) busy.push([dayStart, dayEnd]);
+        else if (blocksAvailability && start <= day && day < end) busy.push([dayStart, dayEnd]);
       } else if (event.allDay === false) {
         const start = parseInstant(event.start);
         const end = parseInstant(event.end);
         if (!start || !end || end.ms < start.ms || (end.ms === start.ms && end.subMsNanos <= start.subMsNanos)) {
           affected.add(id);
-        } else {
+        } else if (blocksAvailability) {
           // Slot endpoints are whole milliseconds. Round the busy interval outward.
           const endMs = end.ms + Number(end.subMsNanos > 0);
           if (start.ms < dayEnd && endMs > dayStart) busy.push([start.ms, endMs]);
