@@ -369,7 +369,7 @@ test("closing restores focus, host notices are inert text, and Features/CLI clai
   const catalog = require("../renderer/features-catalog");
   const item = catalog.items.find(row => row.id === "cross-mailbox-copy");
   assert(item); assert.match(item.blurb, /Copy retains every source message.*separate reviewed Gmail Move/); assert.match(item.blurb, /Copy cannot authorize source removal.*separate Trash review.*CLI command/);
-  const source = fs.readFileSync(require.resolve("./check-boot-path.js"), "utf8");
-  assert(source.includes(JSON.stringify([item.id, item.title, item.category, item.blurb])), "exact boot catalog tuple stays synchronized");
+  const expected = require("./check-boot-path/feature-catalog").readExpectedFeatures().find(row => row[0] === item.id);
+  assert.deepEqual([item.id, item.title, item.category, item.blurb], expected, "exact boot catalog tuple stays synchronized");
   assert.match(f.get("cli-unavailable").textContent, /cross-mailbox Copy\/Move.*no bot or CLI command/);
 });

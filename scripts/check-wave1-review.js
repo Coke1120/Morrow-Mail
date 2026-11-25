@@ -724,8 +724,6 @@ test("Features: actual catalog render and tab switching keep recovery, privacy a
   assert.match(html, /Windows frame times or real secure storage/);
   ui.run("showFeaturesTab('catalog')");
   assert.equal(ui.nodes.get("features-pane-catalog").hidden, false);
-  const boot = fs.readFileSync(path.join(__dirname, "check-boot-path.js"), "utf8");
-  const start = boot.indexOf("const featureSeed = [");
-  const seed = vm.runInNewContext(boot.slice(start, boot.indexOf("\n];", start) + 3) + "\nfeatureSeed");
-  assert.deepEqual(JSON.parse(JSON.stringify(seed)), catalog.items.map((row) => [row.id, row.title, row.category, row.blurb]));
+  const seed = require("./check-boot-path/feature-catalog").readExpectedFeatures();
+  assert.deepEqual(seed, catalog.items.map((row) => [row.id, row.title, row.category, row.blurb]));
 });

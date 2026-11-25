@@ -1,0 +1,6 @@
+{
+  "id": "conversation-members",
+  "title": "Conversation messages",
+  "category": "Mail",
+  "blurb": "Gmail label copies appear once in a conversation, using the provider message ID within the same account. The selected folder copy stays selected. Folder records remain stored. Distinct provider messages and rows without a reliable provider ID stay separate, even when RFC Message-ID matches. A single message has no Earlier section. Turning conversation view off skips thread enumeration on open; separate readers, previews and draft preparation also omit unused thread summaries. Fresh replies separately read cached prior conversation context for the compose history pane and outgoing quote. Conversation actions still resolve complete local membership using identity-only rows, without loading every member's body. Conversation-enabled opens still return all local headers; lazy thread paging is unavailable."
+}

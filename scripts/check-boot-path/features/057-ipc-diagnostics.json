@@ -1,0 +1,6 @@
+[
+  "ipc-diagnostics",
+  "IPC diagnostics",
+  "Support",
+  "IPC trace records known channels and argument counts, plus renderer levels, line numbers and load codes. Request values, renderer text and URLs are omitted. Other Debug entries may retain account/folder context."
+]
