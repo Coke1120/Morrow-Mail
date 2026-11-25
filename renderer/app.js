@@ -19546,6 +19546,7 @@ function paintPreview(draft) {
 
 function openComposePreview(when) {
   if (!composeReady()) return false;
+  window.morrowComposeBccRoster?.reset();
   const fields = composeFields();
   const quote = state.composeQuote;
   if (quote && quote.inEditor) fields.body = plainFromComposeHtml(readComposeEditorHtml());
@@ -19587,6 +19588,7 @@ async function confirmComposePreview() {
   const draft = previewDraftState;
   if (!draft) return false;
   previewDraftState = null;
+  window.morrowComposeBccRoster?.reset();
   await closeDialog("compose-preview");
   if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending || composeFilesPending()) {
     setComposeStatus("The message changed. Review a new preview before sending or scheduling.", true);
@@ -19600,6 +19602,7 @@ async function confirmComposePreview() {
 function cancelComposePreview() {
   previewDraftState = null;
   resetComposePreviewLinks();
+  window.morrowComposeBccRoster?.reset();
   closeDialog("compose-preview");
 }
 
@@ -30108,6 +30111,11 @@ function wire() {
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "compose-preview") {
+        event.preventDefault();
+        cancelComposePreview();
+        return;
+      }
       if (dialog.id === "dsn-redraft" && dsnRedraftView?.saving) {
         event.preventDefault();
         return;
@@ -30790,10 +30798,12 @@ function wire() {
     guard(confirmComposePreview);
   });
   $("compose-preview-cancel").addEventListener("click", () => cancelComposePreview());
+  window.morrowComposeBccRoster?.wire(() => previewDraftState?.payload);
   $("compose-preview").addEventListener("close", (event) => {
     if (event.currentTarget.open) return;
     previewDraftState = null;
     resetComposePreviewLinks();
+    window.morrowComposeBccRoster?.reset();
   });
   wireDsnRedraft();
   $("undo-schedule").addEventListener("click", () => {

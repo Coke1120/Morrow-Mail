@@ -4983,14 +4983,16 @@ dialog h2 {
 #compose-preview-body > .body { padding: 0; }
 #compose-preview-body .preview-remote-note { margin: 0 0 8px; }
 
-#compose-preview-links {
+#compose-preview-links,
+#compose-preview-bcc-roster {
   margin-top: 8px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--hover);
   font-size: 13px;
 }
-#compose-preview-links > summary {
+#compose-preview-links > summary,
+#compose-preview-bcc-roster > summary {
   padding: 8px 10px;
   border-radius: 9px;
   color: var(--accent-ink);
@@ -5037,7 +5039,21 @@ dialog h2 {
 .preview-link-context { color: var(--muted); }
 .preview-link-url { margin-top: 2px; color: var(--accent-ink); font-size: 12px; }
 #compose-preview-links > summary:focus-visible,
+#compose-preview-bcc-roster > summary:focus-visible,
 .preview-link-row:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+#compose-preview-bcc-roster .preview-roster-controls { padding: 0 10px 8px; }
+#compose-preview-bcc-roster label { font-weight: 600; }
+#compose-preview-bcc-roster .hint { margin: 4px 0 6px; }
+#compose-preview-bcc-roster textarea { display: block; min-height: 72px; margin-bottom: 6px; }
+#compose-preview-bcc-roster-status { margin: 0; }
+#compose-preview-bcc-roster-status:not(:empty) { margin-top: 8px; }
+#compose-preview-bcc-roster-findings {
+  max-height: min(220px, 32vh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+#compose-preview-bcc-roster-findings h3 { margin: 8px 0 4px; font-size: inherit; }
+#compose-preview-bcc-roster-findings ul { margin: 0; padding-inline-start: 22px; }
 #compose-preview-body .preview-link-location {
   padding: 0 4px;
   border: 1px solid currentColor;
@@ -5053,6 +5069,7 @@ dialog h2 {
 }
 @media (forced-colors: active) {
   #compose-preview-links > summary:focus-visible,
+  #compose-preview-bcc-roster > summary:focus-visible,
   .preview-link-row:focus-visible { outline-color: Highlight; }
   .preview-link-row[aria-current="true"] { border-color: Highlight; }
   #compose-preview-body [data-preview-link-target] { outline-color: Highlight; }

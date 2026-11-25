@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 const { renderer } = require("./check-ux-workflows");
 const index = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8");
+const bccRosterScript = fs.readFileSync(require.resolve("../renderer/compose-bcc-roster.js"), "utf8");
 const raster = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lvkAAAAASUVORK5CYII=";
 
 function fixture(t) {
@@ -46,6 +47,35 @@ function fixture(t) {
 function queue(body, extra = {}) {
   return { id: "queued", accountId: "a", status: "pending", outbox: true, to: "recipient@fixture.invalid",
     subject: "Queued review", fromAddress: "sender@fixture.invalid", htmlBody: body, ...extra };
+}
+
+function rosterFixture(t) {
+  const f = fixture(t);
+  f.run(bccRosterScript);
+  f.run("wire()");
+  const window = f.document.defaultView;
+  const panel = f.get("compose-preview-bcc-roster");
+  const input = f.get("compose-preview-bcc-roster-input");
+  const check = f.get("compose-preview-bcc-roster-check");
+  const status = f.get("compose-preview-bcc-roster-status");
+  const findings = f.get("compose-preview-bcc-roster-findings");
+  const enter = (target, modifiers) => target.dispatchEvent(new window.KeyboardEvent("keydown", {
+    key: "Enter", bubbles: true, cancelable: true, ...modifiers,
+  }));
+  function type(text) {
+    input.value = text;
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  }
+  function compare(text) {
+    panel.open = true;
+    type(text);
+    check.click();
+  }
+  function rows(title) {
+    const heading = [...findings.querySelectorAll("h3")].find(node => node.textContent === title);
+    return heading ? [...heading.nextElementSibling.children].map(node => node.textContent) : [];
+  }
+  return { ...f, window, panel, input, check, status, findings, enter, type, compare, rows };
 }
 
 function assertInert(body) {
@@ -240,6 +270,138 @@ test("Review links resets on repaint and cancellation and reopens with the sched
   assert.equal(f.run("calls.length"), 0);
 });
 
+test("Bcc roster distinguishes missing, extra and exposed addresses using every captured recipient field", t => {
+  const f = rosterFixture(t);
+  f.get("compose-to").value = "Organizer <organizer@fixture.invalid>, Shared <ada@fixture.invalid>";
+  f.get("compose-cc").value = "ada@fixture.invalid; bo@fixture.invalid";
+  f.get("compose-bcc").value = "Shared <ada@fixture.invalid>, Shared <extra@fixture.invalid>";
+  assert.equal(f.run("openComposePreview(null)"), true);
+  f.compare("ada@fixture.invalid\nbo@fixture.invalid\nmissing@fixture.invalid");
+  assert.equal(f.status.textContent, "1 missing, 1 extra in Bcc, 2 exposed in To or Cc.");
+  assert.deepEqual(f.rows("Missing from draft"), ["missing@fixture.invalid"]);
+  assert.deepEqual(f.rows("Extra in Bcc"), ["extra@fixture.invalid"]);
+  assert.deepEqual(f.rows("Exposed in To or Cc"), ["ada@fixture.invalid — To, Cc, Bcc", "bo@fixture.invalid — Cc"]);
+  assert.doesNotMatch(f.findings.textContent, /organizer|Manual review/);
+});
+
+test("Bcc roster matches reordered bare addresses and understands quoted and unquoted names in the preview", t => {
+  const f = rosterFixture(t);
+  f.get("compose-bcc").value = '"Lo, Ada; \\"A\\"" <ada.lo+tag@FIXTURE.invalid>; <bo@fixture.invalid>, Bo Kim <bo@fixture.invalid>, ';
+  assert.equal(f.run("openComposePreview(null)"), true);
+  f.compare(" bo@FIXTURE.INVALID \r\n\r\n ada.lo+tag@fixture.invalid\r\nbo@fixture.invalid");
+  assert.equal(f.status.textContent, "Bcc matches the roster.");
+  assert.equal(f.findings.hidden, true);
+  assert.equal(f.check.type, "button");
+
+  f.type("ada.lo@fixture.invalid");
+  assert.equal(f.status.textContent, "");
+  assert.equal(f.findings.childElementCount, 0);
+  f.check.click();
+  assert.deepEqual(f.rows("Missing from draft"), ["ada.lo@fixture.invalid"]);
+  assert.ok(f.rows("Extra in Bcc").includes("ada.lo+tag@fixture.invalid"));
+});
+
+test("Bcc roster requires manual review for ambiguous case, malformed inputs or oversized paste", t => {
+  const f = rosterFixture(t);
+  f.get("compose-cc").value = 'Broken <cc@fixture.invalid> <still@fixture.invalid>';
+  f.get("compose-bcc").value = 'Ada@fixture.invalid, "Unclosed <bad@fixture.invalid>';
+  assert.equal(f.run("openComposePreview(null)"), true);
+  f.compare(" \r\n\n ");
+  assert.equal(f.status.textContent, "");
+  assert.equal(f.findings.hidden, true);
+  f.compare("Email\nada@FIXTURE.invalid\na@fixture.invalid\tb@fixture.invalid\na@fixture.invalid,b@fixture.invalid");
+  assert.match(f.status.textContent, /^Manual review needed/);
+  assert.deepEqual(f.rows("Manual review"), [
+    "Roster row 1 needs one bare email address.", "Roster row 3 needs one bare email address.",
+    "Roster row 4 needs one bare email address.", "Cc recipient 1 could not be read.",
+    "Bcc recipient 2 could not be read.", "Local-part case differs: ada@fixture.invalid / Ada@fixture.invalid.",
+  ]);
+  assert.deepEqual(f.rows("Missing from draft"), []);
+  assert.deepEqual(f.rows("Extra in Bcc"), []);
+  f.compare("x".repeat(64_001));
+  assert.match(f.status.textContent, /Manual review.*exceeds 64,000/);
+  assert.equal(f.input.value.length, 64_001);
+  assert.equal(f.findings.hidden, true);
+});
+
+test("Bcc roster follows preview lifetime and leaves send and schedule confirmation on the captured payload", async t => {
+  const f = rosterFixture(t);
+  const dialog = f.get("compose-preview");
+  const confirm = f.get("compose-preview-confirm");
+  const open = when => {
+    assert.equal(f.run(`openComposePreview(${when})`), true);
+    assert.equal(f.document.activeElement, confirm);
+    assert.equal(confirm.disabled, false);
+  };
+  const empty = () => {
+    assert.equal(f.panel.open, false);
+    assert.equal(f.input.value, "");
+    assert.equal(f.status.textContent, "");
+    assert.equal(f.findings.childElementCount, 0);
+  };
+  const compare = () => f.compare("hidden@fixture.invalid");
+  const close = () => dialog.dispatchEvent(new f.window.Event("close"));
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+
+  open("null");
+  compare();
+  const frozen = f.run("JSON.stringify(previewDraftState.payload)");
+  f.get("compose-bcc").value = "changed@fixture.invalid";
+  f.run("paintPreview(previewDraftState)");
+  assert.equal(f.panel.open, true);
+  assert.equal(f.input.value, "hidden@fixture.invalid");
+  assert.equal(f.status.textContent, "Bcc matches the roster.");
+  f.check.click();
+  assert.equal(f.status.textContent, "Bcc matches the roster.", "recheck uses the snapshot");
+  f.get("compose-bcc").value = "hidden@fixture.invalid";
+  f.input.focus();
+  assert.equal(f.enter(f.input), true, "plain Enter keeps its textarea default");
+  assert.equal(f.enter(f.input, { metaKey: true }), false);
+  assert.equal(f.enter(f.check, { ctrlKey: true }), false);
+  assert.equal(f.document.activeElement, f.input);
+  assert.equal(f.run("confirmed.length"), 0);
+  assert.equal(f.enter(confirm, { metaKey: true }), false);
+  await settled();
+  assert.equal(f.run("confirmed[0].kind"), "send");
+  assert.equal(f.run("JSON.stringify(confirmed[0].payload)"), frozen);
+  assert.equal(dialog.open, false);
+  empty();
+
+  open("new Date('2099-01-01T09:00:00Z')");
+  empty();
+  f.compare("pasted-only@fixture.invalid");
+  const scheduled = f.run("JSON.stringify(previewDraftState.payload)");
+  close(); // A prior native close event can arrive after reopening.
+  assert.equal(f.input.value, "pasted-only@fixture.invalid");
+  assert.equal(f.enter(f.input, { ctrlKey: true }), false);
+  assert.equal(f.run("confirmed.length"), 1);
+  confirm.click();
+  await settled();
+  assert.equal(f.run("confirmed[1].kind"), "schedule");
+  assert.equal(f.run("confirmed[1].sendAt"), "2099-01-01T09:00:00.000Z");
+  assert.equal(f.run("JSON.stringify(confirmed[1].payload)"), scheduled);
+  assert.equal(dialog.open, false);
+  empty();
+
+  open("null");
+  compare();
+  f.get("compose-preview-cancel").click();
+  empty();
+  open("null");
+  compare();
+  assert.equal(dialog.dispatchEvent(new f.window.Event("cancel", { cancelable: true })), false);
+  assert.equal(dialog.open, false);
+  empty();
+  open("null");
+  compare();
+  dialog.close();
+  close();
+  empty();
+  assert.equal(f.run("previewDraftState"), null);
+  assert.equal(f.run("confirmed.length"), 2);
+  assert.equal(f.run("calls.length"), 0);
+});
+
 test("Plain text, entities and empty captured bodies stay distinct from HTML", t => {
   const f = fixture(t);
   const literal = "Two < three & four\nLiteral <b>text</b> and &copy;";
@@ -322,6 +484,11 @@ test("Features and preview help disclose formatting, remote blocking and attachm
   assert.match(text, /Attachment downloads are unavailable in Outbox/);
   assert.match(text, /Review links before sending/);
   assert.match(text, /highlight that occurrence in the message without opening the destination/);
+  assert.match(text, /Check Bcc roster before sending/);
+  assert.match(text, /closing the preview clears the roster/);
+  const scripts = [...f.document.scripts].map(script => script.getAttribute("src"));
+  assert.ok(scripts.indexOf("./compose-bcc-roster.js") >= 0);
+  assert.ok(scripts.indexOf("./compose-bcc-roster.js") < scripts.indexOf("./app.js"));
   assert.match(f.get("compose-preview-links").textContent, /highlight its location in the message without opening it/);
   assert.match(f.get("compose-preview").textContent, /Remote images stay blocked/);
 });
