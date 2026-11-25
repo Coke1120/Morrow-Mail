@@ -269,6 +269,12 @@ function createLocalStore(file, { database = Database } = {}) {
       const part = sql.prepare("SELECT data,sha FROM attachments WHERE message_id=? AND id=?").get(id, attachmentId);
       if (!part || !expected || expected.size !== part.data.length || digest(part.data) !== part.sha) throw problem("Local attachment verification failed. Its bytes were retained for recovery.");
       return Buffer.from(part.data);
+    }, originalMetadata(id) {
+      const row = sql.prepare("SELECT folder_id,info,info_sha,raw_size,raw_sha FROM messages WHERE id=?").get(id);
+      if (!row) return null;
+      if (digest(row.info) !== row.info_sha) throw problem("Local message metadata verification failed.");
+      const { from, subject, date } = JSON.parse(row.info);
+      return { from, subject, date, folderId: row.folder_id, size: row.raw_size, rawSha: row.raw_sha };
     }, raw(id) {
       const row = sql.prepare("SELECT raw,raw_sha,raw_size FROM messages WHERE id=?").get(id);
       if (!row || row.raw.length !== row.raw_size || digest(row.raw) !== row.raw_sha) throw problem("Original MIME verification failed. Its bytes were retained for recovery.");

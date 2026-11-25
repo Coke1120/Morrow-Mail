@@ -8,13 +8,11 @@ const { test, before, after } = require("node:test");
 const Database = require("better-sqlite3");
 const { simpleParser } = require("mailparser");
 const Local = require("../host/mail/local-folders");
-const { buildRaw } = require("../host/mail/remote");
 const { reviewOriginals, readOriginals } = require("../host/mail/forward-originals");
 
 const LIMIT = 25 * 1024 * 1024;
 let dir;
 let store;
-let metadataDb;
 let archive;
 let reads = 0;
 const pairs = [];
@@ -46,17 +44,8 @@ before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-forward-originals-"));
   const file = path.join(dir, "local-folders.sqlite");
   store = Local.createLocalStore(file);
-  metadataDb = new Database(file, { readonly: true });
-  const meta = metadataDb.prepare("SELECT folder_id, info, raw_size, raw_sha FROM messages WHERE id=?");
-  // The integration will get these fields from the archive owner. This adapter
-  // keeps the dedicated fixture useful before the shared entry point is wired.
   archive = {
-    originalMetadata(id) {
-      const row = meta.get(id);
-      if (!row) return null;
-      const { from, date, subject } = JSON.parse(row.info);
-      return { from, date, subject, folderId: row.folder_id, size: row.raw_size, rawSha: row.raw_sha };
-    },
+    originalMetadata: store.originalMetadata,
     raw(id) {
       reads += 1;
       return store.raw(id);
@@ -74,13 +63,41 @@ before(async () => {
 });
 
 after(() => {
-  metadataDb?.close();
   store?.close();
   if (dir) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("four selections round-trip all eight originals through archive and outgoing MIME", async () => {
-  for (const messages of pairs) {
+test("four saved drafts reopen with all eight originals intact in SQLite and outgoing MIME", async t => {
+  const profile = path.join(dir, "draft-profile");
+  const env = { MORROW_USER_DATA: profile, MORROW_MAIL_DIR: profile,
+    MORROW_AI_CONFIG_DIR: profile, MORROW_MAIL_SECRETS: "memory" };
+  const previousEnv = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  const engine = require("../host/mail/engine");
+  const db = require("../host/mail/db");
+  const remote = require("../host/mail/remote");
+  const secrets = require("../host/mail/secrets");
+  const accountId = "fixture-drafts";
+  const from = "worker@example.invalid";
+  t.mock.method(remote, "withClient", async () => { throw new Error("Fixture is offline"); });
+  t.after(async () => {
+    secrets.deletePassword(accountId);
+    await db.close();
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  await engine.init();
+  db.insertAccount({ id: accountId, email: from, username: "worker", profile: "custom", createdAt: Date.now(),
+    imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
+    smtpHost: "smtp.example.invalid", smtpPort: 587, smtpTls: true });
+  secrets.setPassword(accountId, "fixture-only");
+  db.replaceFolders(accountId, [{ path: "Drafts", name: "Drafts", wellKnown: "drafts" }]);
+
+  const savedDrafts = [];
+  const body = "<p>Please review.</p>";
+  for (const [run, messages] of pairs.entries()) {
     const [first, second, excluded] = messages;
     const ids = [first.id, second.id];
     const beforeReview = reads;
@@ -96,11 +113,40 @@ test("four selections round-trip all eight originals through archive and outgoin
     assert.deepEqual(files.map(file => file.fileBytes), [first.raw, second.raw]);
     assert.ok(files.every(file => !file.fileBytes.equals(excluded.raw)));
 
-    const wire = await buildRaw({ from: "worker@example.invalid", to: "recipient@example.invalid", text: "Please review.",
-      attachments: files.map(file => ({ filename: file.filename, contentType: file.mimeType, content: file.fileBytes })) });
+    // Exercise the existing draft path without the pending batch-staging IPC.
+    const attachments = files.map(file => {
+      const uploaded = engine.answer("mail:uploadAttachment", [file]);
+      assert.equal(uploaded.success, true);
+      return uploaded.data;
+    });
+    const to = `recipient-${run}@example.invalid`;
+    const saved = await engine.answer("mail:upsertDraft", [{ accountId, to, body, subject: "Fixture handoff", attachments }]);
+    assert.equal(saved.success, true);
+    assert.equal(saved.data.remoteSaved, false);
+    assert.equal(db.messageById(saved.data.emailId).uid, 0);
+    savedDrafts.push({ ...saved.data, to, files, expected: [first.raw, second.raw] });
+  }
+
+  await db.close();
+  await engine.init();
+  for (const { emailId, draftRevision, to, files, expected } of savedDrafts) {
+    const reopened = await engine.answer("mail:prepareDraft", [{ emailId, draftRevision }]);
+    assert.equal(reopened.success, true, JSON.stringify(reopened.error));
+    const { email } = reopened.data;
+    assert.equal(email.id, emailId);
+    assert.equal(email.htmlBody, body);
+    assert.deepEqual(email.to, [to]);
+    assert.deepEqual(email.attachments.map(file => file.filename), files.map(file => file.filename));
+    const attachments = await Promise.all(email.attachments.map(async file => {
+      const { data } = await engine.bytesFor({ emailId, attachmentId: file.id });
+      return { filename: file.filename, contentType: file.mimeType, content: data };
+    }));
+    assert.deepEqual(attachments.map(file => file.content), expected);
+    const wire = await remote.buildRaw({ from, to, text: email.textBody, attachments });
     const parsed = await simpleParser(wire);
     assert.deepEqual(parsed.attachments.map(file => file.filename), files.map(file => file.filename));
-    assert.deepEqual(parsed.attachments.map(file => file.content), [first.raw, second.raw]);
+    assert.ok(parsed.attachments.every(file => file.headers.get("content-transfer-encoding") === "base64"));
+    assert.deepEqual(parsed.attachments.map(file => file.content), expected);
     const [primary, other] = await Promise.all(parsed.attachments.map(file => simpleParser(file.content)));
     if (primary.subject === "Summer event confirmation") {
       assert.equal(primary.attachments[0].filename, "seating-plan.pdf");
@@ -154,4 +200,30 @@ test("a changed final payload produces no attachment set", () => {
     return raw;
   } };
   assert.throws(() => readOriginals(invalid, ids, proof, LIMIT), /changed/);
+});
+
+test("SQLite verifies metadata at review and the raw original at confirmation", () => {
+  const { id, raw } = pairs[3][0];
+  const sqlite = new Database(store.file);
+  const writeInfo = sqlite.prepare("UPDATE messages SET info=? WHERE id=?");
+  const writeRaw = sqlite.prepare("UPDATE messages SET raw=? WHERE id=?");
+  const { info } = sqlite.prepare("SELECT info FROM messages WHERE id=?").get(id);
+  const { proof } = reviewOriginals(archive, [id], LIMIT);
+  const beforeReview = reads;
+  try {
+    writeInfo.run(JSON.stringify({ ...JSON.parse(info), subject: "Changed subject" }), id);
+    assert.throws(() => reviewOriginals(archive, [id], LIMIT), /metadata verification failed/);
+    writeInfo.run(info, id);
+
+    const changed = Buffer.from(raw);
+    changed[0] ^= 1;
+    writeRaw.run(changed, id);
+    assert.equal(reviewOriginals(archive, [id], LIMIT).proof, proof);
+    assert.equal(reads, beforeReview);
+    assert.throws(() => readOriginals(archive, [id], proof, LIMIT), /Original MIME verification failed/);
+  } finally {
+    writeInfo.run(info, id);
+    writeRaw.run(raw, id);
+    sqlite.close();
+  }
 });
