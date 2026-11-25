@@ -127,8 +127,59 @@ async function run() {
     };
     const reaction = await require("../host/mail/remote").fetchMessages(imap, "INBOX", [1]);
     assert.deepEqual(reaction.messages[0].recipientHeaders.followupReply, { kind: "automatic" });
+    const { message: gmailMessage, server } = require("./gmail-fixture");
+    const { createSession } = require("../host/mail/gmail-session");
+    const gmailId = "gmail-editor";
+    db.insertAccount({ id: gmailId, email: address(gmailId), username: address(gmailId), profile: "gmail", authKind: "oauth2",
+      createdAt: sentAt, imapHost: "imap.example.invalid", imapPort: 993, imapTls: true,
+      smtpHost: "smtp.example.invalid", smtpPort: 465, smtpTls: true });
+    db.enableGmail(gmailId);
+    const service = server();
+    const gmail = createSession(db.accountById(gmailId), null, { api: service.api() });
+    db.replaceFolders(gmailId, (await gmail.folders()).folders);
+    const makeGmail = (id, label, from, to, date) => {
+      const data = gmailMessage(id, [label], rfc(id));
+      data.internalDate = String(date);
+      const values = { From: address(from), To: address(to), Date: new Date(date).toUTCString() };
+      for (const header of data.payload.headers) {
+        if (values[header.name]) header.value = values[header.name];
+      }
+      return data;
+    };
+    const gmailCases = ["missing-mime-type", "empty-multipart", "complete-mime"];
+    for (const id of gmailCases) {
+      await gmail.adopt(makeGmail(id, "SENT", gmailId, "printer", sentAt));
+      const source = db.gmailCopies(gmailId, id).find(row => row.folder_path === "[Gmail]/Sent Mail");
+      assert.equal(set(source.id, gmailId), true);
+      const reply = makeGmail(`reply-${id}`, "INBOX", "printer", gmailId, sentAt + 100_000);
+      reply.payload.headers.push({ name: "In-Reply-To", value: rfc(id) });
+      if (id === "missing-mime-type") delete reply.payload.mimeType;
+      if (id === "empty-multipart") Object.assign(reply.payload, { mimeType: "multipart/alternative", parts: [] });
+      await gmail.adopt(reply);
+    }
+    now = dueAt + 1000;
+    const gmailRows = () => call("list").filter(row => row.accountId === gmailId)
+      .map(row => [row.messageId, row.state]).sort();
+    const uncertain = [[rfc("empty-multipart"), "check"], [rfc("missing-mime-type"), "check"]];
+    assert.deepEqual(gmailRows(), uncertain);
+
+    // Older cached evidence can contain matching headers without verified MIME.
+    for (const id of gmailCases.slice(0, 2)) {
+      const proof = recipientHeaders(
+        Buffer.from(`From: ${address("printer")}\r\nIn-Reply-To: ${rfc(id)}\r\n\r\n`), [], sentAt + 100_000,
+      ).followupReply;
+      assert.equal(proof.kind, "ordinary");
+      for (const copy of db.gmailCopies(gmailId, `reply-${id}`)) {
+        db.updateMessage(copy.id, { recipient_headers_json: JSON.stringify({ followupReply: proof }) });
+      }
+    }
+    await db.close();
+    await db.open(file);
+    assert.deepEqual(gmailRows(), uncertain);
+    assert.equal(db.sentFollowupById(gmailId, rfc("complete-mime")), null);
+    assert.ok(service.calls.every(({ method }) => method === "GET"));
     assert.deepEqual(db.listScheduled(), []);
-    console.log("Sent follow-up: printer and club fixtures, cache identity, offline uncertainty, restart, reschedule and dismiss passed.");
+    console.log("Sent follow-up: printer and club fixtures, cache identity, offline uncertainty, restart, reschedule, dismiss and Gmail MIME proof passed.");
   } finally {
     await db.close();
     fs.rmSync(directory, { recursive: true, force: true });

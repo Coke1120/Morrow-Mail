@@ -64,7 +64,8 @@ function replyState(source, candidates, selfAddresses) {
       || row.evidence?.kind === "automatic" || row.report) continue;
     const proof = row.evidence;
     if (Number.isFinite(proof?.receivedAt) && proof.receivedAt < sentAt) continue;
-    if (proof?.kind === "ordinary" && proof.parent === parent && Number.isFinite(proof.receivedAt)) return "answered";
+    if (proof?.kind === "ordinary" && proof.parent === parent && Number.isFinite(proof.receivedAt)
+      && (!row.requiresMimeProof || proof.mimeVerified === true)) return "answered";
     unverified = true;
   }
   return unverified ? "unverified" : "none";
@@ -151,6 +152,8 @@ function createFollowups({ db, selfAddresses, hasCoverage, now = () => Date.now(
           draft: candidate.is_draft, inReplyTo: candidate.in_reply_to, role: folder?.well_known,
           confirmed: rowIdentity(account, candidate, folder, ["SENT", "DRAFT", "SPAM", "TRASH"]),
           report: dsn.parse(candidate.dsn_redraft_json)?.kind === "report",
+          // Older Gmail cache evidence may have matching headers alone.
+          requiresMimeProof: account.mail_transport === "gmail_api",
           evidence: json(candidate.recipient_headers_json)?.followupReply };
       }), identities);
       if (reply === "answered") {
