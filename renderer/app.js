@@ -123,6 +123,8 @@ let listFilterTimer = null;
 let listFilterEditPending = false;
 let filterBeforeComposition = null;
 let displayedListFilter = "";
+let emptyLocalFilterResult = null;
+let localFilterSearchOrigin = null;
 const filterSelection = new Map();
 let mailboxNavigationGen = 0;
 const LIST_PAGE_SIZE = 200;
@@ -467,6 +469,7 @@ function selectedAccount() {
 }
 
 function defaultMailSearchScope(accountId) {
+  endLocalFilterSearch();
   if (accountId === LOCAL_ACCOUNT_ID) state.searchAccountId = LOCAL_ACCOUNT_ID;
   else if (state.searchAccountId === LOCAL_ACCOUNT_ID) state.searchAccountId = "";
 }
@@ -7487,6 +7490,50 @@ function currentListFilter() {
   return filterBeforeComposition ?? String($("list-filter")?.value || "").trim();
 }
 
+function localFilterSearchFolder() {
+  if (state.accountId !== LOCAL_ACCOUNT_ID || state.allInbox || state.outbox) return null;
+  const folder = selectedFolderNode();
+  return folder && !isVirtualMailbox(folder) ? folder : null;
+}
+
+function localFilterSearchText() {
+  if (state.query || state.listLoading || state.listFilterError || filterBeforeComposition !== null) return "";
+  const folder = localFilterSearchFolder();
+  const filter = currentListFilter();
+  return folder && emptyLocalFilterResult?.gen === listGen && emptyLocalFilterResult.folderId === folder.id
+    && emptyLocalFilterResult.filter === filter ? filter : "";
+}
+
+function paintLocalFilterSearch() {
+  const searchButton = $("local-filter-search");
+  const returnButton = $("local-filter-return");
+  if (searchButton) searchButton.hidden = !localFilterSearchText();
+  if (returnButton) returnButton.hidden = !state.query || !localFilterSearchOrigin
+    || localFilterSearchOrigin.folderId !== localFilterSearchFolder()?.id;
+}
+
+function startLocalFilterSearch() {
+  const filter = localFilterSearchText();
+  if (!filter) return;
+  localFilterSearchOrigin = {
+    folderId: state.folderId,
+    filter: $("list-filter").value,
+    searchAccountId: state.searchAccountId,
+  };
+  state.searchAccountId = LOCAL_ACCOUNT_ID;
+  clearListFilterInput();
+  $("search-query").value = filter;
+  focusMailSearch();
+  return applySearch();
+}
+
+function endLocalFilterSearch() {
+  const origin = localFilterSearchOrigin;
+  if (origin) state.searchAccountId = origin.searchAccountId;
+  localFilterSearchOrigin = null;
+  return origin;
+}
+
 function clearListFilterInput() {
   listFilterEditPending = false;
   filterBeforeComposition = null;
@@ -8899,6 +8946,7 @@ function paintSelectionBar(shown) {
 }
 
 function paintSearchCoverage(shown) {
+  paintLocalFilterSearch();
   const filter = currentListFilter();
   const scope = $("search-scope");
   scope.hidden = !state.query;
@@ -12642,6 +12690,7 @@ async function loadList(fromNetwork, requestedOffset) {
   state.listFilterError = false;
   const listFilter = currentListFilter();
   const gen = ++listGen;
+  if (localFilterSearchOrigin && localFilterSearchOrigin.folderId !== localFilterSearchFolder()?.id) endLocalFilterSearch();
   noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId, state.toMeOnly]);
   const scopeChanged = state.listScope !== scope;
@@ -12663,7 +12712,7 @@ async function loadList(fromNetwork, requestedOffset) {
   if (scopeChanged) {
     state.emails = [];
     renderList();
-  }
+  } else paintLocalFilterSearch();
   paintListPaging();
   try {
     if (state.outbox && !state.query) {
@@ -12761,6 +12810,10 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
+    if (listFilter && request.params.accountId === LOCAL_ACCOUNT_ID && data?.total === 0
+      && Array.isArray(data.emails) && !data.emails.length) {
+      emptyLocalFilterResult = { gen, folderId: request.params.folderId, filter: listFilter };
+    }
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
     state.listLoading = false;
     renderList();
@@ -14219,8 +14272,21 @@ function selectionButton(id, label, paths, run) {
 
 function wireSelection() {
   $("filter-chip").addEventListener("click", () => { clearListFilterInput(); applyListFilter(); });
+  $("local-filter-search")?.addEventListener("click", startLocalFilterSearch);
+  const returnButton = $("local-filter-return");
+  returnButton?.addEventListener("click", () => {
+    if (returnButton.hidden) return;
+    $("search-query").value = "";
+    applySearch();
+  });
   $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
-  $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
+  $("search-account").addEventListener("change", () => {
+    state.searchAccountId = $("search-account").value;
+    if (localFilterSearchOrigin) {
+      localFilterSearchOrigin.searchAccountId = state.searchAccountId;
+      applySearch();
+    } else guard(applySearch);
+  });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;
   const mail = ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"];
@@ -15110,12 +15176,19 @@ async function openMessage(emailId, focus, full = false) {
 }
 
 async function applySearch() {
-  ++mailboxNavigationGen;
+  const navigation = ++mailboxNavigationGen;
   cancelCrossMailboxMoveOnNavigation();
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
   if (query) state.outbox = false;
   state.query = query;
+  const origin = query ? null : endLocalFilterSearch();
+  if (origin && origin.folderId === localFilterSearchFolder()?.id) {
+    clearListFilterInput();
+    const filter = $("list-filter");
+    filter.value = origin.filter;
+    filter.focus();
+  }
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
@@ -15125,11 +15198,11 @@ async function applySearch() {
   try {
     await loadList();
   } catch (error) {
-    if (state.query !== query) return;
+    if (navigation !== mailboxNavigationGen || state.query !== query) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
-  if (state.query !== query) return;
+  if (navigation !== mailboxNavigationGen || state.query !== query) return;
   showStatus("");
 }
 
@@ -19464,6 +19537,7 @@ async function removeAccount() {
   clearUndo();
   showStatus("Removing account…");
   await call("mail:removeAccount", { accountId: account.id });
+  endLocalFilterSearch();
   state.accountId = null;
   state.folderId = null;
   state.query = "";
@@ -29933,14 +30007,20 @@ function wire() {
   for (const id of ["imap-tls", "smtp-tls"]) {
     $(id).addEventListener("change", () => { customEndpointEdits.add(id.split("-")[0]); });
   }
+  const searchQuery = $("search-query");
+  let searchComposing = false;
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    applySearch();
+    if (!searchComposing) applySearch();
   });
-  const searchQuery = $("search-query");
   const restoreListIfCleared = (event) => {
-    if (!event.isComposing && !searchQuery.value.trim() && state.query) applySearch();
+    if (!searchComposing && !event.isComposing && !searchQuery.value.trim() && state.query) applySearch();
   };
+  searchQuery.addEventListener("compositionstart", () => { searchComposing = true; });
+  searchQuery.addEventListener("compositionend", (event) => {
+    searchComposing = false;
+    restoreListIfCleared(event);
+  });
   searchQuery.addEventListener("input", restoreListIfCleared);
   searchQuery.addEventListener("search", restoreListIfCleared);
   const listFilter = $("list-filter");
@@ -29949,6 +30029,7 @@ function wire() {
       filterBeforeComposition = currentListFilter();
       clearTimeout(listFilterTimer);
       listFilterTimer = null;
+      paintLocalFilterSearch();
     });
     listFilter.addEventListener("compositionend", () => {
       if (filterBeforeComposition === null) return;
@@ -30645,6 +30726,7 @@ async function boot() {
   api.on("mail:localFoldersUpdated", payload => {
     if (!payload?.account) return;
     state.localAccount = payload.account; rememberSelection(); renderAccounts();
+    paintLocalFilterSearch();
   });
   api.on("mail:folderManagementChanged", onFolderManagementChanged);
   api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
