@@ -2033,6 +2033,25 @@
         </div>
       </div>
     </dialog>
+    <template id="reader-local-time-template">
+      <dialog id="reader-local-time" aria-labelledby="reader-time-title">
+        <form>
+          <h2 id="reader-time-title">Local time</h2>
+          <h3>Original selection</h3>
+          <p id="reader-time-original"></p>
+          <p id="reader-time-confirmed" class="hint" hidden></p>
+          <p id="reader-time-result" role="status" tabindex="-1"></p>
+          <div id="reader-time-clarify" hidden>
+            <label for="reader-time-correction">Confirm date, time and offset</label>
+            <input id="reader-time-correction" type="text" maxlength="256" autocomplete="off" spellcheck="false" />
+            <button type="submit" class="primary">Convert</button>
+          </div>
+          <div class="row">
+            <button type="button" class="ghost" id="reader-time-close">Close</button>
+          </div>
+        </form>
+      </dialog>
+    </template>
     <dialog id="dsn-redraft" aria-labelledby="dsn-redraft-title">
       <form id="dsn-redraft-form">
         <h2 id="dsn-redraft-title" tabindex="-1">Review delivery report</h2>
@@ -2144,6 +2163,7 @@
     <script src="./compose-attachments.js"></script>
     <script src="./reader-table-columns.js"></script>
     <script src="./reply-selection.js"></script>
+    <script src="./reader-local-time.js"></script>
     <script src="./compose-bcc-roster.js"></script>
     <script src="./sent-followup.js"></script>
     <script src="./app.js"></script>

@@ -1,0 +1,6 @@
+[
+  "reader-local-time",
+  "Show local time",
+  "Mail",
+  "Select a date and time in an open message, then choose Show local time. Compare the original with the date, time, zone and UTC offset on this device, including a change of day. Use an ISO timestamp or an English month name with an explicit UTC offset. For unclear text, enter and confirm one timestamp before converting. Conversion runs on this device and leaves the message and calendar unchanged."
+]
