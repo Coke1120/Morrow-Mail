@@ -4,6 +4,7 @@ const oauth = require("./oauth");
 const config = require("./oauth-config");
 const gmail = require("./provider-api");
 const calendar = require("./calendar-api");
+const { safeId } = require("./provider-http");
 const inboxRules = require("./inbox-rules");
 const vacationApi = require("./vacation-api");
 const sieve = require("./sieve-vacation");
@@ -97,6 +98,7 @@ const CHANNELS = new Set([
 ]);
 
 const MONTH_MS = 62 * 24 * 60 * 60 * 1000;
+const MAX_AVAILABILITY_CALENDARS = 500;
 
 function ok(data) {
   return { success: true, data };
@@ -760,7 +762,20 @@ async function moveProviderMessage(params) {
   }
 }
 
+function validAvailabilityRequest(params) {
+  const exactId = id => typeof id === "string" && id !== "" && safeId(id) === id;
+  const ids = params.calendarIds;
+  if (!exactId(params.accountId) || !Array.isArray(ids) || !ids.length || ids.length > MAX_AVAILABILITY_CALENDARS) return false;
+  const seen = new Set();
+  for (const id of ids) {
+    if (!exactId(id) || seen.has(id)) return false;
+    seen.add(id);
+  }
+  return true;
+}
+
 async function listCalendar(params) {
+  const requested = params.availabilityOnly === true ? params.calendarIds : null;
   const account = accountFrom(params);
   if (!account) {
     return ok({ api: false, reason: "needs_auth", calendars: [], events: [], accountId: null, provider: "", truncated: false });
@@ -784,32 +799,25 @@ async function listCalendar(params) {
   try {
     const token = await tokenFor(account, "calendar");
     const calendars = await calendar.listCalendars(gate.provider, token.authorization);
-    const calendarIds = calendar.selectedCalendarIds(calendars, params);
-    if (!calendarIds.length) {
-      return ok({
-        api: true,
-        reason: "",
-        calendars,
-        events: [],
-        calendarId: "",
-        calendarIds: [],
-        accountId: account.id,
-        provider: gate.provider,
-        timeMin: range.timeMin,
-        timeMax: range.timeMax,
-        grantedScopes: token.grantedScopes || gate.scopes,
-        truncated: false,
-      });
+    const calendarIds = requested || calendar.selectedCalendarIds(calendars, params);
+    let listed = { events: [], truncated: false, calendarIds };
+    if (requested) {
+      const known = new Set(calendars.map(row => row.id));
+      const missing = requested.filter(id => !known.has(id));
+      if (missing.length) listed.incompleteCalendarIds = missing;
     }
-    const listed = await calendar.listEventsForIds(gate.provider, token.authorization, calendarIds, range);
+    if (calendarIds.length && !listed.incompleteCalendarIds) {
+      listed = await calendar.listEventsForIds(gate.provider, token.authorization, calendarIds, range);
+    }
     return ok({
       api: true,
       reason: "",
       calendars,
       events: listed.events,
       truncated: listed.truncated === true,
-      calendarId: calendarIds[0],
-      calendarIds,
+      calendarId: calendarIds[0] || "",
+      calendarIds: requested ? listed.calendarIds : calendarIds,
+      ...(requested && listed.incompleteCalendarIds ? { incompleteCalendarIds: listed.incompleteCalendarIds } : {}),
       accountId: account.id,
       provider: gate.provider,
       timeMin: range.timeMin,
@@ -1452,7 +1460,11 @@ module.exports = {
     if (!handles(channel)) return undefined;
     if (["mail:grantOrganize", "mail:grantVacation", "mail:grantRules", "calendar:connect"].includes(channel)) return answer(channel, args);
     try {
-      const rows = ["mail:oauthStatus", "calendar:status"].includes(channel) ? db.listAccountRows() : accountFrom(args?.[0]);
+      const params = args?.[0];
+      if (channel === "calendar:list" && params?.availabilityOnly === true && !validAvailabilityRequest(params)) {
+        return fail("invalid", "Choose a mailbox and a non-empty set of checked calendars.");
+      }
+      const rows = ["mail:oauthStatus", "calendar:status"].includes(channel) ? db.listAccountRows() : accountFrom(params);
       return await withGrantSnapshot(rows, () => answer(channel, args), options.assertContextCurrent || undefined);
     } catch (error) { return failFrom(error); }
   },

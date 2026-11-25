@@ -1,0 +1,6 @@
+{
+  "id": "compose-calendar-slots",
+  "title": "Offer two times in a reply",
+  "category": "Calendar",
+  "blurb": "In Reply or Reply All, choose Offer two times… to find half-hour openings on the From mailbox’s checked calendars using its existing Calendar access. Pick two times on one or two dates and preview the local dates, time ranges and UTC offsets. Insert times adds just those two lines to your message. Cancel leaves the draft untouched. If a checked calendar cannot be verified, the picker clears its choices. No calendar events, invitations or mail are sent by the picker."
+}

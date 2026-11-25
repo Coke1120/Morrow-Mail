@@ -1109,6 +1109,7 @@
         <textarea id="compose-body" class="compose-body-source" tabindex="-1" aria-hidden="true"></textarea>
 
         <div class="compose-files">
+          <button type="button" class="ghost" id="compose-calendar-slots-open" aria-haspopup="dialog" aria-controls="compose-calendar-slots" hidden disabled>Offer two times…</button>
           <input id="compose-file" type="file" multiple hidden />
           <button type="button" class="ghost icon-label" id="compose-attach">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
@@ -1119,6 +1120,7 @@
           <p id="compose-attach-error" class="error" role="status" hidden></p>
         <details id="compose-editing-help"><summary>Editing and attachment help</summary>
           <p class="hint">Use A− and A+ to change font size one step at a time. Text color opens common colors, Default text color, and Custom…. Formatting applies to selected text or the next text you type. Use Command+Z on Mac or Ctrl+Z on Windows to undo an edit.</p>
+          <p class="hint" id="compose-calendar-slots-help" hidden>In Reply or Reply All, choose Offer two times… and add two available half-hours from one or two dates. The options use the checked calendars for the From mailbox. Insert times adds the two lines at your message caret. Cancel leaves your draft as it was.</p>
           <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
           <p class="hint">Forward includes the original files after preparation. Review or remove them here before sending. Preparation failures keep the original unchanged; retry from the message.</p>
           <p class="hint">In a resumed draft, choose Attach from Inbox to select local files from the same mailbox. Check the source and recipients before adding. Older and Newer clear unconfirmed checks. Choose Add and view older files to add the checked files and keep browsing, or Add selected files to return to the editor. Cancel or Escape keeps files already added to the editor. Choose Save draft to keep your changes. If a recently downloaded file has expired, preview it in the reader and reopen the picker.</p>
@@ -1156,6 +1158,25 @@
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="compose-calendar-slots" aria-labelledby="compose-calendar-slots-title">
+      <div class="dialog-body">
+        <h2 id="compose-calendar-slots-title">Offer two times</h2>
+        <label for="compose-calendar-slots-date">Date</label>
+        <input id="compose-calendar-slots-date" type="date" />
+        <label for="compose-calendar-slots-time">Available times</label>
+        <select id="compose-calendar-slots-time" disabled></select>
+        <div class="row">
+          <button type="button" class="ghost" id="compose-calendar-slots-add" disabled>Add time</button>
+          <button type="button" class="ghost" id="compose-calendar-slots-clear" disabled>Clear times</button>
+        </div>
+        <p id="compose-calendar-slots-status" class="hint" role="status"></p>
+        <p id="compose-calendar-slots-preview" class="preserve-lines" role="status" aria-label="Selected times"></p>
+        <div class="row">
+          <button type="button" class="primary" id="compose-calendar-slots-insert" disabled>Insert times</button>
+          <button type="button" class="ghost" id="compose-calendar-slots-cancel">Cancel</button>
+        </div>
+      </div>
     </dialog>
     <dialog id="compose-inbox-picker" aria-labelledby="compose-inbox-title" aria-describedby="compose-inbox-help">
       <div class="dialog-body">
@@ -2161,6 +2182,7 @@
     <script src="./agent-safety-review.js"></script>
     <script src="./agent-actions.js"></script>
     <script src="./compose-attachments.js"></script>
+    <script src="./compose-calendar-slots.js"></script>
     <script src="./reader-table-columns.js"></script>
     <script src="./reply-selection.js"></script>
     <script src="./reader-local-time.js"></script>
