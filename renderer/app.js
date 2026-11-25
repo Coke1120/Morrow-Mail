@@ -5613,6 +5613,7 @@ function quoteStateFromSeed(fields) {
     collapsed: false,
     email: source || null,
     kind: (fields && fields.kind) || "",
+    selected: !!fields?.selectedReplyQuote,
     images: false,
   };
 }
@@ -5623,7 +5624,7 @@ async function fillComposeReplyHistory(fields, session) {
   const quote = state.composeQuote;
   const source = quote && quote.email;
   if (!source || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
-      || !fields.accountId || !fields.threadId || !source.id || source.id !== fields.sourceMessageId
+      || fields.selectedReplyQuote || !fields.accountId || !fields.threadId || !source.id || source.id !== fields.sourceMessageId
       || (source.accountId && source.accountId !== fields.accountId) || (source.threadId && source.threadId !== fields.threadId)) return;
   const current = () => state.composeSession === session && state.composeQuote === quote;
   quote.historyNote = "Loading earlier conversation messages…";
@@ -10435,9 +10436,10 @@ function renderBody(pane, email, refresh) {
   let choice = plainBodyViews.get(pane);
   if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
   const body = document.createElement("div");
+  let wrapper;
   const paint = () => {
     body.replaceChildren();
-    const wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
     if (pane.id === "reader" && !choice.plain && email?.htmlBody && typeof window !== "undefined") {
       window.morrowReaderTableColumns?.mount(wrapper, email.htmlBody, parkMailStyleAttributes);
     }
@@ -10451,6 +10453,24 @@ function renderBody(pane, email, refresh) {
   }
   pane.appendChild(body);
   paint();
+
+  const selection = typeof window !== "undefined" && window.morrowReplySelection;
+  const reply = pane.id === "reader" && !email.isDraft && pane.querySelector(".reader-actions [data-action='reply']");
+  if (!reply || !selection) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.dataset.action = "reply-selection";
+  button.textContent = "Reply quoting selection";
+  // A pointer click must leave the selected range intact until the action reads it.
+  button.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
+  button.addEventListener("click", () => guard(() => {
+    const excerpt = button.isConnected && state.email === email && mailShortcutTarget()?.id === email.id
+      && selection.read(wrapper);
+    if (!excerpt) return showStatus("Select text in this message and try again.", true);
+    return openReaderCompose("reply", email, excerpt);
+  }));
+  reply.after(button);
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -15697,13 +15717,15 @@ function seedComposeReplyQuote(fields) {
       || fields.botDraft || fields.partialReceipt || !composeEditorLive()) return;
   const node = document.createElement("div");
   node.setAttribute("data-compose-reply-quote", "1");
-  const message = composeReplyQuoteMessage(quote.email);
-  if (message) node.appendChild(message);
+  const excerpt = fields.selectedReplyQuote;
+  const message = excerpt ? null : composeReplyQuoteMessage(quote.email);
+  if (excerpt) node.appendChild(window.morrowReplySelection.quoteBody(document, excerpt));
+  else if (message) node.appendChild(message);
   else appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
   quote.inEditor = true;
   quote.editorNode = node;
   quote.editorHtml = node.innerHTML;
-  quote.editorBodyText = message ? plainFromComposeHtml(message.lastElementChild.innerHTML) : readable(quote.email);
+  quote.editorBodyText = excerpt || (message ? plainFromComposeHtml(message.lastElementChild.innerHTML) : readable(quote.email));
   if (message && message.quoteFormattingLimited) {
     quote.formattingNote = composeQuoteFormattingNote();
     quote.email.quoteFormattingLimited = true;
@@ -18036,7 +18058,9 @@ function paintComposeChrome() {
   const history = has && ((quote.messages && quote.messages.length > 1) || quote.historyNote);
   const label = $("compose-quote-label");
   if (label) label.textContent = history ? "Conversation history" : "Original message";
-  note.textContent = quote && quote.inEditor
+  note.textContent = quote?.selected
+    ? "Edit or remove the selected quotation in Message. The original message here is for reference."
+    : quote && quote.inEditor
     ? "Edit or remove quoted text in Message. Safe HTML formatting is retained; remote content stays blocked in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
     : history
     ? "The quoted original and available earlier message text are included when you save, send, or schedule."
@@ -20099,12 +20123,13 @@ function mailShortcut(event, context) {
   return "";
 }
 
-function openReaderCompose(kind, email = mailShortcutTarget()) {
+function openReaderCompose(kind, email = mailShortcutTarget(), selectedReplyQuote = "") {
   if (!email || email.outbox) return;
   const account = state.accounts.find((item) => item.id === email.accountId);
   if (!account) return;
   const self = (account.preferredFromAddress || account.email) || "";
-  return presentCompose(composeSeed(email, kind, self));
+  const seed = composeSeed(email, kind, self);
+  return presentCompose(selectedReplyQuote ? { ...seed, quote: selectedReplyQuote, selectedReplyQuote } : seed);
 }
 
 function focusMailSearch() {

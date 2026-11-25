@@ -27,12 +27,12 @@ window.morrowReplySelection = (() => {
 
   function quoteBody(document, text) {
     const quote = document.createElement("blockquote");
-    quote.style.whiteSpace = "pre-wrap";
-    for (const [index, line] of text.split("\n").entries()) {
-      if (index) quote.append(document.createElement("br"));
-      // Preserve the excerpt even if it looks like markup or a URL.
-      quote.append(document.createTextNode(line));
-    }
+    // The HTML sanitizer keeps preformatted text but drops pre-wrap styles.
+    const block = document.createElement("pre");
+    const excerpt = document.createElement("span");
+    excerpt.textContent = text;
+    block.append(excerpt);
+    quote.append(block);
     return quote;
   }
 

@@ -66,7 +66,6 @@ test("creates a plain-text quote with line breaks and no links or images", t => 
   const { document, actions } = fixture(t, "");
   const quote = actions.quoteBody(document, "18 mm <trim>  & 中文\n\nhttps://example.invalid/label");
   assert.equal(quote.tagName, "BLOCKQUOTE");
-  assert.equal(quote.style.whiteSpace, "pre-wrap");
-  assert.equal(quote.innerHTML, "18 mm &lt;trim&gt;  &amp; 中文<br><br>https://example.invalid/label");
-  assert.deepEqual(Array.from(quote.children, child => child.tagName), ["BR", "BR"]);
+  assert.equal(quote.innerHTML, "<pre><span>18 mm &lt;trim&gt;  &amp; 中文\n\nhttps://example.invalid/label</span></pre>");
+  assert.equal(quote.querySelector("pre").textContent, "18 mm <trim>  & 中文\n\nhttps://example.invalid/label");
 });
