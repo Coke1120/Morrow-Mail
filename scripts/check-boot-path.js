@@ -192,6 +192,7 @@ const syntax = [
   "scripts/check-bot-send-authorization.js",
   "scripts/check-cli-capabilities.js",
   "renderer/preload.js",
+  "renderer/compose-attachments.js",
   "renderer/app.js",
   "renderer/pdf-preview.js",
   "scripts/check-pdf-preview.js",
@@ -4380,6 +4381,9 @@ const catalogScript = activeHtml.indexOf('<script src="./features-catalog.js"></
 const appScript = activeHtml.indexOf('<script src="./app.js"></script>');
 assert.ok(catalogScript >= 0 && appScript >= 0 && catalogScript < appScript,
   "Features catalog and app scripts must both be present, with the catalog first");
+const composeAttachmentsScript = activeHtml.indexOf('<script src="./compose-attachments.js"></script>');
+assert.ok(composeAttachmentsScript >= 0 && appScript >= 0 && composeAttachmentsScript < appScript,
+  "Compose attachments and app scripts must both be present, with compose attachments first");
 const featureCatalog = require("../renderer/features-catalog.js");
 const featureSeed = readExpectedFeatures();
 assert.deepStrictEqual(featureCatalog.items.map((row) => [row.id, row.title, row.category, row.blurb]), featureSeed);
