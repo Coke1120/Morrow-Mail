@@ -1119,7 +1119,7 @@
           <p class="hint">Use A− and A+ to change font size one step at a time. Text color opens common colors, Default text color, and Custom…. Formatting applies to selected text or the next text you type. Use Command+Z on Mac or Ctrl+Z on Windows to undo an edit.</p>
           <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
           <p class="hint">Forward includes the original files after preparation. Review or remove them here before sending. Preparation failures keep the original unchanged; retry from the message.</p>
-          <p class="hint">In a resumed draft, choose Attach from Inbox to select a local file from the same mailbox. Check the source message and the draft’s recipients before adding. If a recently downloaded file has expired, preview it in the reader and reopen the picker.</p>
+          <p class="hint">In a resumed draft, choose Attach from Inbox to select local files from the same mailbox. Check the source and recipients before adding. Older and Newer clear unconfirmed checks. Choose Add and view older files to add the checked files and keep browsing, or Add selected files to return to the editor. Cancel or Escape keeps files already added to the editor. Choose Save draft to keep your changes. If a recently downloaded file has expired, preview it in the reader and reopen the picker.</p>
           <p class="hint">Choose Preview beside a PDF added in this Compose session (including drag and drop and replacements) or a verified local PDF in a resumed draft. Saved PDFs are read on demand. Close Preview to return focus to the row and choose Remove while keeping your edits. Same-name attachments have numbered rows. If the draft changed in another window, reopen it before previewing again. Press Escape or Close to return to Compose.</p>
           <p class="hint">Wait for Preparing attachment to finish before Save, preview, Send or Schedule. Closing Compose abandons unfinished file preparation. Undo saves an inert recovery draft before reopening; if the window fails, resume from local Drafts. Recovered recipients and signatures stay exactly as queued.</p>
         </details>
@@ -1168,12 +1168,15 @@
           <div class="preview-row"><dt>Cc</dt><dd id="compose-inbox-cc"></dd></div>
           <div class="preview-row"><dt>Bcc</dt><dd id="compose-inbox-bcc"></dd></div>
         </dl>
-        <h3 id="compose-inbox-sources-title">Inbox files</h3>
+        <h3 id="compose-inbox-sources-title" tabindex="-1">Inbox files</h3>
+        <p class="hint" id="compose-inbox-attached" hidden></p>
         <p class="hint" id="compose-inbox-status" role="status"></p>
         <div id="compose-inbox-sources" role="region" aria-labelledby="compose-inbox-sources-title"></div>
+        <p class="hint" id="compose-inbox-paging-help">Older and Newer clear unconfirmed checks. Use Save draft in the editor to keep added files.</p>
         <div class="row">
-          <button type="button" class="ghost" id="compose-inbox-newer" disabled>Newer</button>
-          <button type="button" class="ghost" id="compose-inbox-older" disabled>Older</button>
+          <button type="button" class="ghost" id="compose-inbox-newer" aria-describedby="compose-inbox-paging-help" disabled>Newer</button>
+          <button type="button" class="ghost" id="compose-inbox-older" aria-describedby="compose-inbox-paging-help" disabled>Older</button>
+          <button type="button" class="ghost" id="compose-inbox-add-older" hidden disabled>Add and view older files</button>
           <button type="button" class="primary" id="compose-inbox-confirm" disabled>Add selected files</button>
         </div>
       </div>

@@ -16017,6 +16017,7 @@ function closeComposeInboxPicker() {
   picker.cursors.length = 0;
   $("compose-inbox-sources").replaceChildren();
   for (const field of inboxRecipientFields) $("compose-inbox-" + field).textContent = "";
+  $("compose-inbox-attached").textContent = "";
   $("compose-inbox-status").textContent = "";
   syncComposeActions();
   return closeDialog("compose-inbox-picker");
@@ -16048,9 +16049,11 @@ let composeInboxPickerController;
 function getComposeInboxPickerController() {
   return composeInboxPickerController ??= window.morrowCreateComposeInboxPicker({
     list: $("compose-inbox-sources"),
+    heading: $("compose-inbox-sources-title"),
     newer: $("compose-inbox-newer"),
     older: $("compose-inbox-older"),
     confirm: $("compose-inbox-confirm"),
+    addOlder: $("compose-inbox-add-older"),
     status: $("compose-inbox-status"),
     cancel: $("compose-inbox-cancel"),
     shownWhen, fileSize,
@@ -16065,12 +16068,22 @@ function getComposeInboxPickerController() {
   });
 }
 
-function showComposeInboxError(picker, error) {
+function showComposeInboxError(picker, error, retry = "") {
   if (!ownsComposeInboxPicker(picker)) return;
   if (["draft_conflict", "account_removed"].includes(error?.code)) {
     state.composeInboxDraft = null;
     invalidateComposeInboxPicker(error.message);
-  } else $("compose-inbox-status").textContent = error?.message || String(error);
+  } else {
+    const message = error?.message || String(error);
+    $("compose-inbox-status").textContent = retry && !error?.code ? `${message} ${retry}` : message;
+  }
+}
+
+function paintComposeInboxAttached() {
+  const attached = $("compose-inbox-attached");
+  const names = composeAttachmentList(state.composeAttachments).map(file => file.filename);
+  attached.hidden = !names.length;
+  attached.textContent = names.length ? `Attached in this editor: ${names.join(", ")}` : "";
 }
 
 function openComposeInboxPicker() {
@@ -16086,6 +16099,7 @@ function openComposeInboxPicker() {
   hideRecipientSuggest();
   setComposeAttachError("");
   for (const [index, field] of inboxRecipientFields.entries()) $("compose-inbox-" + field).textContent = recipients[index] || "None";
+  paintComposeInboxAttached();
   $("compose-attach-inbox").focus();
   openDialog("compose-inbox-picker");
   $("compose-inbox-title").focus();
@@ -16093,9 +16107,10 @@ function openComposeInboxPicker() {
   controller.loadPage(picker, 0);
 }
 
-async function confirmComposeInboxFiles() {
+async function confirmComposeInboxFiles(viewOlder = false) {
   const picker = state.composeInboxPicker;
   if (!picker || picker.busy || !picker.selected.size || !ownsComposeInboxPicker(picker)) return;
+  if (viewOlder && !picker.cursors[picker.page + 1]) return;
   const controller = getComposeInboxPickerController();
   const selected = [...picker.selected.values()];
   const existing = composeAttachmentList(state.composeAttachments);
@@ -16145,7 +16160,15 @@ async function confirmComposeInboxFiles() {
     }
     state.composeAttachments = current.concat(added);
     picker.requestId = null;
-    closeComposeInboxPicker();
+    if (viewOlder) {
+      const { draft, session, page, cursors, review } = picker;
+      const nextPicker = { draft, session, page, cursors: cursors.slice(),
+        review: { ...review, id: crypto.randomUUID() }, selected: new Map() };
+      picker.selected.clear();
+      state.composeInboxPicker = nextPicker;
+      paintComposeInboxAttached();
+      controller.loadPage(nextPicker, page + 1);
+    } else closeComposeInboxPicker();
     paintComposeAttachments();
     paintComposeNote();
     setComposeStatus("Inbox files added to this draft. Save draft to keep the changes.");
@@ -16161,7 +16184,8 @@ function wireComposeInboxPicker() {
   const dialog = $("compose-inbox-picker");
   if (!dialog) return;
   $("compose-attach-inbox").addEventListener("click", openComposeInboxPicker);
-  $("compose-inbox-confirm").addEventListener("click", confirmComposeInboxFiles);
+  $("compose-inbox-confirm").addEventListener("click", () => confirmComposeInboxFiles());
+  $("compose-inbox-add-older").addEventListener("click", () => confirmComposeInboxFiles(true));
   $("compose-inbox-cancel").addEventListener("click", closeComposeInboxPicker);
   for (const [id, step] of [["compose-inbox-newer", -1], ["compose-inbox-older", 1]]) {
     $(id).addEventListener("click", () => {

@@ -1,12 +1,14 @@
 "use strict";
 
-window.morrowCreateComposeInboxPicker = function ({ list, newer, older, confirm, status, cancel,
+window.morrowCreateComposeInboxPicker = function ({ list, heading, newer, older, confirm, addOlder, status, cancel,
   shownWhen, fileSize, owns, reportError, listPage, pinPart }) {
   function sync(picker) {
     list.inert = picker.busy;
     newer.disabled = picker.busy || picker.page === 0;
     older.disabled = picker.busy || !picker.cursors[picker.page + 1];
     confirm.disabled = picker.busy || !picker.selected.size;
+    addOlder.hidden = !picker.selected.size || !picker.cursors[picker.page + 1];
+    addOlder.disabled = picker.busy || addOlder.hidden;
   }
 
   function paintSources(picker, sources) {
@@ -43,6 +45,7 @@ window.morrowCreateComposeInboxPicker = function ({ list, newer, older, confirm,
   async function selectFile(picker, source, file, input) {
     if (picker.busy || !owns(picker)) return;
     if (input.checked) {
+      const hadFocus = document.activeElement === input;
       picker.busy = true;
       picker.requestId = crypto.randomUUID();
       sync(picker);
@@ -52,17 +55,20 @@ window.morrowCreateComposeInboxPicker = function ({ list, newer, older, confirm,
         const result = await pinPart(picker.review, picker.requestId, part);
         if (!owns(picker)) return;
         const contentProof = result?.attachments?.[0]?.contentProof;
-        if (!contentProof) throw new Error("Select the Inbox file again.");
+        if (!contentProof) throw new Error("Could not verify the selected Inbox file.");
         picker.selected.set(file.proof, { ...file, emailId: source.id, contentProof });
       } catch (error) {
         if (!owns(picker)) return;
         input.checked = false;
-        reportError(picker, error);
+        reportError(picker, error, "Check the file again to retry.");
         return;
       } finally {
         picker.busy = false;
         picker.requestId = null;
-        if (owns(picker)) sync(picker);
+        if (owns(picker)) {
+          sync(picker);
+          if (hadFocus && document.activeElement === document.body) input.focus();
+        }
       }
     } else picker.selected.delete(file.proof);
     sync(picker);
@@ -76,19 +82,23 @@ window.morrowCreateComposeInboxPicker = function ({ list, newer, older, confirm,
     list.replaceChildren();
     sync(picker);
     status.textContent = "Checking stored Inbox files…";
-    if (picker.loaded) cancel.focus();
+    if (page !== picker.page) cancel.focus();
     try {
       const result = await listPage(picker.review, picker.cursors[page]);
       if (!owns(picker)) return;
-      if (!Array.isArray(result?.sources)) throw new Error("Could not list stored Inbox files. Reopen the picker to try again.");
-      picker.loaded = true;
+      if (!Array.isArray(result?.sources)) throw new Error("Could not list stored Inbox files.");
       picker.page = page;
       picker.cursors.length = page + 1;
       if (result.nextCursor) picker.cursors.push(result.nextCursor);
       paintSources(picker, result.sources);
       status.textContent = result.sources.length ? "Choose files to add to the draft."
         : result.nextCursor ? "No stored Inbox files on this page. Choose Older to keep looking." : "No stored Inbox files on this page.";
-    } catch (error) { reportError(picker, error); }
+      if (document.activeElement === cancel) heading.focus();
+    } catch (error) {
+      const retry = page > picker.page ? "Choose Older to try again."
+        : page < picker.page ? "Choose Newer to try again." : "Reopen the picker to try again.";
+      reportError(picker, error, retry);
+    }
     finally {
       picker.busy = false;
       if (owns(picker)) sync(picker);
