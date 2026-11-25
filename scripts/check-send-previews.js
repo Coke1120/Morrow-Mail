@@ -110,6 +110,136 @@ test("Cancel is inert and send/schedule confirmation retains the captured HTML",
   assert.equal(f.run("calls.length"), 0);
 });
 
+test("Review links keeps repeated occurrences and selects only the matching preview anchor", t => {
+  const f = fixture(t);
+  const repeated = "https://docs.fixture.invalid/a?token=" + "x".repeat(180) + "&part=two#section";
+  const other = "http://docs.fixture.invalid/b#details";
+  const link = (href, label) => `<a href="${href.replaceAll("&", "&amp;")}">${label}</a>`;
+  f.get("compose-editor").innerHTML = "<p>Faraway opening " + "filler ".repeat(60) +
+    `<br><i>Alpha</i> ${link(repeated, "<b>Re</b>view")} begins here.<br>` +
+    `<span>Beta</span> ${link(other, "Review")} ends here.</p><p>Gamma ${link(repeated, "Review")}.</p>`;
+  const location = f.document.defaultView.location.href;
+  let opens = 0;
+  let submits = 0;
+  f.document.defaultView.open = () => { opens++; };
+  f.get("compose-preview-form").addEventListener("submit", event => { event.preventDefault(); submits++; });
+
+  assert.equal(f.run("openComposePreview(null)"), true);
+  const frozen = f.run("JSON.stringify(previewDraftState.payload)");
+  const review = f.get("compose-preview-links");
+  assert.equal(review.previousElementSibling, f.body());
+  assert.equal(review.hidden, false);
+  assert.equal(review.open, false);
+  assert.equal(f.document.activeElement, f.get("compose-preview-confirm"));
+  assert.equal(review.querySelector("summary").textContent.trim(), "Review links 3");
+  review.open = true;
+  const rows = [...review.querySelectorAll("button")];
+  const anchors = [...f.body().querySelectorAll("a")];
+  const rowText = field => rows.map(row => row.querySelector(".preview-link-" + field).textContent);
+  assert.deepEqual(rowText("label"), ["Review", "Review", "Review"]);
+  assert.deepEqual(rowText("url"), [repeated, other, repeated]);
+  assert.deepEqual(rowText("context"), ["Alpha Review begins here.", "Beta Review ends here.", "Gamma Review."]);
+  assert.doesNotMatch(rowText("context")[0], /Faraway opening/);
+  assert.equal(review.querySelector("a"), null);
+  assert.ok(rows.every(row => row.type === "button"));
+
+  const scrolled = [];
+  let anchorClicks = 0;
+  for (const anchor of anchors) {
+    anchor.scrollIntoView = () => scrolled.push(anchor);
+    anchor.addEventListener("click", event => { event.preventDefault(); anchorClicks++; });
+  }
+  rows[1].focus();
+  rows[1].click();
+  assert.equal(f.document.activeElement, rows[1]);
+  assert.equal(f.body().querySelector("[data-preview-link-target]"), anchors[1]);
+  rows[2].click();
+  assert.deepEqual(scrolled, [anchors[1], anchors[2]]);
+  assert.deepEqual([...f.body().querySelectorAll("[data-preview-link-target]")], [anchors[2]]);
+  assert.deepEqual([...review.querySelectorAll('[aria-current="true"]')], [rows[2]]);
+  assert.equal(anchors[2].href, repeated);
+  assert.equal(anchors[2].target, "_blank");
+  assert.equal(anchors[2].rel, "noopener noreferrer");
+  assert.deepEqual([opens, submits, anchorClicks, f.run("calls.length"), f.run("confirmed.length")], [0, 0, 0, 0, 0]);
+  assert.equal(f.document.defaultView.location.href, location);
+  assert.equal(f.run("JSON.stringify(previewDraftState.payload)"), frozen);
+});
+
+test("Review links describes image targets and lists only real web anchors in the safe body", t => {
+  const f = fixture(t);
+  f.context.html = '<p>Before <a href="https://docs.fixture.invalid/image"><img alt="Map &amp; routes" src="' + raster + '"></a>' +
+    '<br>Directions <a href="https://docs.fixture.invalid/blocked"><img src="https://track.fixture.invalid/pixel.png" width="20" height="20"></a>' +
+    ' continue.</p><a href="mailto:help@fixture.invalid">Email</a><a href="javascript:void(0)">Unsafe</a>' +
+    '<a href="/relative">Relative</a><a href="#fragment">Fragment</a><a href="https://[invalid">Invalid</a>' +
+    '<p>https://docs.fixture.invalid/plain</p>';
+  f.run("paintPreview({payload: {body: html}})");
+  const list = f.get("compose-preview-link-list");
+  assert.deepEqual([...list.querySelectorAll(".preview-link-label")].map(node => node.textContent),
+    ["Image link (Map & routes)", "Image link"]);
+  assert.match(list.lastElementChild.querySelector(".preview-link-context").textContent, /Directions Image link continue\./);
+  assert.equal(f.body().querySelector(".mail-image-hold").getAttribute("role"), "img");
+  assert.equal(f.body().querySelectorAll("img").length, 1);
+  assert.equal(f.body().querySelector('a[href^="mailto:"]').textContent, "Email");
+  assertInert(f.body());
+
+  f.get("compose-editor").innerHTML = '<a href="https://docs.fixture.invalid/blocked"><img width="20" alt="Map" src="https://track.fixture.invalid/map.png"></a>';
+  assert.equal(f.run("openComposePreview(null)"), true);
+  assert.equal(list.querySelector(".preview-link-label").textContent, "Image link",
+    "a blocked image stays recognizable after both compose and preview sanitization");
+  assert.equal(f.body().querySelector("img"), null);
+
+  f.context.html = '<p>Public text</p><div style="display:none"><a href="https://docs.fixture.invalid/hidden">Hidden copy</a></div>';
+  f.run("paintPreview({payload: {body: html}})");
+  list.querySelector("button").click();
+  const marker = f.body().querySelector(".preview-link-location");
+  assert.equal(marker.nextElementSibling.style.display, "none");
+  assert.equal(marker.nextElementSibling.querySelector("a").hasAttribute("data-preview-link-target"), true);
+  f.run("cancelComposePreview()");
+  assert.equal(f.body().querySelector(".preview-link-location"), null);
+});
+
+test("Review links resets on repaint and cancellation and reopens with the scheduled snapshot", async t => {
+  const f = fixture(t);
+  const editor = f.get("compose-editor");
+  const review = f.get("compose-preview-links");
+  const list = f.get("compose-preview-link-list");
+  const select = () => { review.open = true; list.querySelector("button").click(); };
+  editor.innerHTML = '<a href="https://docs.fixture.invalid/original">Original</a>';
+  assert.equal(f.run("openComposePreview(null)"), true);
+  select();
+  const retired = list.querySelector("button");
+  retired.focus();
+  editor.innerHTML = '<a href="https://docs.fixture.invalid/edited?x=1#new">Edited</a>';
+  f.run("paintPreview(previewDraftState)");
+  assert.equal(review.open, false);
+  assert.equal(f.document.activeElement, review.querySelector("summary"));
+  assert.equal(list.querySelector(".preview-link-label").textContent, "Original");
+  retired.click();
+  assert.equal(list.querySelector("[aria-current]"), null);
+  assert.equal(f.body().querySelector("[data-preview-link-target]"), null);
+  select();
+  f.run("cancelComposePreview()");
+  assert.equal(f.get("compose-preview").open, false);
+  assert.equal(review.hidden, true);
+  assert.equal(list.children.length, 0);
+  assert.equal(f.body().querySelector("[data-preview-link-target]"), null);
+  assert.equal(f.run("confirmed.length"), 0);
+
+  assert.equal(f.run("openComposePreview(new Date('2099-01-01T09:00:00Z'))"), true);
+  assert.equal(review.open, false);
+  assert.equal(list.querySelector(".preview-link-url").textContent, "https://docs.fixture.invalid/edited?x=1#new");
+  const scheduled = f.run("JSON.stringify(previewDraftState.payload)");
+  select();
+  await f.run("confirmComposePreview()");
+  assert.equal(f.run("confirmed[0].kind"), "schedule");
+  assert.equal(f.run("JSON.stringify(confirmed[0].payload)"), scheduled);
+  editor.textContent = "A bare URL https://docs.fixture.invalid/plain";
+  assert.equal(f.run("openComposePreview(null)"), true);
+  assert.equal(review.hidden, true);
+  assert.equal(list.children.length, 0);
+  assert.equal(f.run("calls.length"), 0);
+});
+
 test("Plain text, entities and empty captured bodies stay distinct from HTML", t => {
   const f = fixture(t);
   const literal = "Two < three & four\nLiteral <b>text</b> and &copy;";
@@ -190,5 +320,8 @@ test("Features and preview help disclose formatting, remote blocking and attachm
   assert.match(text, /Preview Send and scheduled previews show safe HTML from the reviewed snapshot/);
   assert.match(text, /remote images remain blocked/);
   assert.match(text, /Attachment downloads are unavailable in Outbox/);
+  assert.match(text, /Review links before sending/);
+  assert.match(text, /highlight that occurrence in the message without opening the destination/);
+  assert.match(f.get("compose-preview-links").textContent, /highlight its location in the message without opening it/);
   assert.match(f.get("compose-preview").textContent, /Remote images stay blocked/);
 });

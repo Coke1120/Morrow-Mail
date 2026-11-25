@@ -19346,6 +19346,165 @@ function pendingScheduleWhen() {
   return defaultSendAt(new Date(), state.prefs.scheduleDelay);
 }
 
+function resetComposePreviewLinks() {
+  const review = $("compose-preview-links");
+  if (!review) return null;
+  const body = $("compose-preview-body");
+  body.querySelector("[data-preview-link-target]")?.removeAttribute("data-preview-link-target");
+  body.querySelector(".preview-link-location")?.remove();
+  const list = $("compose-preview-link-list");
+  list.scrollTop = 0;
+  list.replaceChildren();
+  review.open = false;
+  review.hidden = true;
+  $("compose-preview-link-count").textContent = "";
+  return review;
+}
+
+function composePreviewLinkRanges(body) {
+  const blockTags = /^(?:p|div|br|hr|blockquote|pre|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|caption|center|h[1-6])$/;
+  const blockDisplay = /^(?:block|flex|list-item|table(?:-.+)?)$/;
+  const chunks = [];
+  const ranges = new Map();
+  let offset = 0;
+  let endsInSpace = true;
+
+  function append(text) {
+    let part = text.replace(/[ \t\r\n\f]+/g, " ");
+    if (endsInSpace && part.startsWith(" ")) part = part.slice(1);
+    if (!part) return;
+    chunks.push(part);
+    offset += part.length;
+    endsInSpace = part.endsWith(" ");
+  }
+
+  function lineBreak() {
+    if (!offset || chunks.at(-1) === "\n") return;
+    chunks.push("\n");
+    offset++;
+    endsInSpace = true;
+  }
+
+  // Record each anchor's offsets in one pass so excerpts stay local even when
+  // many links share a long paragraph. Inline markup adds no artificial spaces.
+  function visit(node, parentLink) {
+    if (node.nodeType === 3) {
+      append(node.data);
+      return;
+    }
+    if (node.nodeType !== 1 || node.style.display === "none" || node.style.opacity === "0") return;
+    const display = node.style.display;
+    const boundary = blockTags.test(node.localName) || blockDisplay.test(display);
+    if (boundary) lineBreak();
+    const isLink = node.localName === "a";
+    const link = isLink ? { start: offset, end: offset, image: null } : parentLink;
+    // A placeholder already in a frozen payload has its class scoped again.
+    if (link && !link.image && (node.localName === "img" ||
+        (node.localName === "span" && /^(?:mmail-)*mail-image-hold$/.test(node.className)))) {
+      link.image = node;
+    }
+    for (const child of node.childNodes) visit(child, link);
+    if (isLink) {
+      link.end = offset;
+      ranges.set(node, link);
+    }
+    if (boundary) lineBreak();
+  }
+  visit(body);
+  return { text: chunks.join(""), ranges };
+}
+
+function composePreviewLinkExcerpt(text, range, label) {
+  const radius = 56;
+  const { start, end } = range;
+  const left = text.slice(Math.max(0, start - radius), start).replace(/^[\uDC00-\uDFFF]/, "");
+  const right = text.slice(end, end + radius).replace(/[\uD800-\uDBFF]$/, "");
+  let before = left.slice(left.lastIndexOf("\n") + 1);
+  let after = right.split("\n", 1)[0];
+  // A link on its own line can be introduced by the preceding heading.
+  if (!before.trim() && !after.trim()) {
+    const previous = left.trimEnd().split("\n").at(-1);
+    if (previous) before = previous + " ";
+    else after = " " + right.trimStart().split("\n", 1)[0];
+  }
+  if (!before.trim() && !after.trim()) return "";
+  const linkText = text.slice(start, end);
+  let center = linkText.trim() ? linkText : ` ${label} `;
+  if (center.length > radius * 2) {
+    center = center.slice(0, radius).replace(/[\uD800-\uDBFF]$/, "") + "…" +
+      center.slice(-radius).replace(/^[\uDC00-\uDFFF]/, "");
+  }
+  const excerpt = (before + center + after).replace(/ {2,}/g, " ").trim();
+  return (before === left && start > radius ? "…" : "") + excerpt + (after === right && end + radius < text.length ? "…" : "");
+}
+
+function paintComposePreviewLinks(body) {
+  const focused = $("compose-preview-links")?.contains(document.activeElement);
+  const review = resetComposePreviewLinks();
+  if (!review) return;
+  const anchors = Array.from(body.querySelectorAll("a[href]"))
+    .filter(anchor => /^https?:$/.test(anchor.protocol) && anchor.hostname);
+  if (!anchors.length) {
+    if (focused) $("compose-preview-confirm").focus();
+    return;
+  }
+
+  const { text, ranges } = composePreviewLinkRanges(body);
+  const list = $("compose-preview-link-list");
+  let currentAnchor;
+  let currentRow;
+  let locationMarker;
+  for (const anchor of anchors) {
+    const range = ranges.get(anchor);
+    const visibleText = range ? text.slice(range.start, range.end).trim() : "";
+    const image = range?.image;
+    const alt = image?.getAttribute("alt") || image?.getAttribute("aria-label");
+    const label = visibleText || (image ? (alt ? `Image link (${alt})` : "Image link") : "Unlabeled link");
+    const context = range ? composePreviewLinkExcerpt(text, range, label) : "Hidden in message preview";
+    const item = document.createElement("li");
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "preview-link-row";
+    for (const [kind, value] of [["label", label], ["context", context], ["url", anchor.getAttribute("href")]]) {
+      if (!value) continue;
+      const line = document.createElement("span");
+      line.className = `preview-link-${kind}`;
+      line.dir = kind === "url" ? "ltr" : "auto";
+      line.textContent = value;
+      row.appendChild(line);
+    }
+    row.addEventListener("click", () => {
+      if (!list.contains(row)) return;
+      currentAnchor?.removeAttribute("data-preview-link-target");
+      currentRow?.removeAttribute("aria-current");
+      currentAnchor = anchor;
+      currentRow = row;
+      anchor.setAttribute("data-preview-link-target", "");
+      row.setAttribute("aria-current", "true");
+      locationMarker?.remove();
+      locationMarker = null;
+      if (!range || (!visibleText && !image)) {
+        // Keep hidden content hidden. Mark its place next to the outermost
+        // hidden element, or immediately before an otherwise empty anchor.
+        let position = anchor;
+        for (let node = anchor; node !== body; node = node.parentElement) {
+          if (node.style.display === "none" || node.style.opacity === "0") position = node;
+        }
+        locationMarker = document.createElement("span");
+        locationMarker.className = "preview-link-location";
+        locationMarker.textContent = "Link location";
+        position.before(locationMarker);
+      }
+      (locationMarker || anchor).scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: "instant" });
+    });
+    item.appendChild(row);
+    list.appendChild(item);
+  }
+  $("compose-preview-link-count").textContent = anchors.length;
+  review.hidden = false;
+  if (focused) review.firstElementChild.focus({ preventScroll: true });
+}
+
 function paintPreview(draft) {
   const schedule = draft && draft.kind === "schedule";
   const payload = draft.payload || draft;
@@ -19377,7 +19536,8 @@ function paintPreview(draft) {
   }
   const body = $("compose-preview-body");
   body.replaceChildren();
-  appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
+  const content = appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
+  paintComposePreviewLinks(content);
   $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
 }
 
@@ -19436,6 +19596,7 @@ async function confirmComposePreview() {
 
 function cancelComposePreview() {
   previewDraftState = null;
+  resetComposePreviewLinks();
   closeDialog("compose-preview");
 }
 
@@ -30626,7 +30787,11 @@ function wire() {
     guard(confirmComposePreview);
   });
   $("compose-preview-cancel").addEventListener("click", () => cancelComposePreview());
-  $("compose-preview").addEventListener("close", () => { previewDraftState = null; });
+  $("compose-preview").addEventListener("close", (event) => {
+    if (event.currentTarget.open) return;
+    previewDraftState = null;
+    resetComposePreviewLinks();
+  });
   wireDsnRedraft();
   $("undo-schedule").addEventListener("click", () => {
     undoCancelScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));

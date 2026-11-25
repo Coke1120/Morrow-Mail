@@ -1,0 +1,6 @@
+{
+  "id": "send-preview-links",
+  "title": "Review links before sending",
+  "category": "Mail",
+  "blurb": "Open Review links in Preview Send or a scheduled send preview to see each website link in message order, with its label, nearby text when available, and complete URL. Select a row to highlight that occurrence in the message without opening the destination. Cancel to return to the draft."
+}

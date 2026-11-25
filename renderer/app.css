@@ -4982,6 +4982,82 @@ dialog h2 {
 #dsn-redraft-status:empty { display: none; }
 #compose-preview-body > .body { padding: 0; }
 #compose-preview-body .preview-remote-note { margin: 0 0 8px; }
+
+#compose-preview-links {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--hover);
+  font-size: 13px;
+}
+#compose-preview-links > summary {
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: var(--accent-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+#compose-preview-link-count {
+  margin-inline-start: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#compose-preview-links > .hint { margin: 0 10px 4px; }
+#compose-preview-link-list {
+  max-height: min(220px, 32vh);
+  overflow: auto;
+  margin: 0;
+  padding: 4px 8px 8px 30px;
+}
+#compose-preview-link-list li + li { margin-top: 5px; }
+#compose-preview-link-list li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.preview-link-row {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-inline-start-width: 3px;
+  border-radius: 7px;
+  background: var(--paper);
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.preview-link-row:hover { background: var(--hover); }
+.preview-link-row[aria-current="true"] {
+  border-color: var(--accent-ink);
+  background: var(--selected);
+}
+.preview-link-row > span { display: block; }
+.preview-link-label { font-weight: 600; }
+.preview-link-context { color: var(--muted); }
+.preview-link-url { margin-top: 2px; color: var(--accent-ink); font-size: 12px; }
+#compose-preview-links > summary:focus-visible,
+.preview-link-row:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+#compose-preview-body .preview-link-location {
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 600 12px system-ui, sans-serif;
+}
+#compose-preview-body [data-preview-link-target] {
+  outline: 2px solid var(--ink);
+  box-shadow: 0 0 0 4px var(--paper);
+  scroll-margin: 5px;
+}
+@media (forced-colors: active) {
+  #compose-preview-links > summary:focus-visible,
+  .preview-link-row:focus-visible { outline-color: Highlight; }
+  .preview-link-row[aria-current="true"] { border-color: Highlight; }
+  #compose-preview-body [data-preview-link-target] { outline-color: Highlight; }
+}
+
 #agent-peek { width: min(720px, calc(100vw - 24px)); }
 
 #attachment-preview {
