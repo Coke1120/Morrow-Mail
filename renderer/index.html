@@ -2030,6 +2030,30 @@
         </div>
       </div>
     </dialog>
+    <dialog id="dsn-redraft" aria-labelledby="dsn-redraft-title">
+      <form id="dsn-redraft-form">
+        <h2 id="dsn-redraft-title" tabindex="-1">Review delivery report</h2>
+        <p id="dsn-redraft-status" class="hint" role="status" aria-live="polite"></p>
+        <div id="dsn-redraft-review" hidden>
+          <dl class="preview-meta">
+            <div class="preview-row"><dt>Mailbox</dt><dd id="dsn-redraft-mailbox"></dd></div>
+            <div class="preview-row"><dt>From</dt><dd id="dsn-redraft-from"></dd></div>
+            <div class="preview-row"><dt>Sent</dt><dd id="dsn-redraft-date"></dd></div>
+            <div class="preview-row"><dt>Failed address</dt><dd id="dsn-redraft-failed"></dd></div>
+            <div class="preview-row"><dt>Subject</dt><dd id="dsn-redraft-subject"></dd></div>
+          </dl>
+          <div id="dsn-redraft-body" role="region" aria-label="Original message body" tabindex="0"></div>
+          <label class="field">New To <input id="dsn-redraft-to" type="email" maxlength="254" required autocomplete="off" spellcheck="false"></label>
+          <p><label><input id="dsn-redraft-confirm" type="checkbox" required> I checked this new address in an independent directory.</label></p>
+          <p class="hint">Saving creates an unsent draft on this computer with only the new To address and the original subject and body.</p>
+        </div>
+        <div class="row">
+          <button type="submit" class="primary" id="dsn-redraft-save" hidden disabled>Save corrected draft</button>
+          <button type="button" class="primary" id="dsn-redraft-open" hidden>Open draft</button>
+          <button type="button" class="ghost" id="dsn-redraft-close">Cancel</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="compose-preview" aria-labelledby="compose-preview-title">
       <form id="compose-preview-form">
         <h2 id="compose-preview-title">Preview send</h2>

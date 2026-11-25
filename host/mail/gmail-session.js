@@ -5,6 +5,7 @@ const { isGmail } = require("./gmail-policy");
 const { recipientHeaders } = require("./recipient-headers");
 const textEncoding = require("./text-encoding");
 const decoding = require("./mime-decoding");
+const dsn = require("./dsn-report");
 const { isRateLimit } = require("./provider-http");
 const ALL = "__gmail_all__";
 const SYSTEM = { INBOX: ["INBOX", "Inbox", "inbox"], SENT: ["[Gmail]/Sent Mail", "Sent", "sentitems"],
@@ -91,6 +92,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
   }
   async function normalize(data, full = false) {
     alive();
+    const labels = data.labelIds || [];
     let complete = true, bodyWarning = "", originalNeeded = false, textSizeMismatch = false;
     let bodyTreeComplete = true;
     const warn = () => { complete = false; bodyWarning = "Some message content could not be decoded. The available content is shown; reopen the message to retry."; };
@@ -101,6 +103,8 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     let parsed;
     try { parsed = await simpleParser(headerBytes); }
     catch { parsed = {}; warn(); }
+    const deliveryReport = labels.includes("INBOX") && dsn.isDeliveryReport(parsed.headers?.get("content-type"));
+    let dsnRedraft = deliveryReport ? dsn.REPORT : null;
     const body = { text: [], html: [] }, attachments = [];
     const decodedQuality = decoding.quality();
     decoding.noteHeaders(decodedQuality, parsed);
@@ -135,27 +139,30 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
           size: Number(part.body?.size) || 0, contentId: contentId || null, isInlineFromApi: !!contentId && !/attachment/i.test(disposition) });
       }
     }
-    if (originalNeeded) {
+    if (originalNeeded || deliveryReport) {
       try {
         // One bounded, read-only original-message request resolves all body
         // alternatives together. Gmail part IDs/attachment metadata stay intact.
         const original = await api.raw(data.id);
         alive();
         if (original.id !== data.id || !Buffer.isBuffer(original.source) || !original.source.length) throw new Error("Original Gmail message did not match.");
-        const originalParsed = await simpleParser(original.source, { skipHtmlToText: true, skipTextToHtml: true, skipImageLinks: true });
-        alive();
-        if (parsed.messageId && originalParsed.messageId !== parsed.messageId) throw new Error("Original Gmail headers did not match.");
-        const originalQuality = await decoding.inspectSource(original.source);
-        alive();
-        if (!originalQuality.hasText && !originalQuality.hasHtml) throw new Error("Original Gmail body was unavailable.");
-        decoding.noteHeaders(originalQuality, originalParsed);
-        decoding.noteHeaders(originalQuality, parsed);
-        body.text = typeof originalParsed.text === "string" ? [originalParsed.text] : [];
-        body.html = typeof originalParsed.html === "string" ? [originalParsed.html] : [];
-        Object.assign(decodedQuality, originalQuality);
-        // Full-payload text sizes can describe the pre-normalization encoding.
-        // Original MIME validates these body bytes independently of those sizes.
-        textSizeMismatch = false;
+        if (deliveryReport) dsnRedraft = dsn.fromReport(original.source);
+        if (originalNeeded) {
+          const originalParsed = await simpleParser(original.source, { skipHtmlToText: true, skipTextToHtml: true, skipImageLinks: true });
+          alive();
+          if (parsed.messageId && originalParsed.messageId !== parsed.messageId) throw new Error("Original Gmail headers did not match.");
+          const originalQuality = await decoding.inspectSource(original.source);
+          alive();
+          if (!originalQuality.hasText && !originalQuality.hasHtml) throw new Error("Original Gmail body was unavailable.");
+          decoding.noteHeaders(originalQuality, originalParsed);
+          decoding.noteHeaders(originalQuality, parsed);
+          body.text = typeof originalParsed.text === "string" ? [originalParsed.text] : [];
+          body.html = typeof originalParsed.html === "string" ? [originalParsed.html] : [];
+          Object.assign(decodedQuality, originalQuality);
+          // Full-payload text sizes can describe the pre-normalization encoding.
+          // Original MIME validates these body bytes independently of those sizes.
+          textSizeMismatch = false;
+        }
       } catch (error) {
         alive();
         // Preserve provider quota/auth/reconnect control flow and Retry-After.
@@ -163,8 +170,10 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
         // turn a rejected provider read into a successful sync checkpoint.
         if (error?.gmailDiagnostic || Number(error?.status) >= 400 || isRateLimit(error)
           || error?.code && !["provider_network", "provider", "invalid"].includes(error.code)) throw error;
-        decodedQuality.uncertain = true;
-        warn();
+        if (originalNeeded) {
+          decodedQuality.uncertain = true;
+          warn();
+        }
       }
     }
     if (textSizeMismatch) warn();
@@ -187,7 +196,6 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     const receivedDate = Number(data.internalDate) > 0 && Number.isFinite(new Date(Number(data.internalDate)).getTime());
     let date = headerDate ? parsed.date : new Date(receivedDate ? Number(data.internalDate) : 0);
     if (!Number.isFinite(date.getTime())) { date = new Date(0); warn(); }
-    const labels = data.labelIds || [];
     const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
     const root = references[0] || parsed.inReplyTo || parsed.messageId;
     // Missing types/children cannot prove that a legacy MIME tree has no reaction.
@@ -197,6 +205,9 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
     if (!originalNeeded && bodyTreeComplete && inspectedMime && !textSizeMismatch && !decodedQuality.ambiguousAlternatives) {
       decodedQuality.provenAlternatives = decoding.proveAlternatives(bodyParts, part => parents.get(part),
         part => part.mimeType.toLowerCase(), part => part.filename || /attachment/i.test(header(part, "content-disposition")));
+    }
+    if (labels.includes("SENT") && !deliveryReport && complete && bodyTreeComplete && inspectedMime && !attachments.length) {
+      dsnRedraft = dsn.original(headerBytes, parsed, decodedQuality);
     }
     return { providerId: data.id, providerThreadId: data.threadId, labelIds: labels, receivedAt: Number(data.internalDate) || null, rfcMessageId: parsed.messageId || null,
       threadId: root ? `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}` : `gmail:${data.threadId || data.id}`,
@@ -211,7 +222,7 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
       replyInferenceEligible: !bodyWarning && inspectedMime && !list.some(part => String(part.mimeType || "").split(";")[0].trim().toLowerCase() === "text/vnd.google.email-reaction+json"),
       replied: null, forwarded: null, // Gmail labels expose neither state.
       hasAttachments: attachments.some(row => !row.isInlineFromApi || !row.mimeType.startsWith("image/")), attachments,
-      htmlBody: presented.htmlBody, textBody: presented.textBody, decoding: decodedQuality, bodyComplete: complete, bodyWarning };
+      htmlBody: presented.htmlBody, textBody: presented.textBody, decoding: decodedQuality, bodyComplete: complete, bodyWarning, dsnRedraft };
   }
   async function adopt(data, { full = false, after = null, cache = true, committed, canonicalId } = {}) {
     const canonical = canonicalId !== undefined;
@@ -370,7 +381,9 @@ function createSession(account, token, { api, check = () => {}, signal, accessTo
   }
   async function source(path, uid, validity, { metadataOnly = false } = {}) {
     const mapped = await resolve(path, uid, validity, undefined, { readOnly: true });
-    const value = await normalize(await api.getMessage(mapped.provider_id), !metadataOnly);
+    const data = await api.getMessage(mapped.provider_id);
+    if (data.id !== mapped.provider_id) throw ambiguous();
+    const value = await normalize(data, !metadataOnly);
     // Keep the caller's pair for its stale-result guard, then let the engine
     // promote this verified identity together with the new MIME metadata.
     return { ...value, uid: Number(uid), providerUid: mapped.local_uid, providerValidity: incarnation };

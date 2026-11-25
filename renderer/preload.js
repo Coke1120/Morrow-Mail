@@ -158,6 +158,7 @@ const INVOKE = [
   "mail:readCachedBody",
   "mail:prepareDraft",
   "mail:prepareForward",
+  "mail:dsnRedraft",
   "mail:markRead",
   "mail:markReadBatch",
   "mail:toggleStar",
