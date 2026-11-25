@@ -1001,16 +1001,25 @@ function listPayload(params) {
   const now = Date.now();
   const query = queryFrom(params);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
-  const summary = db.messageSummary(query, { now });
+  // A short first page already contains every literal match. It proves the
+  // exact count and oldest timestamp without scanning the folder a second time.
+  const firstFilterPage = query.listFilter && offset === 0 && query.limit === 200
+    ? db.selectMessages(query, { headersOnly: true, now }) : null;
+  const completePage = firstFilterPage !== null && firstFilterPage.length < query.limit;
+  const summary = completePage ? {
+    total: firstFilterPage.length,
+    oldest: firstFilterPage.length ? Math.min(...firstFilterPage.map(row => row.list_sort_ts)) : null,
+  } : db.messageSummary(query, { now });
   const cursor = query.pageCursor;
   const cursorEligible = !query.listFilter && (!query.sortBy || query.sortBy === "date") && query.sortDirection !== "asc" && !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
   const cursorValid = cursorEligible && cursor && cursor.version === summary.version && cursor.offset === offset
     && Number.isSafeInteger(cursor.ts) && typeof cursor.id === "string" && cursor.id.length > 0 && cursor.id.length <= 200;
-  let stored = db.selectMessages(cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query, { headersOnly: true, now });
+  const pageQuery = cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query;
+  let stored = firstFilterPage ?? db.selectMessages(pageQuery, { headersOnly: true, now });
   const pageSize = stored.length;
   const retainId = query.retainIds && query.retainIds[0];
   // A read row can fall outside this page and still belong in the Unread list.
-  if (retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
+  if (!completePage && retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
     const extra = db.selectMessages({
       ...query,
       offset: 0,

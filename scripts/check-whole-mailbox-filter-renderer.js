@@ -229,6 +229,52 @@ test('Drafts renders a later To match with Recipient hidden and ignores an obsol
   f.input('approve@fixture.invalid');
   assert.equal(f.run('shownEmails().length'),0,'bounded toolbar results still filter by text');
 });
+test('typing keeps the displayed page and its selection targets until one result paints', async t => {
+  const f = fixture(t);
+  await f.run('loadList(false,0)');
+  const list = f.document.getElementById('message-list');
+  const original = list.querySelector('.message-row');
+  f.run('globalThis.paints=0; const paint=renderList; renderList=()=>{ paints++; paint(); }; calls.length=0;');
+  for (const term of ['n', 'ne', 'needle']) f.input(term);
+  assert.equal(f.run('paints'), 0);
+  assert.equal(f.run('calls.length'), 0);
+  assert.equal(list.querySelector('.message-row'), original);
+  assert.equal(f.run('shownEmails()[0].id'), original.dataset.emailId);
+  assert.equal(f.document.getElementById('list-next').disabled, true);
+  f.run("deferCalls=true");
+  await f.flush();
+  f.run("commitSelection({ids:['m1'],anchor:'m1'})");
+  assert.equal(f.run('shownEmails()[0].id'), original.dataset.emailId);
+  f.run('paints=0; pending.shift()()');
+  await tick();
+  assert.equal(f.run('paints'), 1);
+  assert.deepEqual(f.json('calls.map(call => call.params.listFilter)'), ['needle']);
+  assert.equal(list.querySelector('.message-row').dataset.emailId, 'm400');
+  assert.deepEqual(f.json('selectedMessages().map(row => row.id)'), ['m1']);
+});
+
+test('composition submits the committed phrase once and refreshes never query provisional text', async t => {
+  const f = fixture(t);
+  f.run("storeRows[649].subject='發票'");
+  f.input('needle');
+  await f.flush();
+  const field = f.document.getElementById('list-filter');
+  const event = name => new f.document.defaultView.Event(name);
+  field.dispatchEvent(event('compositionstart'));
+  f.run('calls.length=0');
+  f.input('fa');
+  await f.flush();
+  assert.equal(f.run('calls.length'), 0);
+  await f.run('loadList(false,0)');
+  assert.equal(f.run('calls.at(-1).params.listFilter'), 'needle');
+  f.input('發票');
+  field.dispatchEvent(event('compositionend'));
+  f.input('發票'); // Some platforms emit a final input after compositionend.
+  await f.flush();
+  assert.deepEqual(f.json('calls.map(call => call.params.listFilter)'), ['needle','發票']);
+  assert.deepEqual(f.json('shownEmails().map(row => row.id)'), ['m649']);
+});
+
 test('hidden selection survives host filtering and stays part of reviewed Delete targets', async t => {
   const f=fixture(t); await f.run('loadList(false,0)');
   f.run("state.selectedIds=['m1','m2']; state.selectionAnchor='m1'; renderList()");

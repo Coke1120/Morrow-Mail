@@ -120,6 +120,8 @@ const state = {
 let accountGen = 0;
 let listGen = 0;
 let listFilterTimer = null;
+let filterBeforeComposition = null;
+let displayedListFilter = "";
 const filterSelection = new Map();
 let mailboxNavigationGen = 0;
 const LIST_PAGE_SIZE = 200;
@@ -7481,10 +7483,17 @@ function filteredEmails(emails, query, drafts) {
 }
 
 function currentListFilter() {
-  return String($("list-filter")?.value || "").trim();
+  return filterBeforeComposition ?? String($("list-filter")?.value || "").trim();
 }
 
-function applyListFilter() {
+function clearListFilterInput() {
+  filterBeforeComposition = null;
+  const input = $("list-filter");
+  if (input) input.value = "";
+}
+
+function applyListFilter(event) {
+  if (event?.isComposing || filterBeforeComposition !== null) return;
   clearTimeout(listFilterTimer);
   listFilterTimer = null;
   state.listFilterError = false;
@@ -7493,14 +7502,16 @@ function applyListFilter() {
     return;
   }
   // Invalidate an older response immediately, including during the debounce gap.
-  ++listGen;
-  for (const email of selectedMessages()) filterSelection.set(String(email.id), email);
+  const edit = ++listGen;
   state.listOffset = 0;
   state.listCursors = [];
   state.listLoading = true;
-  renderList();
+  // Keep the displayed page and its selection targets stable until the new page arrives.
+  paintListPaging();
+  paintSearchCoverage(state.emails);
   listFilterTimer = setTimeout(() => {
     listFilterTimer = null;
+    if (edit !== listGen) return;
     const pending = loadList(false, 0);
     const gen = listGen;
     pending.catch(error => { if (gen === listGen) showStatus(error.message, true); });
@@ -8722,8 +8733,7 @@ function unreadRetainIds() {
 }
 
 function shownEmails() {
-  const input = $("list-filter");
-  const query = input ? input.value : "";
+  const query = state.listLoading && !state.query && !state.outbox ? displayedListFilter : currentListFilter();
   const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
   if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
@@ -8886,7 +8896,7 @@ function paintSelectionBar(shown) {
 }
 
 function paintSearchCoverage(shown) {
-  const filter = $("list-filter").value.trim();
+  const filter = currentListFilter();
   const scope = $("search-scope");
   scope.hidden = !state.query;
   const picker = $("search-account");
@@ -8965,6 +8975,7 @@ function renderList() {
   renderChips(state.allInbox || state.outbox ? null : account);
   paintToMeFilter();
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account, state.folderId).some(item => item.id === state.folderId));
+  if (!state.listLoading || state.query || state.outbox) displayedListFilter = currentListFilter();
   const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);
@@ -8990,7 +9001,7 @@ function renderList() {
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    const listQuery = $("list-filter") && String($("list-filter").value || "").trim();
+    const listQuery = currentListFilter();
     if (!state.accounts.length && !selectedAccount()?.isLocal && !state.query) {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (listQuery) {
@@ -12608,6 +12619,10 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     const rows = data?.emails || [];
     const pageSize = data?.geometry?.pageSize ?? rows.length;
+    // Include selections made on the visible page while its replacement was pending.
+    if (!scopeChanged && (filterChanged || displayedListFilter !== listFilter) && state.selectedIds.length) {
+      for (const email of selectedMessages()) filterSelection.set(String(email.id), email);
+    }
     // A trailing held row can confirm membership from outside this page.
     state.emails = takeEmails(rows.slice(0, pageSize));
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
@@ -14075,7 +14090,7 @@ function selectionButton(id, label, paths, run) {
 }
 
 function wireSelection() {
-  $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; applyListFilter(); });
+  $("filter-chip").addEventListener("click", () => { clearListFilterInput(); applyListFilter(); });
   $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
   $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
   const bar = $("selection-actions");
@@ -14549,8 +14564,7 @@ async function selectOutbox() {
   state.query = "";
   const search = $("search-query");
   if (search) search.value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
+  clearListFilterInput();
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
@@ -14582,8 +14596,7 @@ async function selectAllInbox(unreadOnly, starredOnly = false) {
     state.selectionAnchor = "";
     state.query = "";
     $("search-query").value = "";
-    const listFilter = $("list-filter");
-    if (listFilter) listFilter.value = "";
+    clearListFilterInput();
   } else if (state.allInboxUnreadOnly !== nextUnread) {
     state.selectedIds = [];
     state.selectionAnchor = "";
@@ -14616,8 +14629,7 @@ async function selectFolder(accountId, folderId) {
   state.folderId = folderId;
   state.query = "";
   $("search-query").value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
+  clearListFilterInput();
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
@@ -19324,8 +19336,7 @@ async function removeAccount() {
   state.folderId = null;
   state.query = "";
   $("search-query").value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
+  clearListFilterInput();
   state.email = null;
   state.thread = [];
   showStatus("Account removed.");
@@ -29783,6 +29794,16 @@ function wire() {
   searchQuery.addEventListener("search", restoreListIfCleared);
   const listFilter = $("list-filter");
   if (listFilter) {
+    listFilter.addEventListener("compositionstart", () => {
+      filterBeforeComposition = currentListFilter();
+      clearTimeout(listFilterTimer);
+      listFilterTimer = null;
+    });
+    listFilter.addEventListener("compositionend", () => {
+      if (filterBeforeComposition === null) return;
+      filterBeforeComposition = null;
+      applyListFilter();
+    });
     listFilter.addEventListener("input", applyListFilter);
     listFilter.addEventListener("search", applyListFilter);
   }
