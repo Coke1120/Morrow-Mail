@@ -12,6 +12,7 @@ function mailbox(run) {
   run("check-mail-columns.js");
   run("check-mail-view.js");
   run("check-mail-selection.js");
+  run("check-dsn-redraft.js");
   run("check-folder-chips.js");
   run("check-to-me-filter.js");
   run("check-sidebar-accounts.js");

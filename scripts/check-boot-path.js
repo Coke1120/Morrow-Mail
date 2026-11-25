@@ -113,6 +113,8 @@ const syntax = [
   "scripts/check-move-calendar-patches.js",
   "scripts/check-draft-scheduled-recovery.js",
   "scripts/check-draft-partial-delivery.js",
+  "host/mail/dsn-report.js",
+  "scripts/check-dsn-redraft.js",
   "scripts/check-draft-revisions.js",
   "scripts/check-outbox.js",
   "scripts/check-send-previews.js",

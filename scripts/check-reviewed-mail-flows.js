@@ -146,7 +146,10 @@ for (const mode of ["flags-only", "empty", "other-uid"]) for (const native of [f
         await until(() => f.db.messageById(f.target.id).unread === 0);
         await f.engine.settleAccount("imap");
         assert.match(view.pane.querySelector(".body").textContent, /Recovered IMAP body/);
-        assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+        assert.equal(view.pane.querySelector(".hint.error"), null);
+        assert.doesNotMatch(view.pane.textContent, /Retry download/);
+        assert.equal(view.pane.querySelector('[data-action="retry-body"]:enabled:not([hidden])')?.textContent, "Reload message");
+        assert.equal(f.fetches.length, 2, "only the initial read and the explicit retry fetch the message");
         assert.equal(f.writes.length, 1);
         assert.deepEqual(f.writes[0].flags, ["\\Seen"]);
       } finally { view.dom.window.close(); }
@@ -179,7 +182,10 @@ for (const cached of ["partial", "complete"]) test(`IMAP flags-only refresh pres
         await until(() => f.db.messageById(f.target.id).body_complete === 1);
         await f.engine.settleAccount("imap"); await tick();
         assert.equal(f.db.messageById(f.target.id).body_warning, null);
-        assert.equal(view.pane.querySelector('[data-action="retry-body"]'), null);
+        assert.equal(view.pane.querySelector(".hint.error"), null);
+        assert.doesNotMatch(view.pane.textContent, /Retry download/);
+        assert.equal(view.pane.querySelector('[data-action="retry-body"]:enabled:not([hidden])')?.textContent, "Reload message");
+        assert.equal(f.fetches.length, 2, "only the initial read and the explicit retry fetch the message");
         assert.match(view.pane.querySelector(".body").textContent, /Recovered IMAP body/);
       }
     } finally { view.dom.window.close(); }

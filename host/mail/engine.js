@@ -51,6 +51,7 @@ const perf = require("../performance-diagnostics");
 const { diagnosticMessage: gmailDiagnosticMessage } = require("./gmail-error");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
+const dsn = require("./dsn-report");
 const listUnsubscribe = require("./list-unsubscribe");
 const decoding = require("./mime-decoding");
 const composePolicy = require("../../shared/compose-policy");
@@ -857,19 +858,145 @@ function isSystemDraftFolder(accountId, folderPath) {
   return (role === "draft" || role === "drafts") && !remote.isAllMail(folder);
 }
 
+const dsnReviewKey = crypto.randomBytes(32);
+
+function dsnFolder(account, role, gmailLabel) {
+  const folder = db.folderByWellKnown(account.id, role);
+  return folder && !remote.isAllMail(folder) && (account.mail_transport !== "gmail_api" || folder.provider_id === gmailLabel) ? folder : null;
+}
+
+function dsnInFolder(account, row, folder, allowLocal = false) {
+  if (!folder || !row || row.account_id !== account.id || row.folder_path !== folder.path || row.is_draft || row.draft_pending) return false;
+  if (allowLocal && row.uid === 0) return row.uid_validity === 0 && row.date_source === "local";
+  if (row.uid <= 0 || row.uid_validity <= 0) return false;
+  if (account.mail_transport !== "gmail_api") return row.uid_validity === folder.uid_validity;
+  const mapping = row.gmail_id && db.gmailMap(account.id, row.gmail_id);
+  const labels = db.jsonList(mapping?.labels_json);
+  return row.uid_validity === account.gmail_generation && mapping?.local_uid === row.uid
+    && labels.includes(folder.provider_id) && !labels.some(label => ["TRASH", "SPAM", "DRAFT"].includes(label));
+}
+
+function dsnSnapshot(row) {
+  return [row.id, row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id, row.dsn_redraft_json,
+    row.date_iso, row.date_source, row.from_addr, db.maxActionGeneration(row.id)];
+}
+
+function dsnRedraftAnswer(params, event) {
+  const owner = event?.sender;
+  if (!owner || !event.senderFrame || event.senderFrame !== owner.mainFrame || owner.isDestroyed?.()) {
+    return fail("dsn_reader", "Open the report in the Inbox reader to review a corrected draft.");
+  }
+  const saving = params?.action === "save";
+  const validKey = value => typeof value === "string" && value.length > 0 && value.length <= 200;
+  if ((!saving && params?.action !== "review") || !validKey(params.accountId) || !validKey(params.emailId)) {
+    return fail("invalid", "Open the report in the Inbox reader to start a new review.");
+  }
+  const manual = message => fail("dsn_manual", message);
+  const account = db.accountById(params.accountId);
+  const report = db.messageById(params.emailId);
+  const evidence = dsn.parse(report?.dsn_redraft_json);
+  if (!account || params.bodyEpoch !== (accountEpochs.get(account.id) || 0) || evidence?.kind !== "report"
+    || !dsnInFolder(account, report, dsnFolder(account, "inbox", "INBOX"))) {
+    return manual("This report is no longer available in the original Inbox. Reopen it after syncing the mailbox.");
+  }
+  if (report.body_complete && !report.body_warning && evidence.delayed && dsn.mailbox(evidence.notified)) {
+    try { composeIdentity.outgoingIdentity(account, evidence.notified); }
+    catch { return manual("The report was addressed to a different mailbox. Review it manually."); }
+    return fail("dsn_delayed", "Delivery is delayed. The mail service may retry. Wait for a final delivery report.");
+  }
+  if (!report.body_complete || report.body_warning || !dsn.messageId(evidence.id) || !dsn.mailbox(evidence.failed) || !dsn.mailbox(evidence.notified)) {
+    return manual("The report does not establish one permanent invalid address and one original Message-ID. If its download is incomplete, retry it. Otherwise, review the delivery failure manually.");
+  }
+  const sent = dsnFolder(account, "sentitems", "SENT");
+  const gmail = account.mail_transport === "gmail_api";
+  const original = sent && db.uniqueSentByRfc(account.id, sent.path, evidence.id);
+  if (!dsnInFolder(account, original, sent, true)) {
+    return manual("A unique original could not be verified in this mailbox’s Sent folder. Sync Sent or review the report manually.");
+  }
+  try {
+    actions.assertIdentityReady(report.id);
+    actions.assertIdentityReady(original.id);
+  } catch { return manual("Wait for the message move or removal to settle, then reopen the report."); }
+  const source = dsn.parse(original.dsn_redraft_json);
+  const expectsHtml = source?.body === "html" || source?.body === "both";
+  const htmlBody = expectsHtml ? original.html_body : null;
+  const hasPlain = source?.body === "text" || source?.body === "both";
+  const body = hasPlain ? original.text_body : plainFromHtml(htmlBody);
+  if (original.has_attachments || original.attachments_json !== "[]") {
+    return manual("The original has attachments or its file list is unavailable. Review the original and prepare any replacement manually.");
+  }
+  if (source?.kind !== "original" || !Array.isArray(source.recipients) || !original.body_complete || original.body_warning || !body?.trim() || (expectsHtml && !htmlBody?.trim())) {
+    return manual("The original’s complete content could not be verified. Reload it in Sent, then reopen this review.");
+  }
+  const old = evidence.failed.toLowerCase();
+  const sentAt = Date.parse(original.date_iso), reportedAt = Date.parse(report.date_iso);
+  if (!source.recipients.includes(old) || !(sentAt > 0 && reportedAt > 0) || !["header", "local"].includes(original.date_source)
+    || !["header", "received"].includes(report.date_source) || Math.floor(sentAt / 1000) > Math.floor(reportedAt / 1000)) {
+    return manual("The failed address or the timing does not match the Sent message. Review the delivery failure manually.");
+  }
+  const from = dsn.mailbox(original.from_address);
+  const name = original.from_display_name;
+  let identity;
+  try {
+    if (!from || typeof name !== "string" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name)) throw Error();
+    identity = composeIdentity.outgoingIdentity(account, from, name);
+  } catch { return manual("The original From identity is unavailable for this mailbox. Review the Sent message and its sender manually."); }
+  if (![account.email.toLowerCase(), identity.fromAddress].includes(evidence.notified.toLowerCase())) {
+    return manual("The report was addressed to a different mailbox. Review the delivery failure manually.");
+  }
+  const drafts = dsnFolder(account, "drafts", "DRAFT");
+  if (!drafts) return manual("This mailbox has no verified Drafts folder. Sync its folders before trying again.");
+  const draftId = "m-dsn-" + crypto.createHash("sha256").update(JSON.stringify([account.id, account.created_at,
+    gmail ? [report.gmail_id] : [report.folder_path, report.uid, report.uid_validity]])).digest("hex").slice(0, 32);
+  const subject = original.subject;
+  if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(subject)) return manual("The original subject could not be verified. Review the Sent message manually.");
+  const review = crypto.createHmac("sha256", dsnReviewKey).update(JSON.stringify([owner.id, params.bodyEpoch, account.id, account.email,
+    attachmentConnection(account), dsnSnapshot(report), dsnSnapshot(original), drafts.path, identity, subject, body, htmlBody,
+    original.to_json, original.cc_json, original.bcc_json])).digest("hex");
+  if (saving && params.review !== review) return fail("dsn_changed", "The mailbox, report or original changed. Close this review and open it again.");
+  const existing = db.messageById(draftId, { headersOnly: true });
+  if (existing) {
+    if (existing.account_id !== account.id || existing.folder_path !== drafts.path || !existing.is_draft) {
+      return manual("The earlier corrected draft is no longer in Drafts. Review it manually.");
+    }
+    return ok({ accountId: account.id, draftId, alreadySaved: true });
+  }
+  if (!saving) return ok({ review, mailbox: account.email, ...identity, date: original.date_iso, subject, body, htmlBody,
+    failedAddress: evidence.failed });
+  const to = dsn.mailbox(typeof params.to === "string" ? params.to.replace(/^ +| +$/g, "") : "");
+  if (params.confirmed !== true || !to || to.toLowerCase() === old) {
+    return fail("invalid_recipient", "Enter one different email address and confirm that you checked it in an independent directory.");
+  }
+
+  // Validation and the local draft commit are synchronous. The report and Sent
+  // message are read-only source material; ordinary draft upload is a separate action.
+  const now = new Date();
+  try {
+    db.insertMessage({ id: draftId, accountId: account.id, folderPath: drafts.path, rfcMessageId: rfcMessageId(account.email),
+      from: identity.fromAddress, fromDisplayName: identity.fromDisplayName, to: [to], subject, textBody: body, htmlBody,
+      snippet: decoding.snippet(body.replace(/\s+/g, " ").trim()), date: now.toISOString(), listSortTs: now.getTime(),
+      isDraft: true, draftPending: true, bodyComplete: true, dsnRedraft: dsn.DRAFT, recipientHeaders: { replyTo: [] } });
+  } catch { return fail("dsn_save", "The corrected draft could not be saved on this computer. Try again from the Inbox reader."); }
+  try { emitAccounts(); } catch { /* the draft is already durable */ }
+  return ok({ accountId: account.id, draftId });
+}
+
 function detailOf(row, generations, memberships) {
   const includeDraftTo = row.is_draft === 1 && isSystemDraftFolder(row.account_id, row.folder_path);
+  const redraft = dsn.parse(row.dsn_redraft_json);
+  const reportAccount = redraft?.kind === "report" && db.accountById(row.account_id);
   const presented = decoding.presentation(row, textEncoding.presentMessage({
     subject: row.subject || "",
     htmlBody: row.html_body,
     textBody: row.text_body,
-  }, { preserveDecoded: Number(row.uid) > 0 && !row.draft_pending }));
+  }, { preserveDecoded: redraft?.kind === "draft" || Number(row.uid) > 0 && !row.draft_pending }));
   return {
     ...listRow(row, generations, memberships, includeDraftTo),
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
     encodingWarning: presented.warning,
+    dsnRedraftAvailable: !!(reportAccount && dsnInFolder(reportAccount, row, dsnFolder(reportAccount, "inbox", "INBOX"))),
     bodyMetadataVersion: bodyVersion,
     fromAddress: composeIdentity.savedAddress(row),
     ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending,
@@ -3029,6 +3156,11 @@ async function ensureBody(row, options) {
       ...(typeof fetched.from === "string" ? { from_addr: fetched.from } : {}),
       ...(typeof fetched.fromDisplayName === "string" ? { from_display_name: fetched.fromDisplayName } : {}),
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
+      ...(fetched.dsnRedraft !== undefined && (!metadataOnly || fetched.dsnRedraft?.kind === "report"
+        || dsn.parse(current.dsn_redraft_json)?.kind === "report") ? {
+        dsn_redraft_json: dsn.forFolder(fetched.dsnRedraft?.kind === "original" && fetched.rfcMessageId !== current.rfc_message_id
+          ? null : fetched.dsnRedraft, db.folderByPath(account.id, current.folder_path)?.well_known),
+      } : {}),
       ...(fetched.listUnsubscribe != null ? { list_unsubscribe_json: JSON.stringify(fetched.listUnsubscribe) } : {}),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
@@ -4562,6 +4694,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       cc: options.cc,
       bcc: options.bcc,
       date: when.toISOString(),
+      dateSource: "local",
       listSortTs: when.getTime(),
       isDraft: false,
       hasAttachments: files.length > 0,
@@ -4569,6 +4702,8 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       htmlBody: options.html,
       textBody: options.text,
       bodyComplete: true,
+      dsnRedraft: !files.length && dsn.messageId(keptId)
+        ? dsn.originalEvidence(options.html ? (options.text?.trim() ? "both" : "html") : "text", deliveryReceipt.addresses(info?.accepted)) : null,
       recipientHeaders: { replyTo: [] },
       inReplyTo: (extra && extra.inReplyTo) || null,
     });
@@ -5227,6 +5362,8 @@ function answer(channel, args, event) {
     }
     case "mail:prepareForward":
       return updateGate.run(() => prepareForward(params || {}, event?.sender));
+    case "mail:dsnRedraft":
+      return dsnRedraftAnswer(params, event);
     case "mail:prepareDraft":
       return updateGate.run(() => prepareDraft(params || {}, event?.sender));
     case "mail:readEmail":

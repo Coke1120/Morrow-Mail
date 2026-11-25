@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const listFilter = require("./list-filter");
 const primaryFolderLib = require("../../shared/primary-mailboxes");
 const senderHeader = require("./sender-header");
+const dsn = require("./dsn-report");
 const perf = require("../performance-diagnostics");
 const { performance } = require("node:perf_hooks");
 const imapDispositions = require("./imap-dispositions").createStore({
@@ -269,6 +270,9 @@ function migrate() {
   }
   if (!all("PRAGMA table_info(messages)").some((row) => row.name === "decoding_json")) {
     run("ALTER TABLE messages ADD COLUMN decoding_json TEXT");
+  }
+  if (!all("PRAGMA table_info(messages)").some(row => row.name === "dsn_redraft_json")) {
+    run("ALTER TABLE messages ADD COLUMN dsn_redraft_json TEXT");
   }
   if (!all("PRAGMA table_info(messages)").some(row => row.name === "date_source")) {
     run("ALTER TABLE messages ADD COLUMN date_source TEXT");
@@ -1345,7 +1349,7 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
     assertAccountPresent(accountId);
     const before = changeStamp();
     const previous = get(
-      "SELECT uid_validity FROM folders WHERE account_id = ? AND path = ?",
+      "SELECT uid_validity, well_known FROM folders WHERE account_id = ? AND path = ?",
       [accountId, folderPath]
     );
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
@@ -1376,13 +1380,13 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
         budget.processed++; budget.bytes += bytes;
       }
       let found = get(
-        `SELECT id, draft_pending FROM messages
+        `SELECT id, draft_pending, dsn_redraft_json FROM messages
          WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?`,
         [accountId, folderPath, message.uid, report.validity]
       );
       if (!found && message.rfcMessageId) {
         const candidates = all(
-          `SELECT id FROM messages
+          `SELECT id, dsn_redraft_json FROM messages
            WHERE account_id = ? AND folder_path = ? AND rfc_message_id = ? AND uid <= 0 AND draft_pending = 0`,
           [accountId, folderPath, message.rfcMessageId]
         );
@@ -1391,9 +1395,11 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
       // An old server revision cannot overwrite an unuploaded local edit.
       if (found?.draft_pending) continue;
       if (found && !message.bodyComplete) {
-        const priorBody = get("SELECT body_complete, html_body, text_body, snippet, body_warning, decoding_json FROM messages WHERE id = ?", [found.id]);
+        const priorBody = get(`SELECT uid, uid_validity, body_complete, html_body, text_body, snippet, body_warning, decoding_json,
+          dsn_redraft_json, rfc_message_id, subject, from_addr, date_iso, to_json, cc_json, bcc_json FROM messages WHERE id = ?`, [found.id]);
         if (priorBody?.body_complete === 1) message = { ...message, htmlBody: priorBody.html_body, textBody: priorBody.text_body,
-          snippet: priorBody.snippet, bodyComplete: true, bodyWarning: priorBody.body_warning, decoding: require("./mime-decoding").parse(priorBody.decoding_json) };
+          snippet: priorBody.snippet, bodyComplete: true, bodyWarning: priorBody.body_warning, decoding: require("./mime-decoding").parse(priorBody.decoding_json),
+          ...(priorBody.uid === message.uid && priorBody.uid_validity === report.validity ? { dsnRedraft: dsnForRetainedBody(priorBody, message) } : {}) };
       }
       const id = found ? found.id : (message.id || newMessageId());
       let unreadBit = message.unread ? 1 : 0;
@@ -1457,6 +1463,8 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
       imapDispositions.refresh(id, message);
       updateChanged("messages", { body_warning: message.bodyWarning || null }, "id = ?", [id]);
       updateChanged("messages", { decoding_json: require("./mime-decoding").serialize(message.decoding) }, "id = ?", [id]);
+      const redraft = dsn.forFolder(message.dsnRedraft, previous?.well_known);
+      if (redraft || found?.dsn_redraft_json) updateChanged("messages", { dsn_redraft_json: redraft }, "id = ?", [id]);
       updateChanged("messages", { date_source: message.dateSource || null }, "id = ?", [id]);
       if (message.listUnsubscribe != null) {
         updateChanged("messages", { list_unsubscribe_json: JSON.stringify(message.listUnsubscribe) }, "id = ?", [id]);
@@ -1621,6 +1629,26 @@ function messageByRfc(accountId, rfcMessageId, { headersOnly = false } = {}) {
   );
 }
 
+function uniqueSentByRfc(accountId, folderPath, rfcMessageId) {
+  const rows = all(`SELECT id FROM messages WHERE account_id = ? AND folder_path = ? AND rfc_message_id = ? LIMIT 2`,
+    [accountId, folderPath, rfcMessageId]);
+  return rows.length === 1 ? messageById(rows[0].id) : null;
+}
+
+function dsnForRetainedBody(prior, incoming) {
+  // A bounded refresh of the same delivery can retain its previously verified
+  // body. Preserve the associated evidence only when headers still agree and
+  // the new read did not supply complete report evidence of its own.
+  if (prior.dsn_redraft_json && (!incoming.dsnRedraft || incoming.dsnRedraft.partial)
+    && incoming.rfcMessageId && prior.rfc_message_id === incoming.rfcMessageId
+    && prior.subject === incoming.subject && prior.from_addr === incoming.from && prior.date_iso === incoming.date
+    && prior.to_json === JSON.stringify(incoming.to || []) && prior.cc_json === JSON.stringify(incoming.cc || [])
+    && prior.bcc_json === JSON.stringify(incoming.bcc || [])) {
+    return dsn.parse(prior.dsn_redraft_json);
+  }
+  return incoming.dsnRedraft;
+}
+
 function pruneMissing(accountId, folderPath, liveUids, retainOlderThan) {
   const keep = new Set((liveUids || []).map((uid) => Number(uid)));
   transaction(() => {
@@ -1674,6 +1702,10 @@ function insertMessageRecord(row) {
     if (row.disposition) run("UPDATE messages SET disposition_json = ? WHERE id = ?", [JSON.stringify(row.disposition), row.id]);
     if (row.bodyWarning) run("UPDATE messages SET body_warning = ? WHERE id = ?", [row.bodyWarning, row.id]);
     if (row.decoding) run("UPDATE messages SET decoding_json = ? WHERE id = ?", [require("./mime-decoding").serialize(row.decoding), row.id]);
+    if (row.dsnRedraft) {
+      const redraft = dsn.forFolder(row.dsnRedraft, folderByPath(row.accountId, row.folderPath)?.well_known);
+      if (redraft) run("UPDATE messages SET dsn_redraft_json = ? WHERE id = ?", [redraft, row.id]);
+    }
     if (row.dateSource) run("UPDATE messages SET date_source = ? WHERE id = ?", [row.dateSource, row.id]);
     if (row.listUnsubscribe) run("UPDATE messages SET list_unsubscribe_json = ? WHERE id = ?", [JSON.stringify(row.listUnsubscribe), row.id]);
     updateChanged("messages", require("./reply-forward-state").patch(row), "id = ?", [row.id]);
@@ -1940,7 +1972,7 @@ function resolveScope(query) {
 const BODY_SPACE = "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)";
 const METADATA_COLUMNS = ["id", "account_id", "folder_path", "uid", "uid_validity", "thread_id", "rfc_message_id", "in_reply_to", "subject", "snippet",
   "from_addr", "from_display_name", "from_address", "to_json", "cc_json", "bcc_json", "date_iso", "date_source", "list_sort_ts", "unread", "starred", "is_draft",
-  "has_attachments", "attachments_json", "body_complete", "body_warning", "decoding_json", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "list_unsubscribe_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
+  "has_attachments", "attachments_json", "body_complete", "body_warning", "decoding_json", "dsn_redraft_json", "body_retry_blocked", "body_retry_after", "recipient_headers_json", "list_unsubscribe_json", "draft_pending", "gmail_id", "replied", "forwarded", "disposition_json", "disposition_provider_replied", "disposition_provider_forwarded", "reply_inference_eligible"];
 function metadataColumns(table) {
   return `${METADATA_COLUMNS.map(name => `${table}.${name}`).join(", ")}, ${table}.has_body`;
 }
@@ -2806,7 +2838,9 @@ function applyGmailMessage(accountId, folderPaths, message) {
       const input = { ...message, id: found?.id || newMessageId(), accountId, folderPath, uid: mapping.local_uid,
         uidValidity: account.gmail_generation, threadId: found?.thread_id || message.threadId,
         ...(complete ? { htmlBody: found.html_body, textBody: found.text_body, bodyComplete: true, bodyWarning: message.bodyWarning || found.body_warning,
-          decoding: require("./mime-decoding").parse(found.decoding_json) } : {}),
+          decoding: require("./mime-decoding").parse(found.decoding_json),
+          ...(found.uid === mapping.local_uid && found.uid_validity === account.gmail_generation
+            ? { dsnRedraft: dsnForRetainedBody(found, message) } : {}) } : {}),
         ...(attachments ? { attachments, hasAttachments: true } : {}) };
       if (!found) insertMessageRecord(input);
       else {
@@ -2821,6 +2855,8 @@ function applyGmailMessage(accountId, folderPaths, message) {
           body_complete: input.bodyComplete ? 1 : 0, body_warning: input.bodyWarning || null, recipient_headers_json: JSON.stringify(input.recipientHeaders || {}),
           ...(input.listUnsubscribe != null ? { list_unsubscribe_json: JSON.stringify(input.listUnsubscribe) } : {}),
           decoding_json: require("./mime-decoding").serialize(input.decoding),
+          ...(input.dsnRedraft || found.dsn_redraft_json ? { dsn_redraft_json: dsn.forFolder(input.dsnRedraft,
+            input.dsnRedraft && folderByPath(accountId, folderPath)?.well_known) } : {}),
           ...require("./reply-forward-state").patch(input) };
         if (flagHeld(found.id, "read")) delete patch.unread;
         if (flagHeld(found.id, "star")) delete patch.starred;
@@ -3073,6 +3109,7 @@ module.exports = {
   flagUidsFor,
   messageByUid,
   messageByRfc,
+  uniqueSentByRfc,
   pruneMissing,
   insertMessage,
   searchMessages,
