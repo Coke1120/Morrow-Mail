@@ -4433,6 +4433,14 @@ button.attachment-name:hover { text-decoration: underline; }
 
 .reader-actions .icon-btn svg { display: block; flex: none; }
 
+.reader-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+}
+
 .reader-menus {
   display: flex;
   flex-wrap: wrap;

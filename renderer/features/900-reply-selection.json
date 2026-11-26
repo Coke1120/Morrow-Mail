@@ -2,5 +2,5 @@
   "id": "reply-selection",
   "title": "Reply quoting selection",
   "category": "Mail",
-  "blurb": "Select a visible passage in an open message, then choose Reply quoting selection. The reply starts with an editable plain-text quote of that passage. The full original stays available for reference. Select the passage again if the message changes or the selection is lost."
+  "blurb": "Select a visible passage in an open message. Right-click the selection, or press Shift+F10 with the message body focused, and choose Reply quoting selection. The reply starts with an editable plain-text quote of that passage. The full original stays available for reference. Select the passage again if the message changes or the selection is lost."
 }

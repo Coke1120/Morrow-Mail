@@ -686,7 +686,9 @@ test("reader toolbar is the only Timeline entry and captures the opened message,
   const button = fixture.document.querySelector('[data-action="timeline"]');
   assert.equal(fixture.document.querySelectorAll('[data-action="timeline"]').length, 1);
   assert.equal(button.textContent, "Timeline");
-  assert.equal(button.previousElementSibling.dataset.action, "summary");
+  const summaryGroup = button.previousElementSibling;
+  assert.ok(summaryGroup.matches(".reader-summary-actions"));
+  assert.equal(summaryGroup.firstElementChild.dataset.action, "summary");
   assert.equal(button.getAttribute("aria-haspopup"), "dialog");
   for (const id of ["message-tab", "timeline-tab", "timeline-panel", "timeline-from-selection", "timeline-from-reader", "timeline-from-search", "timeline-review"]) assert.equal(fixture.document.getElementById(id), null);
   button.click(); await pause();
