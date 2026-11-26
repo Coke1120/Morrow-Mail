@@ -2497,6 +2497,7 @@ function scheduledHeader(raw) {
   let payload = {};
   try { payload = JSON.parse(raw) || {}; } catch {}
   const { body, attachments, ...metadata } = payload;
+  if (metadata.outbox === true) metadata.hasAttachments = Array.isArray(attachments) && attachments.length > 0;
   return JSON.stringify(metadata);
 }
 
@@ -2521,10 +2522,15 @@ function scheduledOverview(accountId, { includeRows = false, outbox = false, off
   const total = outbox ? counts.outboxTotal : counts.total - counts.outboxTotal;
   const size = Math.min(200, Math.max(1, Math.floor(Number(limit)) || 200));
   const start = Math.max(0, Math.floor(Number(offset)) || 0);
-  const rows = includeRows ? all(`SELECT id, account_id, summary_json AS payload_json, send_at, status, error, message_id, receipt_json, created_at
+  // Older queue summaries have no attachment flag. Recover only the boolean.
+  const summary = outbox ? `CASE WHEN json_type(summary_json, '$.hasAttachments') IS NULL AND json_valid(payload_json)
+    THEN json_set(summary_json, '$.hasAttachments',
+      json(CASE WHEN json_array_length(payload_json, '$.attachments') > 0 THEN 'true' ELSE 'false' END))
+    ELSE summary_json END` : "summary_json";
+  const rows = includeRows ? all(`SELECT id, account_id, ${summary} AS payload_json, send_at, status, error, message_id, receipt_json, created_at
     FROM scheduled_sends ${where} ${where ? "AND" : "WHERE"} ${outbox ? active : `NOT COALESCE(${active}, 0)`}
     ORDER BY send_at, created_at, id LIMIT ? OFFSET ?`, [...params, size, start]) : [];
-  const selected = includeRows && outbox && selectedId ? get(`SELECT id, account_id, summary_json AS payload_json, send_at, status, error, message_id, receipt_json, created_at
+  const selected = includeRows && outbox && selectedId ? get(`SELECT id, account_id, ${summary} AS payload_json, send_at, status, error, message_id, receipt_json, created_at
     FROM scheduled_sends WHERE id = ? AND ${active} ${accountId ? "AND account_id = ?" : ""}`, [String(selectedId), ...params]) : null;
   return { ...counts, total, rows, selected: selected || null, offset: start, hasMore: includeRows && start + rows.length < total };
 }

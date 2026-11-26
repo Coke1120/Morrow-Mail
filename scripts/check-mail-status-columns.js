@@ -25,6 +25,9 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
     async *fetch(range, fields) {
       fieldsSeen.push(fields);
       yield { uid: 1, flags, envelope: { subject: "Re: Fwd: needle", messageId: "<source@fixture.invalid>", inReplyTo: "<parent@fixture.invalid>", date: new Date("2026-11-01T00:00:00Z") },
+        bodyStructure: { type: "multipart/mixed", childNodes: ["invoice.pdf", "details.pdf"].map((filename, index) => ({
+          part: String(index + 2), type: "application/pdf", disposition: "attachment", dispositionParameters: { filename },
+        })) },
         ...(fields.source ? { source: Buffer.from("Subject: Re: Fwd: needle\r\nMessage-ID: <source@fixture.invalid>\r\nIn-Reply-To: <parent@fixture.invalid>\r\n\r\nneedle") } : {}) };
       if (!fields.source) yield { uid: 999, flags: new Set(["\\Answered"]) };
     },
@@ -36,6 +39,7 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
   db.applyFolderSync("outlook", "INBOX", fixture.report([fixture.message(1, { id: "outlook-message" })]));
   const listed = (await ask("mail:listFromCache", { accountId: "imap", folderId: "INBOX" })).emails[0];
   assert.deepEqual([listed.replied, listed.forwarded], [true, true]);
+  assert.equal(listed.hasAttachments, true);
   assert.equal(Object.hasOwn(listed, "textBody"), false, "status is available without body strings");
   assert.equal((await ask("mail:searchLocal", { accountId: "imap", query: "needle" }))[0].forwarded, true);
   fieldsSeen = []; flags = new Set();
@@ -72,13 +76,25 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
   for (let i = 0; i < destinations.length; i++) {
     const accountId = ["imap", "outlook", "gmail", "imap"][i];
     db.insertScheduled({ id: "queued-" + i, accountId, sendAt: Date.parse("2099-01-01T00:00:00Z") + i, createdAt: 1,
-      payloadJson: JSON.stringify({ outbox: true, to: destinations[i], cc: i === 3 ? "cc-only@fixture.invalid" : "", bcc: "private@fixture.invalid", subject: "Queued " + i, body: "Never list this body" }) });
+      payloadJson: JSON.stringify({ outbox: true, to: destinations[i], cc: i === 3 ? "cc-only@fixture.invalid" : "", bcc: "private@fixture.invalid", subject: "Queued " + i, body: "Never list this body",
+        ...(i === 0 ? { attachments: [{ filename: "Private fixture file.pdf" }] } : {}) }) });
   }
   const overview = await ask("mail:listScheduled", { summary: true, includeRows: true, outbox: true });
   assert.equal(overview.rows.length, 4); assert.equal(overview.outboxTotal, 4);
-  assert.ok(overview.rows.every(row => !row.htmlBody));
+  assert.ok(overview.rows.every(row => !row.htmlBody && !row.attachments));
+  assert.deepEqual(overview.rows.map(row => row.hasAttachments), [true, false, false, false]);
   const dom = new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")); t.after(() => dom.window.close());
   const ui = renderer({ document: dom.window.document }); ui.context.summaries = overview.rows;
+  ui.context.providerMail = listed;
+  const subject = ui.run("messageRow(providerMail).querySelector('.subject')");
+  const prefix = subject.previousElementSibling;
+  assert.equal(subject.textContent, "Re: Fwd: needle");
+  assert.equal(subject.title, subject.textContent);
+  assert.equal(prefix.className, "mail-attachment-prefix");
+  assert.equal(prefix.querySelectorAll('svg[aria-hidden="true"]').length, 1);
+  assert.equal(prefix.querySelector(".sr").textContent, "Has attachments.");
+  const queuedIconCounts = ui.run("outboxEmails(summaries).map(email => messageRow(email).querySelectorAll('.mail-attachment-prefix').length)");
+  assert.deepEqual(Array.from(queuedIconCounts), [1, 0, 0, 0]);
   const rows = ui.run("outboxEmails(summaries).map(email => ({accountId:email.accountId, text:mailRecipientText(email), cell:messageRow(email).querySelector('.recipient').textContent}))");
   assert.deepEqual(Array.from(rows, row => row.text), destinations);
   assert.equal(rows[3].cell, "(no recipient)", "CC/BCC do not fabricate To recipients");

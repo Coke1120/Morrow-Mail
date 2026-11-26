@@ -4576,6 +4576,7 @@ function outboxEmails(rows) {
     draftRevision: row.draftRevision,
     fromAddress: row.fromAddress,
     fromDisplayName: row.fromDisplayName,
+    hasAttachments: row.hasAttachments,
     attachments: row.attachments,
     sourceMessageId: row.sourceMessageId, kind: row.kind,
     inReplyTo: row.inReplyTo,
@@ -8727,6 +8728,17 @@ function mailReplyForwardCell(email) {
   return cell;
 }
 
+function mailAttachmentPrefix() {
+  const prefix = document.createElement("span");
+  prefix.className = "mail-attachment-prefix";
+  prefix.title = "Has attachments";
+  const label = document.createElement("span");
+  label.className = "sr";
+  label.textContent = "Has attachments.";
+  prefix.append(attachmentIcon("paperclip"), label);
+  return prefix;
+}
+
 // Only the mail-list Date column uses relative calendar-day labels. Readers,
 // Time, Outbox and stored/sort timestamps keep their existing formats.
 function mailListDateText(date, now = new Date()) {
@@ -8852,7 +8864,9 @@ function messageRow(email) {
   recipient.className = "recipient";
   recipient.textContent = mailRecipientText(email) || "(no recipient)";
   recipient.title = recipient.textContent;
-  subjectLine.append(mailReplyForwardCell(email), subject);
+  subjectLine.append(mailReplyForwardCell(email));
+  if (email.hasAttachments === true) subjectLine.append(mailAttachmentPrefix());
+  subjectLine.append(subject);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
   const mailbox = state.accounts.find((row) => row.id === email.accountId);
@@ -9248,15 +9262,22 @@ function renderList() {
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
         if (cached) cached.row.replaceWith(row);
-        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, selected: selected.has(email.id), current: readerCurrentId() === email.id };
+        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, hasAttachments: email.hasAttachments === true,
+          selected: selected.has(email.id), current: readerCurrentId() === email.id };
         messageRows.set(key, cached);
       }
       const row = cached.row;
-      // Provider flag refreshes must not replace a focused message or its actions.
+      // Metadata refreshes must not replace a focused message or its actions.
       if (cached.replied !== email.replied || cached.forwarded !== email.forwarded) {
         const previous = row.querySelector('[data-mail-column="subject"] .mail-reply-forward');
         if (previous) previous.replaceWith(mailReplyForwardCell(email));
         cached.replied = email.replied; cached.forwarded = email.forwarded;
+      }
+      const hasAttachments = email.hasAttachments === true;
+      if (cached.hasAttachments !== hasAttachments) {
+        if (hasAttachments) row.querySelector(".subject").before(mailAttachmentPrefix());
+        else row.querySelector(".mail-attachment-prefix")?.remove();
+        cached.hasAttachments = hasAttachments;
       }
       row.mailMessage = email;
       const isSelected = selected.has(email.id);
