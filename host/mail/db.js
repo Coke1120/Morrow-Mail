@@ -588,6 +588,7 @@ async function openDatabase(target, operation) {
     ownedDb.raw.function("morrow_list_draft_to", { deterministic: true }, listFilter.matchesDraftTo);
     ownedDb.raw.function("morrow_first_draft_to", { deterministic: true }, listFilter.firstDraftTo);
     ownedDb.raw.function("morrow_to_me", { deterministic: true }, require("./to-me").matches);
+    ownedDb.raw.function("morrow_scheduled_header", { deterministic: true }, scheduledHeader);
     db = ownedDb;
     storage = ownedStorage;
     await startupPhase(operation, "migrate", "startup.migrate", () => internal(() => transaction(migrate)));
@@ -1430,7 +1431,7 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
         const kept = prior && Number(prior.is_draft) === 1 ? localOutgoingAttachments(prior.attachments_json) : null;
         if (kept) {
           attachmentRows = kept;
-          attachmentBit = 1;
+          attachmentBit = Number(hasOutgoingFileAttachments(kept));
         }
       }
       const fields = [
@@ -2493,10 +2494,17 @@ function insertScheduled(row) {
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
 }
 
+function hasOutgoingFileAttachments(attachments) {
+  // Outgoing MIME uses contentId to mark an inline part.
+  return Array.isArray(attachments) && attachments.some(item =>
+    item && typeof item === "object" && !item.contentId);
+}
+
 function scheduledHeader(raw) {
   let payload = {};
   try { payload = JSON.parse(raw) || {}; } catch {}
   const { body, attachments, ...metadata } = payload;
+  if (metadata.outbox === true) metadata.hasFileAttachments = hasOutgoingFileAttachments(attachments);
   return JSON.stringify(metadata);
 }
 
@@ -2521,10 +2529,16 @@ function scheduledOverview(accountId, { includeRows = false, outbox = false, off
   const total = outbox ? counts.outboxTotal : counts.total - counts.outboxTotal;
   const size = Math.min(200, Math.max(1, Math.floor(Number(limit)) || 200));
   const start = Math.max(0, Math.floor(Number(offset)) || 0);
-  const rows = includeRows ? all(`SELECT id, account_id, summary_json AS payload_json, send_at, status, error, message_id, receipt_json, created_at
+  // A legacy hasAttachments flag counted inline parts. Rebuild that header from
+  // the queued payload only when the file-only flag is missing.
+  const summary = `CASE WHEN json_extract(summary_json, '$.outbox') = 1
+    AND json_type(summary_json, '$.hasFileAttachments') IS NULL AND json_valid(payload_json)
+    THEN morrow_scheduled_header(payload_json)
+    ELSE summary_json END`;
+  const rows = includeRows ? all(`SELECT id, account_id, ${summary} AS payload_json, send_at, status, error, message_id, receipt_json, created_at
     FROM scheduled_sends ${where} ${where ? "AND" : "WHERE"} ${outbox ? active : `NOT COALESCE(${active}, 0)`}
     ORDER BY send_at, created_at, id LIMIT ? OFFSET ?`, [...params, size, start]) : [];
-  const selected = includeRows && outbox && selectedId ? get(`SELECT id, account_id, summary_json AS payload_json, send_at, status, error, message_id, receipt_json, created_at
+  const selected = includeRows && outbox && selectedId ? get(`SELECT id, account_id, ${summary} AS payload_json, send_at, status, error, message_id, receipt_json, created_at
     FROM scheduled_sends WHERE id = ? AND ${active} ${accountId ? "AND account_id = ?" : ""}`, [String(selectedId), ...params]) : null;
   return { ...counts, total, rows, selected: selected || null, offset: start, hasMore: includeRows && start + rows.length < total };
 }
@@ -2890,7 +2904,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           ...retainedFollowupHeaders(found, message),
           ...(found.uid === mapping.local_uid && found.uid_validity === account.gmail_generation
             ? { dsnRedraft: dsnForRetainedBody(found, message) } : {}) } : {}),
-        ...(attachments ? { attachments, hasAttachments: true } : {}) };
+        ...(attachments ? { attachments, hasAttachments: hasOutgoingFileAttachments(attachments) } : {}) };
       if (!found) insertMessageRecord(input);
       else {
         const patch = { uid: input.uid, uid_validity: input.uidValidity, subject: input.subject || "", snippet: input.snippet || found.snippet,
@@ -3226,6 +3240,7 @@ module.exports = {
   insertScheduled,
   listScheduled,
   scheduledOverview,
+  hasOutgoingFileAttachments,
   dueScheduled,
   deleteScheduled,
   markScheduledFailed,

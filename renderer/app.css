@@ -4053,6 +4053,15 @@ button.message.unread .from { font-weight: 700; }
   min-width: 0;
 }
 
+.mail-attachment-prefix {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  color: var(--ink-mid);
+}
+
+.mail-attachment-prefix > svg { width: 14px; height: 14px; }
+
 button.message .subject {
   flex: 1 1 auto;
   min-width: 0;
