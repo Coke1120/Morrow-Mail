@@ -10,17 +10,20 @@ function filenameFor(subject, index) {
   return `${index + 1} - ${title}.eml`;
 }
 
-function snapshot(archive, ids) {
-  if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every(isMessage) || new Set(ids).size !== ids.length) {
+function snapshot(archive, sources) {
+  if (!Array.isArray(sources) || !sources.length || sources.length > 200
+      || !sources.every(source => isMessage(source?.id))
+      || new Set(sources.map(source => source.id)).size !== sources.length) {
     throw new Error("Choose up to 200 different messages from Local Folders.");
   }
-  return ids.map((id, index) => {
+  return sources.map(({ id, folderId }, index) => {
     const original = archive.originalMetadata(id);
-    if (!original || !Number.isSafeInteger(original.size) || original.size < 1 || !/^[a-f0-9]{64}$/.test(original.rawSha)) {
+    if (!original || original.folderId !== folderId || !Number.isSafeInteger(original.size)
+        || original.size < 1 || !/^[a-f0-9]{64}$/.test(original.rawSha)) {
       throw unavailable();
     }
     const subject = original.subject || "";
-    return { id, folderId: original.folderId, from: original.from || "", subject, date: original.date || null,
+    return { id, folderId, from: original.from || "", subject, date: original.date || null,
       filename: filenameFor(subject, index), size: original.size, rawSha: original.rawSha };
   });
 }
@@ -33,8 +36,8 @@ function selectionProof(items) {
   return digest(JSON.stringify(items));
 }
 
-function reviewOriginals(archive, ids, limit) {
-  const selected = snapshot(archive, ids);
+function reviewOriginals(archive, sources, limit) {
+  const selected = snapshot(archive, sources);
   const totalBytes = byteTotal(selected);
   return {
     items: selected.map(({ rawSha, folderId, ...item }) => item),
@@ -44,8 +47,8 @@ function reviewOriginals(archive, ids, limit) {
   };
 }
 
-function readOriginals(archive, ids, proof, limit) {
-  const selected = snapshot(archive, ids);
+function readOriginals(archive, sources, proof, limit) {
+  const selected = snapshot(archive, sources);
   if (proof !== selectionProof(selected)) throw unavailable();
   if (byteTotal(selected) > limit) throw new Error("The selected originals exceed the 25 MiB outgoing attachment limit.");
   return selected.map(({ id, filename, size, rawSha }) => {

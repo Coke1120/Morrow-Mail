@@ -431,13 +431,13 @@ function localAnswer(channel, params, event) {
   try {
     if (channel === "mail:reviewForwardOriginals" || channel === "mail:stageForwardOriginals") {
       if (params?.accountId !== localFolders.ACCOUNT_ID) return fail("invalid", "Choose messages from Local Folders.");
-      if (!Array.isArray(params.messageIds) || params.messageIds.length < 2) return fail("invalid", "Choose at least two messages.");
+      if (!Array.isArray(params.sources) || params.sources.length < 2) return fail("invalid", "Choose at least two messages.");
       if (!db.isReady()) return fail("mail_not_ready", "Local mail is still opening. Try again when it is ready.");
       const store = localArchive();
       if (channel === "mail:reviewForwardOriginals") {
-        return ok(forwardOriginals.reviewOriginals(store, params.messageIds, ATTACHMENT_CAP));
+        return ok(forwardOriginals.reviewOriginals(store, params.sources, ATTACHMENT_CAP));
       }
-      const files = forwardOriginals.readOriginals(store, params.messageIds, params.proof, ATTACHMENT_CAP);
+      const files = forwardOriginals.readOriginals(store, params.sources, params.proof, ATTACHMENT_CAP);
       // Nothing reaches the draft store until all source bytes pass verification.
       const attachments = db.transaction(() => files.map(({ filename, mimeType, fileBytes }) => {
         const id = crypto.randomBytes(9).toString("hex");

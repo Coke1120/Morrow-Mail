@@ -518,19 +518,20 @@ function openLocalMessageMenu(messages, x, y, origin, selection) {
     const { ids, view } = selection;
     const reason = messages.length !== ids.length ? "A selected message is unavailable. Select the originals again."
       : !state.accounts.some(isLive) ? "Connect a sending account before forwarding originals." : "";
-    appendMenuAction(menu, "Forward as attachments…", () => openForwardOriginals(ids, view), reason);
+    const sources = messages.map(({ id, folderId }) => ({ id, folderId }));
+    appendMenuAction(menu, "Forward as attachments…", () => openForwardOriginals(sources, view), reason);
   }
   placeMenu(menu, x, y, origin);
 }
 
-function openForwardOriginals(messageIds, view) {
+function openForwardOriginals(sources, view) {
   const assertSelection = () => {
-    if (view !== mailboxViewKey() || messageIds.length !== state.selectedIds.length
-        || !messageIds.every((id, index) => state.selectedIds[index] === id)) {
+    if (view !== mailboxViewKey() || sources.length !== state.selectedIds.length
+        || !sources.every(({ id }, index) => state.selectedIds[index] === id)) {
       throw new Error("The selection changed. Close this review and select the originals again.");
     }
   };
-  const request = { accountId: LOCAL_ACCOUNT_ID, messageIds };
+  const request = { accountId: LOCAL_ACCOUNT_ID, sources };
   return window.morrowForwardOriginals.openReview({
     template: $("forward-originals-template"), openDialog, closeDialog,
     formatDate: value => shownWhen(new Date(value), true), formatSize: fileSize,

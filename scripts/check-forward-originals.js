@@ -56,7 +56,7 @@ before(async () => {
     for (let part = 0; part < 3; part += 1) {
       const raw = original(run, part);
       const saved = store.save(Local.digest(raw), Local.ARCHIVE_ID, await Local.parseArchive(raw));
-      messages.push({ id: saved.message_id, raw });
+      messages.push({ source: { id: saved.message_id, folderId: Local.ARCHIVE_ID }, raw });
     }
     pairs.push(messages);
   }
@@ -100,11 +100,11 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
   const body = "<p>Please review.</p>";
   for (const [run, messages] of pairs.entries()) {
     const [first, second, excluded] = messages;
-    const ids = [first.id, second.id];
+    const sources = [first.source, second.source];
     const beforeReview = reads;
-    const review = reviewOriginals(archive, ids, LIMIT);
+    const review = reviewOriginals(archive, sources, LIMIT);
     assert.equal(reads, beforeReview, "review reads metadata only");
-    assert.deepEqual(review.items.map(item => item.id), ids);
+    assert.deepEqual(review.items.map(item => item.id), sources.map(source => source.id));
     assert.equal(review.items[0].subject, review.items[1].subject);
     assert.notEqual(review.items[0].from, review.items[1].from);
     assert.equal(new Date(review.items[0].date).toISOString(), "2026-11-10T04:05:00.000Z");
@@ -112,15 +112,23 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
     assert.notEqual(review.items[0].filename, review.items[1].filename);
     assert.equal(review.totalBytes, first.raw.length + second.raw.length);
     assert.equal(review.overLimit, false);
-    const files = readOriginals(archive, ids, review.proof, review.totalBytes);
+    const files = readOriginals(archive, sources, review.proof, review.totalBytes);
     assert.deepEqual(files.map(file => file.fileBytes), [first.raw, second.raw]);
     assert.ok(files.every(file => !file.fileBytes.equals(excluded.raw)));
 
-    const params = { accountId: Local.ACCOUNT_ID, messageIds: ids };
-    const checked = await engine.answer("mail:reviewForwardOriginals", [params]);
-    assert.deepEqual(checked.data, reviewOriginals(archive, ids, LIMIT));
+    const params = { accountId: Local.ACCOUNT_ID, sources };
     if (run === 0) {
-      const single = await engine.answer("mail:reviewForwardOriginals", [{ ...params, messageIds: ids.slice(0, 1) }]);
+      try {
+        store.update(first.source.id, { folderId: Local.TRASH_ID });
+        const moved = await engine.answer("mail:reviewForwardOriginals", [params]);
+        assert.equal(moved.success, false);
+        assert.match(moved.error.message, /unavailable or changed/);
+      } finally { store.update(first.source.id, { folderId: Local.ARCHIVE_ID }); }
+    }
+    const checked = await engine.answer("mail:reviewForwardOriginals", [params]);
+    assert.deepEqual(checked.data, reviewOriginals(archive, sources, LIMIT));
+    if (run === 0) {
+      const single = await engine.answer("mail:reviewForwardOriginals", [{ ...params, sources: sources.slice(0, 1) }]);
       assert.equal(single.success, false);
       const wrongAccount = await engine.answer("mail:stageForwardOriginals", [{ ...params, accountId, proof: checked.data.proof }]);
       assert.equal(wrongAccount.success, false);
@@ -188,64 +196,67 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
 });
 
 test("an over-limit or unavailable selection reads no original payload", () => {
-  const ids = pairs[0].slice(0, 2).map(message => message.id);
+  const sources = pairs[0].slice(0, 2).map(message => message.source);
+  const [first, second] = sources;
   const beforeReview = reads;
-  const limit = reviewOriginals(archive, ids, LIMIT).totalBytes - 1;
-  const review = reviewOriginals(archive, ids, limit);
+  const limit = reviewOriginals(archive, sources, LIMIT).totalBytes - 1;
+  const review = reviewOriginals(archive, sources, limit);
   assert.equal(review.overLimit, true);
-  assert.throws(() => readOriginals(archive, ids, review.proof, limit), /limit/);
-  assert.throws(() => reviewOriginals(archive, [ids[0], "local-message:missing"], LIMIT), /unavailable/);
-  assert.throws(() => reviewOriginals(archive, [ids[0], ids[0]], LIMIT), /different messages/);
-  assert.throws(() => reviewOriginals(archive, [ids[0], "provider-message"], LIMIT), /Local Folders/);
+  assert.throws(() => readOriginals(archive, sources, review.proof, limit), /limit/);
+  assert.throws(() => reviewOriginals(archive, [first, { ...second, id: "local-message:missing" }], LIMIT), /unavailable/);
+  assert.throws(() => reviewOriginals(archive, [first, first], LIMIT), /different messages/);
+  assert.throws(() => reviewOriginals(archive, [first, { ...second, id: "provider-message" }], LIMIT), /Local Folders/);
   assert.equal(reads, beforeReview);
 });
 
 test("confirming a different order, shorter set or moved source requires a fresh review", () => {
-  const ids = pairs[1].slice(0, 2).map(message => message.id);
-  const { proof } = reviewOriginals(archive, ids, LIMIT);
+  const sources = pairs[1].slice(0, 2).map(message => message.source);
+  const [first] = sources;
+  const { proof } = reviewOriginals(archive, sources, LIMIT);
   const beforeReview = reads;
-  assert.throws(() => readOriginals(archive, ids.slice().reverse(), proof, LIMIT), /changed/);
-  assert.throws(() => readOriginals(archive, ids.slice(0, 1), proof, LIMIT), /changed/);
-  assert.throws(() => readOriginals(archive, [ids[0], pairs[1][2].id], proof, LIMIT), /changed/);
+  assert.throws(() => readOriginals(archive, sources.slice().reverse(), proof, LIMIT), /changed/);
+  assert.throws(() => readOriginals(archive, [first], proof, LIMIT), /changed/);
+  assert.throws(() => readOriginals(archive, [first, pairs[1][2].source], proof, LIMIT), /changed/);
   try {
-    store.update(ids[0], { folderId: Local.TRASH_ID });
-    assert.throws(() => readOriginals(archive, ids, proof, LIMIT), /changed/);
+    store.update(first.id, { folderId: Local.TRASH_ID });
+    assert.throws(() => readOriginals(archive, sources, proof, LIMIT), /changed/);
     assert.equal(reads, beforeReview);
   } finally {
-    store.update(ids[0], { folderId: Local.ARCHIVE_ID });
+    store.update(first.id, { folderId: Local.ARCHIVE_ID });
   }
 });
 
 test("a changed final payload produces no attachment set", () => {
-  const ids = pairs[2].slice(0, 2).map(message => message.id);
-  const { proof } = reviewOriginals(archive, ids, LIMIT);
+  const sources = pairs[2].slice(0, 2).map(message => message.source);
+  const { proof } = reviewOriginals(archive, sources, LIMIT);
   const invalid = { ...archive, raw(id) {
     const raw = archive.raw(id);
-    if (id === ids[1]) raw[0] ^= 1;
+    if (id === sources[1].id) raw[0] ^= 1;
     return raw;
   } };
-  assert.throws(() => readOriginals(invalid, ids, proof, LIMIT), /changed/);
+  assert.throws(() => readOriginals(invalid, sources, proof, LIMIT), /changed/);
 });
 
 test("SQLite verifies metadata at review and the raw original at confirmation", () => {
-  const { id, raw } = pairs[3][0];
+  const { source, raw } = pairs[3][0];
+  const { id } = source;
   const sqlite = new Database(store.file);
   const writeInfo = sqlite.prepare("UPDATE messages SET info=? WHERE id=?");
   const writeRaw = sqlite.prepare("UPDATE messages SET raw=? WHERE id=?");
   const { info } = sqlite.prepare("SELECT info FROM messages WHERE id=?").get(id);
-  const { proof } = reviewOriginals(archive, [id], LIMIT);
+  const { proof } = reviewOriginals(archive, [source], LIMIT);
   const beforeReview = reads;
   try {
     writeInfo.run(JSON.stringify({ ...JSON.parse(info), subject: "Changed subject" }), id);
-    assert.throws(() => reviewOriginals(archive, [id], LIMIT), /metadata verification failed/);
+    assert.throws(() => reviewOriginals(archive, [source], LIMIT), /metadata verification failed/);
     writeInfo.run(info, id);
 
     const changed = Buffer.from(raw);
     changed[0] ^= 1;
     writeRaw.run(changed, id);
-    assert.equal(reviewOriginals(archive, [id], LIMIT).proof, proof);
+    assert.equal(reviewOriginals(archive, [source], LIMIT).proof, proof);
     assert.equal(reads, beforeReview);
-    assert.throws(() => readOriginals(archive, [id], proof, LIMIT), /Original MIME verification failed/);
+    assert.throws(() => readOriginals(archive, [source], proof, LIMIT), /Original MIME verification failed/);
   } finally {
     writeInfo.run(info, id);
     writeRaw.run(raw, id);
