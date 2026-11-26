@@ -588,6 +588,7 @@ async function openDatabase(target, operation) {
     ownedDb.raw.function("morrow_list_draft_to", { deterministic: true }, listFilter.matchesDraftTo);
     ownedDb.raw.function("morrow_first_draft_to", { deterministic: true }, listFilter.firstDraftTo);
     ownedDb.raw.function("morrow_to_me", { deterministic: true }, require("./to-me").matches);
+    ownedDb.raw.function("morrow_scheduled_header", { deterministic: true }, scheduledHeader);
     db = ownedDb;
     storage = ownedStorage;
     await startupPhase(operation, "migrate", "startup.migrate", () => internal(() => transaction(migrate)));
@@ -2493,11 +2494,17 @@ function insertScheduled(row) {
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
 }
 
+function hasScheduledFileAttachments(attachments) {
+  // Queued outgoing MIME uses contentId to mark an inline part.
+  return Array.isArray(attachments) && attachments.some(item =>
+    item && typeof item === "object" && !item.contentId);
+}
+
 function scheduledHeader(raw) {
   let payload = {};
   try { payload = JSON.parse(raw) || {}; } catch {}
   const { body, attachments, ...metadata } = payload;
-  if (metadata.outbox === true) metadata.hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+  if (metadata.outbox === true) metadata.hasFileAttachments = hasScheduledFileAttachments(attachments);
   return JSON.stringify(metadata);
 }
 
@@ -2522,11 +2529,12 @@ function scheduledOverview(accountId, { includeRows = false, outbox = false, off
   const total = outbox ? counts.outboxTotal : counts.total - counts.outboxTotal;
   const size = Math.min(200, Math.max(1, Math.floor(Number(limit)) || 200));
   const start = Math.max(0, Math.floor(Number(offset)) || 0);
-  // Older queue summaries have no attachment flag. Recover only the boolean.
-  const summary = outbox ? `CASE WHEN json_type(summary_json, '$.hasAttachments') IS NULL AND json_valid(payload_json)
-    THEN json_set(summary_json, '$.hasAttachments',
-      json(CASE WHEN json_array_length(payload_json, '$.attachments') > 0 THEN 'true' ELSE 'false' END))
-    ELSE summary_json END` : "summary_json";
+  // A legacy hasAttachments flag counted inline parts. Rebuild that header from
+  // the queued payload only when the file-only flag is missing.
+  const summary = `CASE WHEN json_extract(summary_json, '$.outbox') = 1
+    AND json_type(summary_json, '$.hasFileAttachments') IS NULL AND json_valid(payload_json)
+    THEN morrow_scheduled_header(payload_json)
+    ELSE summary_json END`;
   const rows = includeRows ? all(`SELECT id, account_id, ${summary} AS payload_json, send_at, status, error, message_id, receipt_json, created_at
     FROM scheduled_sends ${where} ${where ? "AND" : "WHERE"} ${outbox ? active : `NOT COALESCE(${active}, 0)`}
     ORDER BY send_at, created_at, id LIMIT ? OFFSET ?`, [...params, size, start]) : [];
@@ -3232,6 +3240,7 @@ module.exports = {
   insertScheduled,
   listScheduled,
   scheduledOverview,
+  hasScheduledFileAttachments,
   dueScheduled,
   deleteScheduled,
   markScheduledFailed,

@@ -4630,7 +4630,9 @@ function publicScheduled(row) {
     if (payload.sourceMessageId) { out.sourceMessageId = payload.sourceMessageId; out.kind = payload.kind; }
     if (payload.threadId) out.threadId = payload.threadId;
     if (Array.isArray(payload.attachments) && payload.attachments.length) out.attachments = payload.attachments;
-    out.hasAttachments = payload.hasAttachments === true || !!out.attachments;
+    out.hasAttachments = Array.isArray(payload.attachments)
+      ? db.hasScheduledFileAttachments(payload.attachments)
+      : payload.hasFileAttachments === true;
   }
   return out;
 }

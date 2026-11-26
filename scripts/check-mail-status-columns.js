@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const { JSDOM } = require("jsdom");
+const Database = require("better-sqlite3");
 const { renderer } = require("./check-ux-workflows");
 const fixture = require("./mail-performance-fixture");
 const { server, message } = require("./gmail-fixture");
@@ -73,16 +74,41 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
   assert.equal(db.messageById(gmailCopy.id).replied, null);
 
   const destinations = ["\"Team, West\" <west@fixture.invalid>, second@fixture.invalid", "outlook-recipient@fixture.invalid", "gmail-recipient@fixture.invalid", ""];
+  const inline = { filename: "Inline logo.png", mimeType: "image/png", contentId: "inline-logo" };
+  const photo = { filename: "Ordinary photo.png", mimeType: "image/png", contentId: null };
+  const file = { filename: "Private fixture file.pdf", mimeType: "application/pdf" };
+  const queuedAttachments = [[], [inline], [photo], [inline, file]];
+  const fileFlags = [false, false, true, true];
   for (let i = 0; i < destinations.length; i++) {
     const accountId = ["imap", "outlook", "gmail", "imap"][i];
     db.insertScheduled({ id: "queued-" + i, accountId, sendAt: Date.parse("2099-01-01T00:00:00Z") + i, createdAt: 1,
       payloadJson: JSON.stringify({ outbox: true, to: destinations[i], cc: i === 3 ? "cc-only@fixture.invalid" : "", bcc: "private@fixture.invalid", subject: "Queued " + i, body: "Never list this body",
-        ...(i === 0 ? { attachments: [{ filename: "Private fixture file.pdf" }] } : {}) }) });
+        ...(i > 0 ? { attachments: queuedAttachments[i] } : {}) }) });
   }
-  const overview = await ask("mail:listScheduled", { summary: true, includeRows: true, outbox: true });
+  const summary = { summary: true, includeRows: true, outbox: true, selectedId: "queued-1" };
+  const fresh = await ask("mail:listScheduled", summary);
+  assert.deepEqual(fresh.rows.map(row => row.hasAttachments), fileFlags);
+  assert.equal(fresh.selected.hasAttachments, false);
+  for (const [index, attachments] of queuedAttachments.entries()) {
+    const [full] = await ask("mail:listScheduled", { id: "queued-" + index });
+    assert.equal(full.hasAttachments, fileFlags[index]);
+    assert.deepEqual(full.attachments || [], attachments);
+  }
+
+  // Write the two historical summary shapes into this disposable queue.
+  const legacy = new Database(path.join(directory, "mail.sqlite.live"), { fileMustExist: true });
+  try {
+    legacy.prepare(`UPDATE scheduled_sends SET summary_json =
+      json_set(json_remove(summary_json, '$.hasFileAttachments'), '$.hasAttachments', json('true')) WHERE id = 'queued-1'`).run();
+    legacy.prepare(`UPDATE scheduled_sends SET summary_json =
+      json_remove(summary_json, '$.hasFileAttachments') WHERE id = 'queued-2'`).run();
+  } finally { legacy.close(); }
+  const overview = await ask("mail:listScheduled", summary);
   assert.equal(overview.rows.length, 4); assert.equal(overview.outboxTotal, 4);
   assert.ok(overview.rows.every(row => !row.htmlBody && !row.attachments));
-  assert.deepEqual(overview.rows.map(row => row.hasAttachments), [true, false, false, false]);
+  assert.deepEqual(overview.rows.map(row => row.hasAttachments), fileFlags);
+  assert.equal(overview.selected.hasAttachments, false);
+  assert.ok(!overview.selected.htmlBody && !overview.selected.attachments);
   const dom = new JSDOM(fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")); t.after(() => dom.window.close());
   const ui = renderer({ document: dom.window.document }); ui.context.summaries = overview.rows;
   ui.context.providerMail = listed;
@@ -94,7 +120,7 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
   assert.equal(prefix.querySelectorAll('svg[aria-hidden="true"]').length, 1);
   assert.equal(prefix.querySelector(".sr").textContent, "Has attachments.");
   const queuedIconCounts = ui.run("outboxEmails(summaries).map(email => messageRow(email).querySelectorAll('.mail-attachment-prefix').length)");
-  assert.deepEqual(Array.from(queuedIconCounts), [1, 0, 0, 0]);
+  assert.deepEqual(Array.from(queuedIconCounts), [0, 0, 1, 1]);
   const rows = ui.run("outboxEmails(summaries).map(email => ({accountId:email.accountId, text:mailRecipientText(email), cell:messageRow(email).querySelector('.recipient').textContent}))");
   assert.deepEqual(Array.from(rows, row => row.text), destinations);
   assert.equal(rows[3].cell, "(no recipient)", "CC/BCC do not fabricate To recipients");
