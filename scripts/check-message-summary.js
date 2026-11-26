@@ -60,7 +60,6 @@ async function hostChecks() {
     const prepared = service.prepare(input, owner);
     return prepared.success ? service.summarize(start(input, prepared.data), owner) : prepared;
   };
-  const allow = () => consent.grant({ token: consent.status().token, manual: true, background: false });
   global.fetch = async (url, input) => {
     assert.equal(String(url), "https://summary-fixture.invalid/v1/chat/completions"); assert.equal(input.redirect, "error");
     calls.push({ input, body: JSON.parse(input.body) });
@@ -73,8 +72,8 @@ async function hostChecks() {
   try {
     assert.equal((await invoke()).error.code, "ai-unconfigured"); assert.equal(calls.length, 0);
     config.saveConfig({ authMode: "api_key", baseUrl: "https://summary-fixture.invalid/v1", model: "fixture", apiKey: "synthetic-only" });
-    assert.equal((await invoke()).error.code, "ai-consent-required"); assert.equal(calls.length, 0);
-    allow(); let result = await invoke();
+    assert.equal(calls.length, 0);
+    let result = await invoke();
     assert.equal(result.success, true); assert.equal(result.data.emailId, "one"); assert.equal(result.data.accountId, "alpha");
     assert.match(result.data.summary.bullets[0], /Friday/); assert.equal(calls.length, 1);
     const sent = calls[0].body;
@@ -134,7 +133,7 @@ async function hostChecks() {
     assert.equal((await service.summarize(start(params(), plan), sender)).error.code, "summary-review-expired");
     plan = service.prepare(params(), sender).data; current.textBody += " Changed.";
     assert.equal((await service.summarize(start(params(), plan), sender)).error.code, "message_changed");
-    plan = service.prepare(params(), sender).data; consent.revoke(); allow();
+    plan = service.prepare(params(), sender).data; consent.revoke();
     assert.equal((await service.summarize(start(params(), plan), sender)).error.code, "ai-consent-required");
     for (const retire of [() => service.cancel({ reqId: params().reqId }, sender), () => sender.emit("destroyed"), () => service.invalidateAccount("alpha")]) {
       plan = service.prepare(params(), sender).data; retire();
@@ -158,10 +157,10 @@ async function hostChecks() {
     responder = async () => { throw Error("Synthetic provider failure"); };
     assert.match((await invoke()).error.message, /AI request failed|Synthetic provider failure/);
     responder = async () => output();
-    const beforeQueued = calls.length, queued = invoke(params("queued")); consent.revoke(); allow();
+    const beforeQueued = calls.length, queued = invoke(params("queued")); consent.revoke();
     assert.equal((await queued).error.code, "ai-consent-required"); assert.equal(calls.length, beforeQueued);
     for (const retire of ["cancel", "destroy", "account", "revoke", "config", "source"]) {
-      allow(); const wait = deferred(); responder = () => wait.promise;
+      const wait = deferred(); responder = () => wait.promise;
       const task = invoke(params(retire)); await tick(); const signal = calls.at(-1).input.signal;
       if (retire === "cancel") {
         service.cancel({ reqId: retire }, other); assert.equal(signal.aborted, false);
@@ -178,9 +177,9 @@ async function hostChecks() {
     }
     // Consent/source/cancel retirement after part 1 must prevent every later send.
     for (const retire of ["revoke", "config", "source", "cancel"]) {
-      current = { ...email(), textBody: "Long synthetic record.\n".repeat(1500) }; allow(); const before = calls.length;
+      current = { ...email(), textBody: "Long synthetic record.\n".repeat(1500) }; const before = calls.length;
       responder = async () => {
-        if (retire === "revoke") { consent.revoke(); allow(); }
+        if (retire === "revoke") { consent.revoke(); }
         else if (retire === "config") config.saveConfig({ model: "second-fixture" });
         else if (retire === "source") current.textBody += " New body.";
         else service.cancel({ reqId: "between" }, sender);
@@ -188,9 +187,9 @@ async function hostChecks() {
       };
       assert.equal((await invoke(params("between"))).success, false); assert.equal(calls.length, before + 1);
     }
-    allow(); current = email(); responder = async () => output("ChatGPT fixture summary");
+    current = email(); responder = async () => output("ChatGPT fixture summary");
     config.saveConfig({ authMode: "chatgpt", chatgptModel: "fixture-chat" });
-    assert.equal((await invoke()).error.code, "ai-consent-required"); allow(); result = await invoke();
+    result = await invoke();
     assert.equal(result.data.summary.mainPoint, "ChatGPT fixture summary"); assert.equal(calls.at(-1).options.model, "fixture-chat");
     assert.equal(calls.at(-1).options.background, false);
     // Production engine, actual prepare IPC and temporary SQLite lookup.
@@ -278,7 +277,7 @@ async function rendererChecks() {
       button().click(); await tick(); ui.run(`${change}replies.at(-1).resolve({...replies.at(-1).input,summary:{mainPoint:'${old}',bullets:[]},warnings:[]})`); await tick(); assert.equal(box().hidden, true);
     }
     ui.run("state.email={...fixtureEmail,bodyEpoch:1};renderReader(false);requestMessageSummary(state.email)"); await tick();
-    ui.run(`replies.at(-1).reject(Object.assign(new Error('AI data use is off. Review AI data permission.'),{code:'ai-consent-required'}))`); await tick();
+    ui.run(`replies.at(-1).reject(Object.assign(new Error('The saved AI connection changed.'),{code:'ai-consent-required'}))`); await tick();
     assert.equal(doc.querySelector('[data-role="summary-settings"]').hidden, false);
     let openedSettings = false, fold = ""; ui.context.openSettingsFixture = () => { openedSettings = true; }; ui.context.revealSettingsFixture = value => { fold = value; };
     ui.run("openSettings=openSettingsFixture;revealSettingsFold=revealSettingsFixture"); doc.querySelector('[data-role="summary-settings"]').click();
@@ -301,7 +300,7 @@ async function rendererChecks() {
     const beforeClose = ui.run("requests.length"); doc.querySelector('[aria-label="Dismiss summary"]').click(); await tick();
     assert.equal(box().hidden, true); assert.equal(ui.run("requests[requests.length-1].channel"), "mail:cancelSummary"); assert.equal(ui.run("requests.length"), beforeClose + 1);
     ui.run("paintFeatureCatalog()"); const help = doc.getElementById("features-catalog").textContent;
-    for (const word of ["Message summary", "ASD-STE100", "128,000", "Cancel summary", "AI data permission", "no CLI command"]) assert.ok(help.includes(word), word);
+    for (const word of ["Message summary", "ASD-STE100", "128,000", "Cancel summary", "saved AI connection", "no CLI command"]) assert.ok(help.includes(word), word);
     dom.window.close();
   }
   let bridge, invoked = [];

@@ -104,10 +104,11 @@ function fixture({ config: initial = {}, account: accountInput = {}, useDom = fa
   const component = ui.run("chatgptSettings");
   return { seedConsent: record => files.set(path.join(directory, "ai-consent.json"), JSON.stringify(record)), bridge, preload, consent, config, ui, component, get, calls, intercept, interceptReply,
     load: async () => { await ui.run("loadAiSettings()"); await tick(); },
-    checkManual: async value => {
-      get("ai-consent-manual").checked = value;
-      if (useDom) { get("ai-consent-manual").dispatchEvent(new document.defaultView.Event("change")); await tick(); }
-      else await get("ai-consent-manual").fire("change");
+    async chooseProcessing(value) {
+      const control = get("ai-automatic-processing");
+      control.value = value;
+      control.dispatchEvent(new document.defaultView.Event("change"));
+      await tick();
     },
     dispose: () => { component.dispose(); document.defaultView?.close(); },
     failWrites: value => { failWrite = value; },
@@ -209,480 +210,114 @@ test("Setup: a late initial account read cannot overwrite a successful save base
     assert.equal(f.config.loadConfig().model, "saved-during-initial-load");
     assert.equal(setup.run("formState(draft()) !== formState(savedBaseline)"), editAgain);
     assert.equal(setup.get("model").value, editAgain ? "newer-unsaved-model" : "saved-during-initial-load");
-    if (editAgain) { setup.get("ai-consent-connection").click(); await tick(); }
+    if (editAgain) await setup.get("save").onclick();
+    await tick();
     assert.equal(setup.run("formState(draft()) !== formState(savedBaseline)"), false);
-    assert.match(setup.get("ai-consent-destination").textContent, new RegExp(setup.get("model").value));
-    assert.equal(setup.get("ai-consent-manual").checked, false);
-    assert.equal(setup.get("ai-consent-allow").disabled, true);
-    setup.get("ai-consent-manual").click();
-    assert.equal(setup.get("ai-consent-allow").disabled, false);
+    assert.equal(setup.get("ai-automatic-processing").value, "manual");
+    assert.equal(setup.get("ai-automatic-processing").disabled, false);
     assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); f.assertNoModelCalls();
   }
 });
 
-test("Settings: repeatedly reopening a dirty draft reactivates review and saves without consent", async t => {
-  for (const [field, value] of [["ai-model", "draft-model"], ["ai-base", "https://draft.synthetic.invalid/v1"], ["ai-key", "synthetic-new-key"], ["ai-auth-mode", "chatgpt"]]) {
-    const f = await settingsLifecycle(t, { config: { chatgptModel: "fixture-chat" } });
-    f.get(field).value = value; f.ui.run("paintAiDirty()");
-    for (let repeat = 0; repeat < 2; repeat++) {
-      await f.checkManual(true);
-      f.get("ai-consent-background").checked = true;
-      f.close(); await f.open();
-      assert.equal(f.get(field).value, value, "reopen preserves the connection draft");
-      assert.equal(f.ui.run("aiDirty()"), true);
-      assert.equal(f.get("ai-consent-manual").disabled, false);
-      assert.equal(f.get("ai-consent-connection").disabled, false);
-      assert.equal(f.get("ai-consent-manual").checked, false);
-      assert.equal(f.get("ai-consent-background").checked, false);
-      assert.match(f.get("ai-consent-reason").textContent, /Unsaved.*Save.*review/);
-    }
-    await f.click("ai-consent-connection");
-    assert.equal(f.ui.run("aiDirty()"), false);
-    assert.equal(f.get("ai-consent-manual").disabled, false);
-    assert.equal(f.get("ai-consent-allow").disabled, true);
-    assert.equal(f.get("ai-consent-manual").checked, false);
-    await f.checkManual(true);
-    assert.equal(f.get("ai-consent-allow").disabled, false);
-    await f.checkManual(false);
-    assert.equal(f.get("ai-consent-background").checked, false);
-    await f.click("ai-consent-revoke");
-    assert.equal(f.consent.status().manual, false);
-    assert.equal(f.consent.status().background, false);
-    assert.equal(f.get("ai-consent-manual").disabled, false);
-    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); f.assertNoModelCalls();
+test("both preloads expose the automatic preference and reject unknown channels", async t => {
+  const f = await settingsLifecycle(t);
+  const setup = setupLifecycle(t, f);
+  await tick();
+  for (const get of [f.get, setup.get]) {
+    assert.equal(get("ai-automatic-processing").value, "manual");
+    assert.equal(get("ai-consent-manual"), null);
+    assert.equal(get("ai-consent-details"), null);
   }
-});
-
-test("Settings: closing and reopening during a pending read does not join or paint the old session", async t => {
-  const f = await settingsLifecycle(t), accountGate = deferred(), permissionGate = deferred();
-  f.get("ai-model").value = "draft-before-close"; f.ui.run("paintAiDirty()");
-  f.interceptReply.set("host:aiConsentStatus", () => permissionGate.promise);
-  const oldPermission = f.component.refreshConsent(); await tick();
-  f.interceptReply.delete("host:aiConsentStatus");
-  f.close();
-  f.interceptReply.set("host:chatgptStatus", () => accountGate.promise);
-  const oldOpen = f.open(); await tick();
-  f.close(); f.interceptReply.delete("host:chatgptStatus");
-  const newOpen = f.open(); await tick();
-  assert.equal(f.get("ai-consent-connection").disabled, false, "new session does not await the old account read");
-  assert.equal(f.get("settings-ai").querySelector(".fold-panel").inert, false);
-  await newOpen;
-  await f.click("ai-consent-connection");
-  await f.checkManual(true);
-  f.get("ai-consent-background").checked = true;
-  await f.click("ai-consent-revoke");
-  const destination = f.get("ai-consent-destination").textContent;
-  assert.match(destination, /draft-before-close/);
-  accountGate.resolve(); permissionGate.resolve(); await oldOpen; await oldPermission; await tick();
-  assert.equal(f.get("ai-consent-destination").textContent, destination);
-  assert.equal(f.get("ai-consent-manual").checked, false);
-  assert.equal(f.get("ai-consent-background").checked, false);
-  assert.equal(f.get("ai-consent-manual").disabled, false);
-  assert.equal(f.get("ai-consent-allow").disabled, true);
-  assert.equal(f.consent.status().manual, false);
-  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); f.assertNoModelCalls();
-});
-
-test("Settings: Cancel / revoke after reopening a dirty draft defeats an earlier pending Allow", async t => {
-  const f = await settingsLifecycle(t), gate = deferred();
-  await f.checkManual(true);
-  f.get("ai-consent-background").checked = true;
-  f.intercept.set("host:aiConsentGrant", () => gate.promise);
-  f.get("ai-consent-allow").click(); await tick();
-  assert.equal(f.get("ai-consent-allow").disabled, true);
-  f.get("ai-model").value = "draft-after-pending-allow"; f.ui.run("paintAiDirty()");
-  f.close(); await f.open();
-  await f.click("ai-consent-revoke");
-  assert.equal(f.consent.status().manual, false);
-  gate.resolve(); await tick();
-  assert.equal(f.consent.status().manual, false, "revocation invalidates the old grant token at the host");
-  assert.equal(f.consent.status().background, false);
-  assert.equal(f.get("ai-consent-manual").checked, false);
-  assert.equal(f.get("ai-consent-background").checked, false);
-  assert.match(f.get("ai-consent-reason").textContent, /Unsaved.*Save.*review/);
-  await f.click("ai-consent-connection");
-  assert.equal(f.config.loadConfig().model, "draft-after-pending-allow");
-  assert.equal(f.get("ai-consent-manual").disabled, false);
-  assert.equal(f.get("ai-consent-allow").disabled, true);
-  assert.equal(f.consent.status().manual, false); f.assertNoModelCalls();
-});
-
-test("actual preload and Settings read saved consent; affirmative manual and separate background choices reach validated host handlers", async () => {
-  const f = fixture(); await f.load();
-  assert.match(f.get("ai-consent-destination").textContent, /synthetic\.invalid.*fixture-model/);
-  assert.doesNotMatch(f.get("ai-consent-status").textContent, /Unsupported channel/);
-  assert.equal(f.consent.status().manual, false); assert.equal(f.writes, 0);
-  assert.equal(f.get("ai-consent-allow").disabled, true); assert.equal(f.get("ai-consent-background").disabled, true);
-  await f.get("ai-consent-allow").fire("click"); assert.equal(f.writes, 0);
-  await f.checkManual(true); assert.equal(f.get("ai-consent-allow").disabled, false);
-  assert.match(f.get("ai-consent-status").textContent, /make an explicit choice/);
-  assert.equal(f.get("ai-consent-allow").title || "", "");
-  await f.get("ai-consent-allow").fire("click");
-  assert.equal(f.consent.status().manual, true); assert.equal(f.consent.status().background, false);
-  assert.throws(() => f.consent.acquire(f.config.loadConfig(), { background: true }), /Background AI is off/);
-  assert.ok(f.gateCalls > 0); assert.match(f.get("ai-consent-status").textContent, /Explicit AI actions allowed.*Background AI off/);
-  const lease = f.consent.acquire(f.config.loadConfig());
-  await f.get("ai-consent-revoke").fire("click");
-  assert.equal(lease.signal.aborted, true); lease.release();
-  assert.equal(f.consent.status().manual, false); assert.equal(f.get("ai-consent-manual").checked, false);
-  await f.checkManual(true); f.get("ai-consent-background").checked = true;
-  await f.get("ai-consent-allow").fire("click"); assert.equal(f.consent.status().background, true);
-  await f.checkManual(false); assert.equal(f.get("ai-consent-background").checked, false);
-  f.assertNoModelCalls();
-});
-
-test("unready saved API/ChatGPT connections cannot enable Allow through the real bridge", async () => {
-  const cases = [
-    { config: { apiKey: "" }, status: /Save an API key, then review this connection again/ },
-    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { connected: false }, status: /Connect ChatGPT, then review this connection again/ },
-    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { planEnabled: false }, status: /Enable ChatGPT plan usage, then review this connection again/ },
-    { config: { authMode: "chatgpt", chatgptModel: "" }, status: /Save a ChatGPT model, then review this connection again/ },
-    { config: { authMode: "chatgpt", chatgptModel: "" }, account: { connected: false }, status: /Connect ChatGPT and save a ChatGPT model, then review this connection again/ },
-    { config: { authMode: "chatgpt", chatgptModel: "" }, account: { planEnabled: false }, status: /Enable ChatGPT plan usage and save a ChatGPT model, then review this connection again/ },
-  ];
-  for (const options of cases) {
-    const f = fixture(options); await f.load(); await f.checkManual(true);
-    f.get("ai-consent-background").checked = true;
-    assert.equal(f.consent.status().ready, false);
-    assert.match(f.consent.status().blocker, options.status);
-    assert.doesNotMatch(f.consent.status().blocker, /synthetic-not-real|fixture-account/);
-    assert.equal(f.get("ai-consent-allow").disabled, true);
-    assert.match(f.get("ai-consent-allow").title, options.status);
-    assert.match(f.get("ai-consent-status").textContent, new RegExp(`AI data use is off\\. ${options.status.source}`));
-    assert.doesNotMatch(f.get("ai-consent-status").textContent, /make an explicit choice/);
-    assert.match(f.get("ai-consent-reason").textContent, options.status);
-    await f.get("ai-consent-connection").fire("click");
-    assert.equal(f.calls.some(row => row.channel === "host:chatgptStart" || row.channel === "host:aiTest"), false, "review only focuses connection controls");
-    await f.get("ai-consent-allow").fire("click");
-    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); assert.equal(f.writes, 0);
-    const status = await f.bridge.invoke("host:aiConsentStatus");
-    await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: status.token, manual: true, background: false }), /permission changed/);
-    assert.equal(f.writes, 0); assert.equal(f.consent.status().manual, false);
-    assert.doesNotMatch(f.get("ai-consent-status").textContent, /Unsupported channel/); f.assertNoModelCalls();
-  }
-});
-
-test("connection validation and legacy-channel failures explain recovery and never approve a checked form", async () => {
-  const f = fixture(); await f.load();
-  f.get("ai-base").value = "file:///synthetic-invalid"; f.ui.run("paintAiDirty()");
-  await f.checkManual(true); await f.get("ai-consent-connection").fire("click"); await tick();
-  assert.equal(f.get("ai-consent-allow").disabled, true);
-  assert.equal(f.consent.status().manual, false);
-  assert.match(f.get("ai-status").textContent, /HTTP\(S\)/);
-  assert.match(f.get("ai-consent-reason").textContent, /Unsaved.*Save.*review/);
-  assert.equal(f.get("ai-base").value, "file:///synthetic-invalid");
-  f.get("ai-base").value = f.config.loadConfig().baseUrl; f.ui.run("paintAiDirty()");
-  f.intercept.set("host:aiConsentStatus", () => { throw Error("Unsupported channel"); });
-  await f.component.refreshConsent();
-  assert.match(f.get("ai-consent-reason").textContent, /Unsupported channel.*Update Morrow Mail/);
-  assert.equal(f.get("ai-consent-manual").checked, false);
-  f.intercept.delete("host:aiConsentStatus");
-  await f.get("ai-consent-connection").fire("click"); await tick();
-  assert.match(f.get("ai-consent-reason").textContent, /Select explicit AI actions/);
-  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); f.assertNoModelCalls();
-});
-
-test("an unsaved key explains the blocked Allow and Save & review repairs the saved prerequisite without granting consent", async () => {
-  const f = fixture({ config: { apiKey: "" } }); await f.load();
-  f.get("ai-key").value = "synthetic-new-key"; f.ui.run("paintAiDirty()");
-  await f.checkManual(true);
-  assert.equal(f.consent.status().ready, false, "typing a key does not save a connection");
-  assert.equal(f.get("ai-consent-allow").disabled, true);
-  assert.match(f.get("ai-consent-reason").textContent, /Save.*review/i);
-  await f.get("ai-consent-connection").fire("click"); await tick();
-  assert.equal(f.config.loadConfig().apiKey, "synthetic-new-key");
-  assert.equal(f.consent.status().ready, true);
-  assert.equal(f.consent.status().manual, false);
-  assert.equal(f.get("ai-consent-manual").checked, false, "saving needs a fresh affirmative choice");
-  await f.checkManual(true); assert.equal(f.get("ai-consent-allow").disabled, false);
-  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); f.assertNoModelCalls();
-});
-
-test("unsaved provider/model edits cannot approve the earlier saved target and delayed status blocks Allow until reviewed", async () => {
-  for (const field of ["ai-model", "ai-base"]) {
-    const f = fixture(); await f.load(); await f.checkManual(true);
-    f.get(field).value = field === "ai-model" ? "unsaved-model" : "https://unsaved.synthetic.invalid/v1";
-    f.ui.run("paintAiDirty()");
-    assert.equal(f.get("ai-consent-allow").disabled, true);
-    assert.equal(f.get("ai-consent-manual").checked, false);
-    await f.get("ai-consent-allow").fire("click");
-    assert.equal(f.consent.status().manual, false);
-    const gate = deferred(); f.intercept.set("host:aiConsentStatus", () => gate.promise);
-    await f.ui.run("saveAiSettings()"); await tick();
-    await f.checkManual(true);
-    assert.equal(f.get("ai-consent-allow").disabled, true, "old readiness cannot enable Allow during a fresh read");
-    gate.resolve(); await tick();
-    assert.equal(f.get("ai-consent-manual").checked, false);
-    f.assertNoModelCalls();
-  }
-});
-
-test("edits made while the initial permission read is pending stay unsaved after loading finishes", async () => {
-  const f = fixture(), gate = deferred();
-  f.intercept.set("host:aiConsentStatus", () => gate.promise);
-  const loading = f.load(); await tick();
-  f.get("ai-model").value = "edited-during-load"; f.ui.run("paintAiDirty()");
-  gate.resolve(); await loading;
-  assert.equal(f.config.loadConfig().model, "fixture-model");
-  assert.equal(f.get("ai-model").value, "edited-during-load");
-  assert.equal(f.ui.run("aiDirty()"), true);
-  await f.checkManual(true);
-  assert.equal(f.get("ai-consent-allow").disabled, true);
-  assert.match(f.get("ai-consent-reason").textContent, /Unsaved.*Save.*review/);
-  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false); f.assertNoModelCalls();
-});
-
-test("exposing the channels retains host token/manual/background validation and rejects unknown channels before IPC", async () => {
-  const f = fixture(); await f.load(); const status = await f.bridge.invoke("host:aiConsentStatus");
-  for (const input of [{ token: "stale", manual: true, background: false }, { token: status.token, manual: false, background: false },
-    { token: status.token, manual: true }, { token: status.token, manual: true, background: "yes" }]) {
-    await assert.rejects(f.bridge.invoke("host:aiConsentGrant", input), /permission changed|Affirmatively/);
-  }
-  assert.equal(f.writes, 0); assert.equal(f.consent.status().manual, false);
-  const count = f.calls.length;
-  for (const name of ["host:aiConsent", "host:aiConsentDelete", "host:aiConsentStatus:extra", "host:unknownConsent", "unknown:channel"]) {
-    await assert.rejects(f.bridge.invoke(name), /Unsupported channel/);
-  }
-  assert.equal(f.calls.length, count); f.assertNoModelCalls();
-});
-
-test("a destination/model changed in another window invalidates the old Settings checkbox/token until fresh review", async () => {
-  for (const change of [{ baseUrl: "https://second.synthetic.invalid/v1" }, { model: "new-fixture-model" }]) {
-    const f = fixture(); await f.load(); await f.checkManual(true);
-    f.config.saveConfig(change); // The real save/invalidation logic, memory-only.
-    await f.get("ai-consent-allow").fire("click");
-    assert.equal(f.consent.status().manual, false); assert.equal(f.get("ai-consent-manual").checked, false);
-    assert.match(f.get("ai-consent-status").textContent, /destination.*permission changed/);
-    assert.equal(f.get("ai-consent-allow").disabled, true);
-    await f.get("ai-consent-refresh").fire("click");
-    assert.equal(f.get("ai-consent-manual").checked, false);
-    await f.checkManual(true); await f.get("ai-consent-allow").fire("click");
-    assert.equal(f.consent.status().manual, true); assert.equal(f.consent.status().background, false); f.assertNoModelCalls();
-  }
-});
-
-test("Save AI through Settings refreshes the saved binding without approving the new model", async () => {
-  const f = fixture(); await f.load(); await f.checkManual(true); await f.get("ai-consent-allow").fire("click");
-  f.get("ai-model").value = "saved-new-model";
-  await f.ui.run("saveAiSettings()"); await tick();
-  assert.equal(f.config.loadConfig().model, "saved-new-model"); assert.equal(f.consent.status().manual, false);
-  assert.equal(f.get("ai-consent-manual").checked, false); assert.equal(f.get("ai-consent-allow").disabled, true);
-  assert.match(f.get("ai-consent-destination").textContent, /saved-new-model/); f.assertNoModelCalls();
-});
-
-test("status and persistence errors leave Settings unapproved; failed revoke still stops host use", async () => {
-  const f = fixture(); f.intercept.set("host:aiConsentStatus", () => { throw Error("Synthetic status failure"); });
-  await f.load(); await f.checkManual(true);
-  assert.match(f.get("ai-consent-status").textContent, /Synthetic status failure/); assert.equal(f.get("ai-consent-allow").disabled, true);
-  f.intercept.delete("host:aiConsentStatus"); await f.get("ai-consent-refresh").fire("click");
-  await f.checkManual(true); f.failWrites(true); await f.get("ai-consent-allow").fire("click");
-  assert.equal(f.consent.status().manual, false); assert.equal(f.get("ai-consent-manual").checked, false);
-  assert.match(f.get("ai-consent-status").textContent, /Synthetic persistence failure/);
-  f.failWrites(false); await f.get("ai-consent-refresh").fire("click"); await f.checkManual(true); await f.get("ai-consent-allow").fire("click");
-  const lease = f.consent.acquire(f.config.loadConfig()); f.failWrites(true); await f.get("ai-consent-revoke").fire("click");
-  assert.equal(lease.signal.aborted, true); lease.release(); assert.equal(f.consent.status().manual, false);
-  assert.equal(f.get("ai-consent-allow").disabled, true); f.assertNoModelCalls();
-});
-
-test("pending grant disables repeated clicks and defers review refresh; a changed model cannot win the pending grant", async () => {
-  for (const changeModel of [false, true]) {
-    const f = fixture(), gate = deferred(); await f.load(); await f.checkManual(true);
-    f.intercept.set("host:aiConsentGrant", () => gate.promise);
-    const pending = f.get("ai-consent-allow").fire("click"); await tick();
-    assert.equal(f.get("ai-consent-allow").disabled, true);
-    const reads = f.calls.filter(row => row.channel === "host:aiConsentStatus").length;
-    await f.get("ai-consent-allow").fire("click"); await f.component.refreshConsent();
-    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 1);
-    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentStatus").length, reads);
-    if (changeModel) f.config.saveConfig({ model: "changed-while-pending" });
-    gate.resolve(); await pending; await tick();
-    assert.equal(f.consent.status().manual, !changeModel);
-    assert.ok(f.calls.filter(row => row.channel === "host:aiConsentStatus").length > reads);
-    f.assertNoModelCalls();
-  }
-});
-
-test("the existing AI Setup preload still uses the same explicit consent handlers; closing Settings disables its controls", async () => {
-  const f = fixture(), setup = f.preload("host/setup-preload.js").aiSetup;
-  const status = await setup.consentStatus(); assert.equal(status.manual, false);
-  await setup.consentGrant({ token: status.token, manual: true, background: false });
-  assert.equal(f.consent.status().manual, true); await setup.consentRevoke(); assert.equal(f.consent.status().manual, false);
-  await f.load(); f.component.dispose(); assert.equal(f.get("ai-consent-allow").disabled, true);
-  await f.get("ai-consent-allow").fire("click"); assert.equal(f.consent.status().manual, false); f.assertNoModelCalls();
-});
-
-test("ready ChatGPT consent stays bound to its selected account and separately chosen background use", async () => {
-  const f = fixture({ config: { authMode: "chatgpt", chatgptModel: "fixture-chat" } }); await f.load();
-  await f.checkManual(true); await f.get("ai-consent-allow").fire("click");
-  assert.equal(f.consent.status().manual, true); assert.equal(f.consent.status().background, false);
-  assert.equal((await f.bridge.invoke("host:chatgptStatus")).backgroundConsent, false);
-  const lease = f.consent.acquire(f.config.loadConfig());
-  await f.bridge.invoke("host:chatgptSelect", "another-synthetic-account");
-  assert.equal(lease.signal.aborted, true); lease.release(); assert.equal(f.consent.status().manual, false);
-  await f.get("ai-consent-refresh").fire("click");
-  assert.equal(f.get("ai-consent-manual").checked, false); assert.equal(f.get("ai-consent-allow").disabled, true); f.assertNoModelCalls();
-});
-
-test("Features and Settings help render the same explicit consent prerequisites", async () => {
-  const f = fixture(); await f.load();
-  f.ui.context.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
-  f.ui.run("paintFeatureCatalog()");
-  assert.match(f.get("features-catalog").textContent, /Settings → AI and AI Setup support review, allow and revoke; Allow requires a ready saved connection and the explicit-action checkbox/);
-  assert.match(f.get("features-catalog").textContent, /If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step/);
-  assert.match(f.get("features-catalog").textContent, /Save & review connection saves without approving/);
-  assert.match(f.get("features-catalog").textContent, /Reopening Settings preserves unsaved connection edits and clearly shows saved permission choices/);
-  assert.match(f.get("features-catalog").textContent, /Manage permissions shows the saved status.*Timeline, Case and background choices are under Optional access/);
-  f.assertNoModelCalls();
-});
-
-test("Settings keeps permission controls collapsed until review, with optional scopes separately disclosed", async t => {
-  const f = fixture({ useDom: true }); t.after(f.dispose); await f.load();
-  const get = f.get, review = get("ai-consent-edit"), optional = get("ai-consent-optional");
-  assert.equal(review.open, false);
-  assert.equal(optional.open, false);
-  assert.match(get("ai-consent-summary").textContent, /AI data use off/);
-  assert.ok(review.contains(get("ai-consent-manual")));
-  assert.equal(optional.contains(get("ai-consent-manual")), false);
-  for (const name of ["timeline", "case", "background"]) {
-    assert.ok(optional.contains(get("ai-consent-" + name)));
-    assert.equal(get("ai-consent-" + name).checked, false);
-  }
-  assert.ok(review.contains(get("ai-consent-allow")));
-  assert.ok(review.contains(get("ai-consent-revoke")));
-  review.open = true; await f.checkManual(true);
-  assert.equal(optional.open, false);
-  get("ai-consent-allow").click(); await tick();
-  assert.equal(f.consent.status().manual, true);
-  assert.equal(f.consent.status().scopes.timeline, false);
-  assert.equal(f.consent.status().scopes.case, false);
-  assert.equal(f.consent.status().background, false);
-  assert.match(get("ai-consent-summary").textContent, /AI actions allowed/);
-  f.component.dispose();
-  assert.equal(review.open, false);
-  assert.equal(optional.open, false);
-  await f.component.resume();
-  assert.equal(review.open, false);
-  assert.equal(get("ai-consent-manual").checked, true);
-  assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 1);
-  f.assertNoModelCalls();
-});
-
-test("Settings and Setup keep material disclosure outside the details dialog, after connection controls, with accessible checkbox descriptions", async () => {
-  const { JSDOM } = require("jsdom");
-  for (const filename of ["renderer/index.html", "host/ai-setup.html"]) {
-    const dom = new JSDOM(source(filename), { runScripts: "outside-only" });
-    const f = fixture(), document = dom.window.document;
-    dom.window.eval(source("renderer/chatgpt-settings.js"));
-    const component = dom.window.morrowChatgptSettings.mount({ container: document.getElementById("ai-account-settings"),
-      consentContainer: document.getElementById("ai-data-settings"), compact: filename.startsWith("renderer"), invoke: f.bridge.invoke });
-    if (filename.startsWith("renderer")) {
-      document.getElementById("ai-consent-edit").open = true;
-      document.getElementById("ai-consent-optional").open = true;
-    }
-    await component.load(f.config.publicConfig());
-    const get = id => document.getElementById(id), permission = f.consent.status();
-    assert.ok(get(filename.startsWith("host") ? "save" : "ai-save").compareDocumentPosition(get("ai-consent-title")) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
-    for (const id of ["ai-consent-destination", "ai-consent-locality", "ai-consent-data", "ai-consent-purposes", "ai-consent-background-data", "ai-consent-terms", "ai-consent-revocation"]) {
-      assert.notEqual(get(id).closest("dialog")?.id, "ai-consent-details", id + " must stay visible before consent");
-      assert.ok(get(id).textContent.length, id + " must contain material disclosure");
-    }
-    assert.equal(get("ai-consent-data").textContent, permission.dataSummary);
-    assert.equal(get("ai-consent-full-data").textContent, permission.disclosure);
-    assert.equal(get("ai-consent-full-purposes").textContent, permission.purposes);
-    assert.equal(get("ai-consent-full-background").textContent, permission.backgroundDisclosure);
-    for (const category of ["sender addresses", "subjects", "dates", "snippets", "metadata", "selected message text", "quoted history", "drafts", "signatures", "selections", "instructions", "Brain profile", "identity", "categories", "writing rules", "Agent notes", "recent conversation", "event titles", "times", "locations", "Attachment files are excluded"]) {
-      assert.ok(get("ai-consent-data").textContent.includes(category), category + " must stay in the visible data summary");
-    }
-    for (const purpose of ["translation", "reply suggestions", "writing", "profile learning", "triage", "skills", "answers"]) assert.ok(get("ai-consent-purposes").textContent.includes(purpose));
-    for (const task of ["profile refresh", "opening Brain", "triage", "reply suggestions", "scheduled skills", "without another AI button press"]) assert.ok(get("ai-consent-background-data").textContent.includes(task));
-    assert.equal(get("ai-consent-full-data").closest("dialog").open, false);
-    for (const id of ["ai-consent-manual", "ai-consent-background", "ai-consent-allow"]) {
-      const control = get(id);
-      for (const description of control.getAttribute("aria-describedby").split(" ")) assert.ok(get(description));
-      if (control.type === "checkbox") { assert.equal(control.checked, false); assert.equal(control.labels.length, 1); }
-    }
-    assert.match(get("ai-data-settings").textContent, /already delivered cannot be recalled/);
-    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
-    f.assertNoModelCalls(); component.dispose(); dom.window.close();
-  }
-});
-
-test("verified v2 consent preserves unchanged manual/background uses while expanded Timeline and Case remain off", async t => {
-  const f = fixture({ useDom: true }); t.after(f.dispose);
-  const cfg = f.config.loadConfig();
-  const legacy = { id: "legacy-v2-grant", version: 2, manual: true, background: true,
-    fingerprint: require("node:crypto").createHash("sha256").update(JSON.stringify([2, cfg.authMode, `${cfg.baseUrl}/chat/completions`, cfg.model, "", cfg.apiKey])).digest("hex") };
-  f.seedConsent(legacy);
-  await f.load();
-  const review = f.consent.status();
-  assert.equal(review.version, 4); assert.equal(review.manual, true); assert.equal(review.background, true);
-  assert.equal(review.scopes.timeline, false); assert.equal(review.scopes.case, false);
-  for (const id of ["ai-consent-data", "ai-consent-full-data"]) {
-    assert.match(f.get(id).textContent, /sender names and addresses, mail timestamps and date provenance/);
-    assert.match(f.get(id).textContent, /optional keywords and contact emails/);
-  }
-  assert.equal(f.get("ai-consent-manual").checked, true);
-  assert.equal(f.get("ai-consent-background").checked, true);
-  assert.equal(f.get("ai-consent-timeline").checked, false);
-  assert.equal(f.get("ai-consent-case").checked, false);
   assert.equal(f.writes, 0);
-  assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
-  await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: review.token, manual: false, background: false }), /Affirmatively/);
-  await f.checkManual(true);
-  f.get("ai-consent-background").checked = false;
-  f.get("ai-consent-timeline").click();
-  f.get("ai-consent-case").click();
-  f.get("ai-consent-allow").click(); await tick();
-  assert.equal(f.consent.status().manual, true);
+  const token = f.consent.stamp();
+  await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token, background: false }));
+  await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: "stale", background: true }));
+  const total = f.calls.length;
+  await assert.rejects(f.bridge.invoke("host:fakeGrant"), /Unsupported channel/);
+  assert.equal(f.calls.length, total);
+  await f.chooseProcessing("automatic");
+  assert.equal(f.consent.status().background, true);
+  assert.deepEqual(Object.keys(f.calls.find(row => row.channel === "host:aiConsentGrant" && row.input.background === true && row.input.token === token).input).sort(), ["background", "token"]);
+  await f.chooseProcessing("manual");
   assert.equal(f.consent.status().background, false);
-  const grant = f.calls.find(row => row.channel === "host:aiConsentGrant" && row.input.manual === true);
-  assert.equal(grant.input.background, false);
   f.assertNoModelCalls();
 });
 
-test('saved permission checkboxes survive Settings reopen; adding Case requires its own affirmative choice', async t => {
-  const f = fixture({ useDom: true }); t.after(f.dispose);
-  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core', 'timeline'] });
-  await f.load();
-  assert.equal(f.get('ai-consent-manual').checked, true);
-  assert.equal(f.get('ai-consent-timeline').checked, true);
-  assert.equal(f.get('ai-consent-case').checked, false);
-  assert.match(f.get('ai-consent-status').textContent, /Saved permission:.*Thread Timeline allowed.*Case needs approval/);
+test("Settings preserves newer edits and retires pending reads when reopened", async t => {
+  for (const [field, value] of [["ai-model", "draft-model"], ["ai-base", "https://draft.synthetic.invalid/v1"],
+    ["ai-key", "synthetic-key"], ["ai-auth-mode", "chatgpt"]]) {
+    const f = await settingsLifecycle(t, { config: { chatgptModel: "fixture-chat" } });
+    f.get(field).value = value;
+    f.ui.run("paintAiDirty()");
+    const gate = deferred();
+    f.interceptReply.set("host:aiConsentStatus", () => gate.promise);
+    const reading = f.component.refreshConsent();
+    await tick();
+    f.interceptReply.delete("host:aiConsentStatus");
+    f.close(); await f.open();
+    gate.resolve(); await reading;
+    assert.equal(f.get(field).value, value);
+    assert.equal(f.ui.run("aiDirty()"), true);
+    assert.equal(f.get("ai-automatic-processing").disabled, true);
+    await f.ui.run("saveAiSettings()"); await tick();
+    assert.equal(f.ui.run("aiDirty()"), false);
+    assert.equal(f.get("ai-automatic-processing").disabled, false);
+    assert.equal(f.get("ai-automatic-processing").value, "manual");
+    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
+    f.assertNoModelCalls();
+  }
+});
+
+test("unready targets and an obsolete pending grant fail closed", async t => {
+  for (const initial of [{ config: { apiKey: "" } },
+    { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" }, account: { planEnabled: false } }]) {
+    const f = await settingsLifecycle(t, initial);
+    assert.equal(f.get("ai-automatic-processing").disabled, true);
+    assert.ok(f.get("ai-automatic-status").textContent);
+    await assert.rejects(f.bridge.invoke("host:aiConsentGrant", { token: f.consent.stamp(), background: true }));
+    assert.equal(f.writes, 0);
+  }
+  const f = await settingsLifecycle(t), gate = deferred();
+  f.intercept.set("host:aiConsentGrant", () => gate.promise);
+  await f.chooseProcessing("automatic");
+  assert.equal(f.get("ai-automatic-processing").disabled, true);
+  f.get("ai-model").value = "changed-while-enabling";
+  await f.ui.run("saveAiSettings()");
+  gate.resolve(); await tick(); await tick();
+  assert.equal(f.config.loadConfig().model, "changed-while-enabling");
+  assert.equal(f.consent.status().background, false);
+  assert.equal(f.get("ai-automatic-processing").value, "manual");
+  f.assertNoModelCalls();
+});
+
+test("persistence failure cannot leave the automatic lease active", async t => {
+  const f = await settingsLifecycle(t);
+  await f.chooseProcessing("automatic");
+  const lease = f.consent.acquire(f.config.loadConfig(), { stamp: f.consent.stamp(), background: true });
+  f.failWrites(true);
+  await f.chooseProcessing("manual");
+  assert.equal(f.consent.status().background, false);
+  assert.equal(lease.signal.aborted, true);
+  assert.match(f.get("ai-automatic-status").textContent, /persistence failure/);
+  lease.release();
+  f.assertNoModelCalls();
+});
+
+test("selecting the active ChatGPT account preserves background settings and a live lease", async t => {
+  const f = await settingsLifecycle(t, { config: { authMode: "chatgpt", chatgptModel: "fixture-chat" } });
+  await f.chooseProcessing("automatic");
+  const lease = f.consent.acquire(f.config.loadConfig(), { stamp: f.consent.stamp(), background: true });
   const before = f.writes;
-  await f.component.refreshConsent();
-  assert.equal(f.writes, before); assert.equal(f.consent.status().scopes.case, false);
-  f.get('ai-consent-case').click();
-  assert.equal(f.consent.status().scopes.case, false, 'a checkbox does not persist permission');
-  f.get('ai-consent-allow').click(); await tick();
-  assert.equal(f.consent.status().scopes.case, true);
-  assert.equal(f.get('ai-consent-manual').checked, true);
-  assert.equal(f.get('ai-consent-case').checked, true);
-  await f.bridge.invoke('host:aiConsentRevoke'); await f.component.refreshConsent();
-  assert.equal(f.get('ai-consent-manual').checked, false);
-  assert.equal(f.get('ai-consent-timeline').checked, false);
-  assert.equal(f.get('ai-consent-case').checked, false);
+  f.get("chatgpt-account").value = "fixture-account";
+  await f.click("chatgpt-select");
+  assert.equal(f.component.draft().chatgptModel, "fixture-chat");
+  assert.equal(f.ui.run("aiDirty()"), false);
+  assert.equal(f.get("ai-automatic-processing").value, "automatic");
+  assert.equal(f.writes, before);
+  lease.check();
+  await f.bridge.invoke("host:chatgptSelect", "different-account");
+  assert.equal(lease.signal.aborted, true);
+  assert.equal(f.consent.status().background, false);
+  lease.release();
   f.assertNoModelCalls();
-});
-
-test('selecting the active ChatGPT account keeps saved permission and an active lease', async () => {
-  const f = fixture({ config: { authMode: 'chatgpt', chatgptModel: 'fixture-chat' } });
-  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
-  const lease = f.consent.acquire(f.config.loadConfig());
-  await f.bridge.invoke('host:chatgptSelect', 'fixture-account');
-  assert.equal(f.consent.status().manual, true); assert.equal(lease.signal.aborted, false); lease.check(); lease.release();
-  f.assertNoModelCalls();
-});
-
-test('actual Settings Select click preserves the saved model, clean draft and permission for the active account', async t => {
-  const f = fixture({ useDom: true, config: { authMode: 'chatgpt', chatgptModel: 'fixture-chat' } }); t.after(f.dispose);
-  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
-  await f.load();
-  const lease = f.consent.acquire(f.config.loadConfig()), before = f.writes;
-  assert.equal(f.ui.run('aiDirty()'), false);
-  f.get('chatgpt-account').value = 'fixture-account'; f.get('chatgpt-select').click(); await tick(); await tick();
-  assert.equal(f.component.draft().chatgptModel, 'fixture-chat');
-  assert.equal(f.ui.run('aiDirty()'), false);
-  assert.equal(f.get('ai-consent-manual').checked, true);
-  assert.equal(f.consent.status().manual, true); assert.equal(f.writes, before);
-  assert.equal(lease.signal.aborted, false); lease.check(); lease.release(); f.assertNoModelCalls();
 });

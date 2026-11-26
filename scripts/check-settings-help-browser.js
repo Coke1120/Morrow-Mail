@@ -64,50 +64,22 @@ async function run() {
     await help.click(); await page.locator('#brain-compose-from-help button').click();
     assert.equal(await page.locator('#brain-compose-from-help').evaluate(node => node.matches(':popover-open')), false);
     await page.locator('#settings-tab-ai').click();
-    const review = page.locator('#ai-consent-edit > summary'), optional = page.locator('#ai-consent-optional > summary');
-    const opener = page.locator('#ai-consent-details-open'), modal = page.locator('#ai-consent-details');
+    const automatic = page.locator('#ai-automatic-processing');
     for (const theme of ['light', 'dark']) {
       await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 900 });
-        assert.equal(await page.locator('#settings-ai input[type=checkbox]:visible').count(), 1, 'only the Writing preference is visible');
-        await page.screenshot({ path: path.join(output, `consent-${theme}-${width}.png`) });
-        await review.focus(); await page.keyboard.press('Enter');
-        assert.equal(await page.locator('#ai-data-settings input[type=checkbox]:visible').count(), 1, 'only core consent is visible during first review');
-        assert.equal(await page.locator('#ai-consent-data').isVisible(), true);
-        await optional.click();
-        assert.equal(await page.locator('#ai-data-settings input[type=checkbox]:visible').count(), 4);
-        await optional.click();
-        await opener.focus(); await page.keyboard.press('Enter');
-        assert.equal(await modal.evaluate(node => node.open), true);
-        assert.equal(await page.locator('#ai-consent-details-close').evaluate(node => node === document.activeElement), true);
-        for (let i = 0; i < 6; i++) {
-          await page.keyboard.press('Tab');
-          assert.equal(await modal.evaluate(node => node.contains(document.activeElement)), true, 'focus stays in details');
-        }
-        const bounds = await modal.boundingBox(); assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
-        assert.equal(await modal.evaluate(node => node.scrollWidth <= node.clientWidth), true);
-        await page.screenshot({ path: path.join(output, `privacy-${theme}-${width}.png`) });
-        await page.keyboard.press('Escape');
-        assert.equal(await modal.evaluate(node => node.open), false);
-        assert.equal(await opener.evaluate(node => node === document.activeElement), true);
-        assert.equal(await page.locator('#settings').evaluate(node => node.open), true);
-        await opener.click(); await page.locator('#ai-consent-details-close').click();
-        assert.equal(await opener.evaluate(node => node === document.activeElement), true);
-        assert.equal(await page.locator('#ai-consent-manual').isChecked(), false);
-        assert.equal(await page.locator('#ai-consent-background').isChecked(), false);
-        assert.equal(await page.locator('#ai-consent-allow').isDisabled(), true);
-        await review.click();
+        assert.equal(await page.locator('#settings-ai input[type=checkbox]').count(), 0);
+        assert.equal(await page.locator('#ai-consent-details').count(), 0);
+        assert.equal(await automatic.inputValue(), 'manual');
+        await automatic.focus();
+        assert.equal(await automatic.evaluate(node => node === document.activeElement), true);
+        const bounds = await automatic.boundingBox(); assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
+        await page.screenshot({ path: path.join(output, `ai-settings-${theme}-${width}.png`) });
       }
     }
-    await review.click();
-    await page.locator('#ai-consent-manual').check();
-    await opener.click(); await page.locator('#ai-consent-details-close').click();
-    assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);
-    assert.equal(await page.locator('#ai-consent-background').isChecked(), false);
     assert.equal(await page.evaluate(() => requests.some(row => /host:aiConsent(Grant|Revoke)|host:aiComplete/.test(row.channel))), false);
-    await opener.click(); await page.evaluate(() => testConsent.dispose());
-    assert.equal(await modal.evaluate(node => node.open), false);
+    await page.evaluate(() => testConsent.dispose());
     await page.locator('#settings-tab-compose').click();
     await help.click();
     assert.equal(await page.locator('#brain-compose-from-help').evaluate(node => node.scrollWidth <= node.clientWidth), true);
@@ -126,13 +98,9 @@ async function run() {
       }, { get(target, key) { return target[key] || (() => { throw Error('Unexpected Setup action: ' + key); }); } });
     }, { permission });
     await setup.goto(`http://127.0.0.1:${server.address().port}/host/ai-setup.html`);
-    await setup.locator('#ai-consent-details-open').click();
-    assert.equal(await setup.locator('#ai-consent-details').evaluate(node => node.open), true);
-    await setup.screenshot({ path: path.join(output, 'setup-privacy-narrow.png') });
-    await setup.keyboard.press('Escape');
-    assert.equal(await setup.locator('#ai-consent-details-open').evaluate(node => node === document.activeElement), true);
-    assert.equal(await setup.locator('#ai-consent-manual').isChecked(), false);
-    assert.equal(await setup.locator('#ai-consent-background').isChecked(), false);
+    assert.equal(await setup.locator('input[type=checkbox], #ai-consent-details').count(), 0);
+    assert.equal(await setup.locator('#ai-automatic-processing').inputValue(), 'manual');
+    await setup.screenshot({ path: path.join(output, 'setup-ai-settings-narrow.png') });
     assert.deepEqual(errors, []);
     await setup.close();
     console.log('settings-help-browser-ok', output);

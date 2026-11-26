@@ -146,86 +146,40 @@ test("Settings: fetched API choices retire on endpoint/key edits and a save that
 });
 
 for (const kind of ["settings", "setup"]) {
-  test(`${kind}: unsaved connection edits, saves and fresh permission reads require a new review`, async () => {
-    const f = await fixture(kind);
-    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
-    assert.equal(f.$("ai-consent-allow").disabled, false);
+  test(`${kind}: unsaved settings and pending reads cannot enable automatic processing`, async () => {
+    const f = await fixture(kind), processing = f.$("ai-automatic-processing");
+    assert.equal(processing.disabled, false);
     await f.edit("model", "new-synthetic-model");
-    assert.equal(f.$("ai-consent-manual").checked, false);
-    assert.equal(f.$("ai-consent-allow").disabled, true);
-    assert.match(f.$("ai-consent-reason").textContent, /Unsaved.*Save.*review/);
-    const read = f.wait("host:aiConsentStatus");
-    await f.$("ai-consent-connection").fire("click"); await tick();
+    assert.equal(processing.disabled, true);
+    const read = f.wait("host:aiConsentStatus"), saving = f.save();
+    await tick();
+    assert.equal(processing.disabled, true);
+    read.resolve({ ready: true, token: "new-target", background: false });
+    await saving; await tick();
     assert.equal(f.config.model, "new-synthetic-model");
-    assert.equal(f.$("ai-consent-allow").disabled, true, "earlier readiness cannot authorize the new saved configuration");
-    assert.match(f.$("ai-consent-reason").textContent, /Reading saved connection/);
-    read.resolve({ ready: true, token: "new-synthetic-target", model: "new-synthetic-model", manual: false, background: false }); await tick();
-    assert.equal(f.$("ai-consent-manual").checked, false);
-    assert.equal(f.$("ai-consent-allow").disabled, true);
-    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
-    assert.equal(f.$("ai-consent-allow").disabled, false);
-    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant" || row.channel === "host:aiTest"), false);
-    await f.edit("base", "https://unsaved.synthetic.invalid/v1");
-    const save = f.wait("host:aiSaveConfig"), saving = f.save();
-    assert.equal(f.$("ai-consent-manual").disabled, true);
-    assert.match(f.$("ai-consent-reason").textContent, /Saving connection/);
-    save.reject(Error("Synthetic validation failure")); await saving;
-    assert.equal(f.dirty(), true);
-    assert.equal(f.$("ai-consent-allow").disabled, true);
-    assert.match(f.statusText, /Synthetic validation failure/);
+    assert.equal(processing.value, "manual");
+    assert.equal(processing.disabled, false);
+    assert.equal(f.calls.some(row => row.channel === "host:aiConsentGrant"), false);
     f.close();
   });
 
-  test(`${kind}: revoke supersedes a pending permission read and reopen ignores an old load`, async () => {
-    const f = await fixture(kind);
-    const read = f.wait("host:aiConsentStatus"), reading = f.settings().refreshConsent();
-    assert.equal(f.$("ai-consent-allow").disabled, true);
-    await f.$("ai-consent-revoke").fire("click");
-    const afterRevoke = f.$("ai-consent-status").textContent;
-    read.resolve({ ready: true, manual: true, background: true, token: "stale-read" }); await reading;
-    assert.equal(f.$("ai-consent-status").textContent, afterRevoke);
-    assert.equal(f.$("ai-consent-background").checked, false);
+  test(`${kind}: obsolete automatic-processing replies cannot paint a reopened form`, async () => {
+    const f = await fixture(kind), processing = f.$("ai-automatic-processing");
     const old = f.wait("host:aiConsentStatus"), loading = f.settings().load(f.config);
     await tick(); f.settings().dispose();
-    f.setPermission({ token: "reopened-target", label: "Reopened synthetic connection" });
     await f.settings().load(f.config);
-    old.resolve({ ready: true, manual: true, background: true, token: "closed-read" }); await loading;
-    assert.match(f.$("ai-consent-destination").textContent, /Reopened synthetic connection/);
-    assert.equal(f.$("ai-consent-manual").checked, false);
-    assert.equal(f.$("ai-consent-allow").disabled, true);
+    old.resolve({ ready: true, token: "closed-read", background: true }); await loading;
+    assert.equal(processing.value, "manual");
+    const grant = f.wait("host:aiConsentGrant");
+    processing.value = "automatic";
+    const pending = processing.fire("change");
+    await processing.fire("change");
+    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 1);
     f.close();
-  });
-
-  test(`${kind}: data consent is affirmative, background is separate, revoke wins over late grants and reads`, async () => {
-    const f = await fixture(kind);
-    assert.equal(f.$("ai-consent-manual").checked, false);
-    assert.equal(f.$("ai-consent-background").checked, false);
-    assert.equal(f.$("ai-consent-allow").disabled, true);
-    await f.save();
-    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 0, "save/key entry is not consent");
-    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
-    await f.$("ai-consent-allow").fire("click");
-    assert.equal(f.calls.find(row => row.channel === "host:aiConsentGrant").input.background, false);
-    assert.match(f.$("ai-consent-status").textContent, /Background AI off/);
-    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
-    f.$("ai-consent-background").checked = true;
-    const grant = f.wait("host:aiConsentGrant"), allowing = f.$("ai-consent-allow").fire("click");
-    await f.$("ai-consent-allow").fire("click");
-    assert.equal(f.calls.filter(row => row.channel === "host:aiConsentGrant").length, 2, "duplicate grants are serialized");
-    await f.$("ai-consent-revoke").fire("click");
-    grant.resolve({ ready: true, manual: true, background: true, token: "obsolete-grant" }); await allowing;
-    assert.match(f.$("ai-consent-status").textContent, /AI data use is off/);
-    assert.equal(f.$("ai-consent-manual").checked, false);
-    const read = f.wait("host:aiConsentStatus"), reading = f.settings().refreshConsent();
-    f.setPermission({ token: "new-provider", label: "New synthetic provider" });
-    await f.settings().refreshConsent();
-    read.resolve({ ready: true, token: "old-provider", label: "Old provider" }); await reading;
-    assert.match(f.$("ai-consent-destination").textContent, /New synthetic provider/);
-    f.$("ai-consent-manual").checked = true; await f.$("ai-consent-manual").fire("change");
-    const closing = f.wait("host:aiConsentGrant"), pending = f.$("ai-consent-allow").fire("click");
-    f.close(); const before = f.$("ai-consent-status").textContent;
-    closing.resolve({ ready: true, manual: true, token: "closed-success" }); await pending;
-    assert.equal(f.$("ai-consent-status").textContent, before);
+    grant.resolve({ ready: true, background: true, token: "late" });
+    await pending;
+    assert.equal(processing.disabled, true);
+    assert.equal(processing.value, "manual");
   });
 
   test(`${kind}: save keeps later mode, endpoint, model and key edits dirty; repeated save is serialized`, async () => {
@@ -390,7 +344,7 @@ test("shared login: cancel permits immediate retry and ignores old success/failu
     second.resolve({ ...initialStatus(), pending: true, phase: "waiting", message: "New attempt waiting" });
     await recent;
     assert.equal(f.$("chatgpt-status").textContent, "New attempt waiting");
-    assert.equal(f.$("chatgpt-welcome").hidden, true);
+    assert.equal(f.$("chatgpt-welcome"), null);
     f.close();
   }
 });
@@ -415,7 +369,7 @@ test("shared login: failed cancellation remains retryable; disposal prevents lat
   start.reject(new Error("Old failure"));
   await pending; await old;
   assert.equal(f.$("chatgpt-status").textContent, before);
-  assert.equal(f.$("chatgpt-welcome").hidden, true);
+  assert.equal(f.$("chatgpt-welcome"), null);
 });
 
 test("host discovery: cancel aborts the old wait; retry and late success/failure stay separate", async () => {

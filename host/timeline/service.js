@@ -76,6 +76,8 @@ function createService(dependencies) {
     // Re-preparing edited focus must not silently switch account incarnations.
     const previous = input.manifestToken !== undefined ? manifest(owner, token(input.manifestToken)) : null;
     selectionInput(input.selection); optionsInput(input.options);
+    const status = consent.status();
+    if (previous && previous.consentToken !== status.token) throw failure("ai-consent-required");
     // A Case search context proves the opened message/account without capturing
     // its whole thread or treating any body as reviewed generation input.
     if (input.contextOnly !== undefined && (input.contextOnly !== true || input.manifestToken !== undefined
@@ -99,7 +101,6 @@ function createService(dependencies) {
     // capture can also retain its proof while focus exceeds a planning limit.
     for (const [id, entry] of manifests) if (entry.owner === owner || entry.expires < now()) manifests.delete(id);
     if (manifests.size >= 8) throw failure("timeline-busy");
-    const status = consent.status();
     const id = crypto.randomUUID();
     const entry = { owner, snapshot, contextOnly: input.contextOnly === true, options: { ...input.options, ...(input.options.contactEmails ? { contactEmails: [...input.options.contactEmails] } : {}) }, expires: now() + 300000, consentToken: status.token, closed, blocked, consumed: false };
     entry.rootAccountId = previous?.rootAccountId || (snapshot.accounts.length === 1 ? snapshot.accounts[0].id : null);
@@ -117,7 +118,7 @@ function createService(dependencies) {
         messages: snapshot.sources.map(source => ({ subject: source.subject, from: source.from,
           occurredAt: source.occurred_at, bodyBytes: Buffer.byteLength(source.text) })) },
       ...(blocked ? { budget: blocked } : {}),
-      limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.scopes?.[entry.options.mode === "case" ? "case" : "timeline"] === true,
+      limits: LIMITS, destination: status.destination, provider: status.label, model: status.model, allowed: status.ready === true,
       locality: status.locality, providerTerms: status.providerTerms };
   }
   function cancel(owner, id) {
@@ -160,7 +161,7 @@ function createService(dependencies) {
           display_timezone: entry.options.displayTimezone, time_basis: "mail_timestamp", coverage: entry.snapshot.coverage, source_threads: entry.snapshot.sourceThreads,
           ...(entry.snapshot.caseScope ? { case_scope: entry.snapshot.caseScope } : {}),
         }, language: entry.options.language, focus: { keywords: entry.options.keywords || "", contact_emails: entry.options.contactEmails || [] }, signal: lease.signal, check,
-        complete: (messages, options) => complete(messages, { ...options, config: config(), background: false, consentScope: entry.options.mode === "case" ? "case" : "timeline" }),
+        complete: (messages, options) => complete(messages, { ...options, config: config(), background: false, consentStamp: entry.consentToken, consentScope: entry.options.mode === "case" ? "case" : "timeline" }),
         progress: value => { calls = value.calls; send(value); } });
         check();
         db.timeline.save(result.document, entry.snapshot.records, { digest: entry.snapshot.digest, promptVersion: PROMPT_VERSION, usage: result.usage });

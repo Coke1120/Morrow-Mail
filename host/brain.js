@@ -372,7 +372,7 @@ function startPersonaJob(mode, automatic, queued = false) {
       const lease = require("./ai-consent").getConsent().acquire(cfg, { background: true, stamp: context.stamp() });
       try { lease.check(); } finally { lease.release(); }
       if (cfg.authMode === "chatgpt" && !require("./chatgpt-auth").getAuth().backgroundAllowed()) {
-        throw new Error("ChatGPT background AI is off. Review background permission in Settings → AI.");
+        throw new Error("ChatGPT background AI is off. Check Automatic processing in Settings → AI.");
       }
       // Persist before model work. Failure/crash/restart waits a full cadence;
       // an explicit Refresh can retry immediately. Failed writes send no data.
