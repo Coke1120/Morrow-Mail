@@ -296,7 +296,22 @@ function domNode(tag) {
       this.children.push(child);
       return child;
     },
-    replaceChildren() { this.children = []; },
+    replaceChildren() {
+      for (const child of this.children) child.parentNode = null;
+      this.children = [];
+    },
+    get isConnected() { return this.parentNode ? this.parentNode.isConnected : this.connected === true; },
+    contains(target) {
+      for (let node = target; node; node = node.parentNode) if (node === this) return true;
+      return false;
+    },
+    closest(selector) {
+      const choices = selector.split(', ');
+      for (let node = this; node; node = node.parentNode) {
+        if (choices.some(choice => choice === node.tag || nodeMatches(node, choice))) return node;
+      }
+      return null;
+    },
     addEventListener(type, fn) {
       if (!this.listeners) this.listeners = {};
       if (!this.listeners[type]) this.listeners[type] = [];
@@ -372,6 +387,8 @@ function readerText(node) {
 function loadReader(role) {
   const nodes = new Map();
   const reader = domNode('section');
+  reader.id = 'reader';
+  reader.connected = true;
   const status = domNode('p');
   nodes.set('reader', reader);
   nodes.set('status', status);
@@ -406,6 +423,7 @@ function loadReader(role) {
     `globalThis.__readerApi = {
       get state() { return state; },
       openMessage,
+      onReaderContext,
       renderReader,
       showReaderOpenError,
       applyBodyUpdate,
@@ -766,6 +784,7 @@ async function assertReaderWindowMatchesShellActions() {
   };
   const ui = loadReader('reader');
   ui.context.vmRun = (code) => vm.runInContext(code, ui.context);
+  ui.state.accounts[0].bodyEpoch = email.bodyEpoch;
   ui.state.prefs.snooze = true;
   ui.state.thread = rows;
   ui.state.email = email;
@@ -774,7 +793,7 @@ async function assertReaderWindowMatchesShellActions() {
   assertReaderDateOnFromRow(ui.reader, /Sender r3/);
   const shown = readerText(ui.reader);
   assert.deepEqual(actionNames(ui.reader), [
-    'reply', 'reply-all', 'suggest', 'forward', 'summary', 'timeline', 'copy-local-message-link',
+    'reply', 'reply-all', 'suggest', 'forward', 'summary', 'timeline',
     'star', 'translate', 'translate-cancel',
     'archive', 'trash', 'move', 'organize', 'snooze', 'close-reader',
   ]);
@@ -824,6 +843,7 @@ async function assertReaderWindowMatchesShellActions() {
 
   const shell = loadReader();
   shell.state.prefs.snooze = true;
+  shell.state.accounts[0].bodyEpoch = email.bodyEpoch;
   shell.state.thread = rows;
   shell.state.email = email;
   shell.state.snoozed = ui.state.snoozed;
@@ -834,14 +854,36 @@ async function assertReaderWindowMatchesShellActions() {
   assert.match(readerText(shell.reader), /Earlier in this conversation/);
   assert.equal(hasClass(shell.reader, 'thread'), true);
 
+  const openWindowAction = '[data-action="open-in-new-window"]';
+  assert.equal(ui.reader.querySelector(openWindowAction), null);
+  const seeds = [];
+  shell.context.window.morrow.openReaderWindow = async seed => { seeds.push({ ...seed }); };
+  const openWindow = shell.reader.querySelector(openWindowAction);
+  assert.equal(openWindow.getAttribute('aria-label'), 'Open in new window');
+  openWindow.click();
+  await new Promise(setImmediate);
+  assert.deepEqual(seeds, [{ accountId: email.accountId, messageId: email.id }]);
+
+  function openLinkMenu(surface) {
+    const target = surface.reader.querySelector('.body');
+    assert.equal(target.tabIndex, 0);
+    let prevented = false;
+    surface.onReaderContext({ target, clientX: 120, clientY: 120, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    const menu = surface.context.document.getElementById('organize-menu');
+    return menu.children.find(item => item.textContent === 'Copy local link to this message');
+  }
+
   for (const surface of [ui, shell]) {
     const requests = [];
     surface.context.window.morrow.invoke = async (channel, payload) => {
       requests.push({ channel, payload: { ...payload } });
       return { ok: true };
     };
-    const link = surface.reader.querySelector('[data-action="copy-local-message-link"]');
-    assert.equal(link.getAttribute('aria-label'), 'Copy local link to this message');
+    assert.equal(surface.reader.querySelector('[data-action="copy-local-message-link"]'), null);
+    assert.equal(surface.reader.querySelector('[data-action="local-time"]'), null);
+    const link = openLinkMenu(surface);
+    assert.equal(link.getAttribute('role'), 'menuitem');
     assert.equal(link.disabled, false);
     assert.deepEqual(requests, []);
     link.click();
@@ -853,9 +895,26 @@ async function assertReaderWindowMatchesShellActions() {
   }
 
   shell.context.window.morrow.invoke = async () => ({ ok: false, message: 'That local message link is unavailable.' });
-  shell.reader.querySelector('[data-action="copy-local-message-link"]').click();
+  openLinkMenu(shell).click();
   await new Promise(setImmediate);
   assert.equal(shell.context.document.getElementById('status').textContent, 'That local message link is unavailable.');
+
+  shell.context.window.morrowReaderLocalTime = {};
+  shell.context.window.morrowReplySelection = { read: () => '2026-11-26T18:50:00Z' };
+  const staleLink = openLinkMenu(shell);
+  const staleTime = shell.context.document.getElementById('organize-menu').children.find(item => item.textContent === 'Show local time');
+  let staleCopies = 0;
+  shell.context.window.morrow.invoke = async () => { staleCopies++; };
+  shell.state.accounts[0].bodyEpoch++;
+  staleTime.click();
+  await new Promise(setImmediate);
+  assert.match(shell.context.document.getElementById('status').textContent, /Select a date and time/);
+  staleLink.click();
+  await new Promise(setImmediate);
+  assert.equal(staleCopies, 0);
+  assert.match(shell.context.document.getElementById('status').textContent, /local message link is unavailable/);
+  shell.state.accounts[0].bodyEpoch = email.bodyEpoch;
+  delete shell.context.window.morrowReplySelection;
 
   for (const surface of [ui, shell]) {
     surface.context.kinds = [];
@@ -885,11 +944,11 @@ async function assertReaderWindowMatchesShellActions() {
 
   shell.state.email = { ...email, bodyComplete: false };
   shell.renderReader(false);
-  assert.equal(shell.reader.querySelector('[data-action="copy-local-message-link"]').disabled, true);
+  assert.equal(openLinkMenu(shell).disabled, true);
   shell.state.accounts[0].needsReauth = true;
   shell.state.email = email;
   shell.renderReader(false);
-  assert.equal(shell.reader.querySelector('[data-action="copy-local-message-link"]').disabled, true);
+  assert.equal(openLinkMenu(shell).disabled, true);
 }
 
 module.exports = { run: main };
