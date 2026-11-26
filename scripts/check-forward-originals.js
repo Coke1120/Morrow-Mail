@@ -68,7 +68,7 @@ after(() => {
 });
 
 test("four saved drafts reopen with all eight originals intact in SQLite and outgoing MIME", async t => {
-  const profile = path.join(dir, "draft-profile");
+  const profile = dir;
   const env = { MORROW_USER_DATA: profile, MORROW_MAIL_DIR: profile,
     MORROW_AI_CONFIG_DIR: profile, MORROW_MAIL_SECRETS: "memory" };
   const previousEnv = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
@@ -82,6 +82,7 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
   t.mock.method(remote, "withClient", async () => { throw new Error("Fixture is offline"); });
   t.after(async () => {
     secrets.deletePassword(accountId);
+    engine.closeLocalArchiveForTest();
     await db.close();
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) delete process.env[key];
@@ -113,12 +114,31 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
     assert.deepEqual(files.map(file => file.fileBytes), [first.raw, second.raw]);
     assert.ok(files.every(file => !file.fileBytes.equals(excluded.raw)));
 
-    // Exercise the existing draft path without the pending batch-staging IPC.
-    const attachments = files.map(file => {
-      const uploaded = engine.answer("mail:uploadAttachment", [file]);
-      assert.equal(uploaded.success, true);
-      return uploaded.data;
-    });
+    const params = { accountId: Local.ACCOUNT_ID, messageIds: ids };
+    const checked = await engine.answer("mail:reviewForwardOriginals", [params]);
+    assert.deepEqual(checked.data, reviewOriginals(archive, ids, LIMIT));
+    if (run === 0) {
+      const wrongAccount = await engine.answer("mail:stageForwardOriginals", [{ ...params, accountId, proof: checked.data.proof }]);
+      assert.equal(wrongAccount.success, false);
+      const stale = await engine.answer("mail:stageForwardOriginals", [{ ...params, proof: "stale" }]);
+      assert.equal(stale.success, false);
+      const saveBlob = db.saveBlob;
+      let writtenId;
+      const failSecond = t.mock.method(db, "saveBlob", (id, ...rest) => {
+        if (writtenId) throw new Error("Synthetic second write failure");
+        writtenId = id;
+        return saveBlob(id, ...rest);
+      });
+      try {
+        const rolledBack = await engine.answer("mail:stageForwardOriginals", [{ ...params, proof: checked.data.proof }]);
+        assert.equal(rolledBack.success, false);
+        assert.ok(writtenId);
+        assert.equal(db.readBlob(writtenId), null);
+      } finally { failSecond.mock.restore(); }
+    }
+    const staged = await engine.answer("mail:stageForwardOriginals", [{ ...params, proof: checked.data.proof }]);
+    assert.equal(staged.success, true, JSON.stringify(staged.error));
+    const { attachments } = staged.data;
     const to = `recipient-${run}@example.invalid`;
     const saved = await engine.answer("mail:upsertDraft", [{ accountId, to, body, subject: "Fixture handoff", attachments }]);
     assert.equal(saved.success, true);
