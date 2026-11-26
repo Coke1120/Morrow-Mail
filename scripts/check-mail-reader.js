@@ -759,6 +759,8 @@ async function assertReaderWindowMatchesShellActions() {
   const email = {
     ...rows[3],
     textBody: 'reader body',
+    bodyComplete: true,
+    bodyEpoch: 23,
     to: ['Ada <ada@example.test>'],
     cc: ['Grace <grace@example.test>'],
   };
@@ -772,7 +774,7 @@ async function assertReaderWindowMatchesShellActions() {
   assertReaderDateOnFromRow(ui.reader, /Sender r3/);
   const shown = readerText(ui.reader);
   assert.deepEqual(actionNames(ui.reader), [
-    'reply', 'reply-all', 'suggest', 'forward', 'summary', 'timeline',
+    'reply', 'reply-all', 'suggest', 'forward', 'summary', 'timeline', 'copy-local-message-link',
     'star', 'translate', 'translate-cancel',
     'archive', 'trash', 'move', 'organize', 'snooze', 'close-reader',
   ]);
@@ -833,6 +835,29 @@ async function assertReaderWindowMatchesShellActions() {
   assert.equal(hasClass(shell.reader, 'thread'), true);
 
   for (const surface of [ui, shell]) {
+    const requests = [];
+    surface.context.window.morrow.invoke = async (channel, payload) => {
+      requests.push({ channel, payload: { ...payload } });
+      return { ok: true };
+    };
+    const link = surface.reader.querySelector('[data-action="copy-local-message-link"]');
+    assert.equal(link.getAttribute('aria-label'), 'Copy local link to this message');
+    assert.equal(link.disabled, false);
+    assert.deepEqual(requests, []);
+    link.click();
+    await new Promise(setImmediate);
+    assert.deepEqual(requests, [{ channel: 'reader:copyLocalMessageLink', payload: {
+      accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch,
+    } }]);
+    assert.match(surface.context.document.getElementById('status').textContent, /Local link copied/);
+  }
+
+  shell.context.window.morrow.invoke = async () => ({ ok: false, message: 'That local message link is unavailable.' });
+  shell.reader.querySelector('[data-action="copy-local-message-link"]').click();
+  await new Promise(setImmediate);
+  assert.equal(shell.context.document.getElementById('status').textContent, 'That local message link is unavailable.');
+
+  for (const surface of [ui, shell]) {
     surface.context.kinds = [];
     surface.context.vmRun = (code) => vm.runInContext(code, surface.context);
     surface.context.vmRun(`
@@ -857,6 +882,14 @@ async function assertReaderWindowMatchesShellActions() {
   pressReaderKey(shell, 'f', { metaKey: true });
   assert.deepEqual(Array.from(shell.context.kinds), ['reply', 'new-mail']);
   assert.equal(shell.context.document.getElementById('search-query').focused, true);
+
+  shell.state.email = { ...email, bodyComplete: false };
+  shell.renderReader(false);
+  assert.equal(shell.reader.querySelector('[data-action="copy-local-message-link"]').disabled, true);
+  shell.state.accounts[0].needsReauth = true;
+  shell.state.email = email;
+  shell.renderReader(false);
+  assert.equal(shell.reader.querySelector('[data-action="copy-local-message-link"]').disabled, true);
 }
 
 module.exports = { run: main };

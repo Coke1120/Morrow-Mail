@@ -1052,6 +1052,46 @@ function summaryMessage(params) {
   return cachedBody(row);
 }
 
+function localLinkSource({ accountId, messageId }) {
+  if (accountId === localFolders.ACCOUNT_ID && localFolders.isMessage(messageId)) {
+    const email = localArchive().verify(messageId);
+    if (email.folderId === localFolders.TRASH_ID) return null;
+    return { email, identity: [accountId, messageId, email.folderId, email.textBody, email.htmlBody] };
+  }
+  const account = db.accountById(accountId);
+  const row = account && db.messageById(messageId);
+  if (!row || row.account_id !== accountId || account.auth_error || row.is_draft || row.draft_pending ||
+      !Number.isSafeInteger(row.uid) || row.uid <= 0 || !Number.isSafeInteger(row.uid_validity) || row.uid_validity <= 0) return null;
+  const folder = db.folderByPath(accountId, row.folder_path);
+  if (!folder || ["trash", "deleteditems", "junk", "junkemail", "spam"].includes(
+    String(folder.well_known || "").toLowerCase().replace(/[\s_-]/g, "")
+  )) return null;
+  actions.assertIdentityReady(messageId);
+  if (account.mail_transport === "gmail_api") {
+    const mapping = row.gmail_id && db.gmailMap(accountId, row.gmail_id);
+    const labels = db.jsonList(mapping?.labels_json);
+    if (!mapping || mapping.local_uid !== row.uid || row.uid_validity !== account.gmail_generation ||
+        labels.some(label => ["TRASH", "SPAM", "DRAFT"].includes(label)) ||
+        (!remote.isAllMail(folder) && (!folder.provider_id || !labels.includes(folder.provider_id)))) return null;
+  } else if (row.uid_validity !== folder.uid_validity) return null;
+  const email = detailOf(row);
+  if (email.bodyComplete !== true || email.bodyWarning) return null;
+  const identity = [accountId, account.created_at, account.auth_kind, account.profile, account.username, account.imap_host,
+    account.imap_port, account.imap_tls, account.mail_transport, messageId, row.folder_path, row.uid, row.uid_validity,
+    row.gmail_id, row.rfc_message_id];
+  return { email, identity };
+}
+
+function localMessageLinkProof(target) {
+  const source = localLinkSource(target);
+  return source && crypto.createHash("sha256").update(JSON.stringify(source.identity)).digest("hex");
+}
+
+function readLocalMessageLink(target) {
+  const source = localLinkSource(target);
+  return source ? ok({ email: source.email, isThread: false, threadMessages: [] }) : null;
+}
+
 function threadMeta(rows) {
   const threads = {};
   for (const email of rows) {
@@ -5995,6 +6035,8 @@ module.exports = {
   init,
   answer,
   resolveResumedDraftOwner,
+  localMessageLinkProof,
+  readLocalMessageLink,
   settleActions: actions.settleActions,
   submitBotAction: actions.submitBotAction,
   settleAccount: actions.settleAccount,

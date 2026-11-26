@@ -267,6 +267,8 @@ const INVOKE = [
   "compose:setTitle",
   "reader:open",
   "reader:pullSeed",
+  "reader:copyLocalMessageLink",
+  "reader:clearLocalMessageLink",
   "translate:open",
   "translate:pullSeed",
   "translate:report",
@@ -338,6 +340,9 @@ contextBridge.exposeInMainWorld("morrow", {
   },
   openReaderWindow(seed) {
     return ipcRenderer.invoke("reader:open", seed);
+  },
+  openEmailForReader(payload) {
+    return ipcRenderer.invoke("mail:openEmail", { ...payload, bindReaderLocalLink: true });
   },
   pullReaderSeed() {
     return ipcRenderer.invoke("reader:pullSeed");

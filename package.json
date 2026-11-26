@@ -55,6 +55,11 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
+    "protocols": [{
+      "name": "Morrow Mail local message",
+      "schemes": ["morrow-message"],
+      "role": "Viewer"
+    }],
     "copyright": "Copyright (c) 2026 Leo Ho / HWL-HK",
     "directories": {
       "output": "dist",
