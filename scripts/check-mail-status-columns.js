@@ -133,3 +133,72 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
   assert.deepEqual([db.messageById("imap-message").replied, db.messageById("imap-message").forwarded], [0, 0]);
   assert.equal(db.messageById("outlook-message").forwarded, null);
 });
+
+test("Undo, saved drafts and local Sent copies count file attachments while retaining CID parts", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-outgoing-status-"));
+  const keys = ["MORROW_MAIL_DIR", "MORROW_USER_DATA", "MORROW_MAIL_SECRETS"];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, { MORROW_MAIL_DIR: directory, MORROW_USER_DATA: directory, MORROW_MAIL_SECRETS: "memory" });
+  const db = require("../host/mail/db"), engine = require("../host/mail/engine");
+  t.after(async () => {
+    engine.setSmtpSenderForTest(null);
+    await db.close();
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  await engine.init();
+  const accountId = fixture.account.id;
+  db.insertAccount(fixture.account);
+  db.replaceFolders(accountId, [...fixture.folders, { path: "Drafts", name: "Drafts", wellKnown: "drafts" }]);
+  const ask = async (channel, payload) => {
+    const result = await engine.answer(channel, [payload]);
+    assert.equal(result.success, true, JSON.stringify(result));
+    return result.data;
+  };
+  const inline = { ...(await ask("mail:uploadAttachment", { filename: "logo.png", mimeType: "image/png", fileBytes: Buffer.from("inline bytes") })), contentId: "logo" };
+  const photo = await ask("mail:uploadAttachment", { filename: "photo.png", mimeType: "image/png", fileBytes: Buffer.from("photo bytes") });
+  const pdf = await ask("mail:uploadAttachment", { filename: "report.pdf", mimeType: "application/pdf", fileBytes: Buffer.from("file bytes") });
+  const cases = [[inline], [photo], [pdf], [inline, pdf]];
+  let submissions = 0;
+  engine.setSmtpSenderForTest(async ({ options, messageId }) => {
+    assert.deepEqual(options.attachments.map(file => file.cid || null), cases[submissions].map(file => file.contentId || null));
+    submissions++;
+    return { messageId, accepted: options.to, rejected: [] };
+  });
+
+  const legacyIds = [];
+  for (const [index, attachments] of cases.entries()) {
+    const payload = { accountId, to: "recipient@fixture.invalid", body: '<p>Fixture</p><img src="cid:logo">', attachments };
+    const id = "queue-cid-" + index;
+    db.insertScheduled({ id, accountId, sendAt: Date.parse("2099-01-01T00:00:00Z"), createdAt: index,
+      payloadJson: JSON.stringify({ ...payload, subject: "Recovered " + index, outbox: true }) });
+    const recovered = await ask("mail:cancelScheduled", { id, recoverDraft: true });
+    assert.equal(db.scheduledById(id), null);
+    const saved = await ask("mail:upsertDraft", { ...payload, subject: "Saved " + index });
+    await ask("mail:upsertDraft", { ...payload, emailId: saved.emailId, draftRevision: saved.draftRevision, subject: "Updated " + index });
+    assert.equal(submissions, index, "saving or recovering a draft cannot submit it");
+    const sent = await ask("mail:send", { ...payload, subject: "Sent " + index });
+    for (const copy of [recovered, saved, sent]) {
+      const reopened = (await ask("mail:openEmail", { emailId: copy.emailId })).email;
+      assert.equal(db.messageById(copy.emailId).has_attachments, Number(index !== 0));
+      assert.equal(reopened.hasAttachments, index !== 0);
+      assert.deepEqual(reopened.attachments.map(file => file.contentId), attachments.map(file => file.contentId || null));
+      if (index === 0) {
+        assert.equal((await engine.bytesFor({ emailId: copy.emailId, attachmentId: inline.id })).data.toString(), "inline bytes");
+        db.updateMessage(copy.emailId, { has_attachments: 1 });
+        legacyIds.push(copy.emailId);
+      }
+    }
+  }
+  assert.equal(submissions, cases.length);
+  await db.close(); await engine.init();
+  for (const [folderId, total] of [["Drafts", 8], ["Sent", 4]]) {
+    const { emails } = await ask("mail:listFromCache", { accountId, folderId });
+    assert.equal(emails.length, total);
+    assert.deepEqual(emails.filter(email => !email.hasAttachments).map(email => email.id).sort(),
+      legacyIds.filter(id => emails.some(email => email.id === id)).sort());
+    assert.equal(emails.filter(email => !email.hasAttachments).length, total / 4);
+  }
+});

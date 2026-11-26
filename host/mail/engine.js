@@ -703,6 +703,11 @@ function publicAttachment(item) {
 
 function listRow(row, generations, memberships, includeDraftTo = false) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
+  // Older outgoing copies counted every MIME part. Local storage identifies
+  // our outgoing metadata, without reinterpreting a provider's attachment bit.
+  const inlineOutgoingOnly = row.has_attachments === 1 && (row.is_draft === 1 || row.date_source === "local")
+    && attachments.length > 0 && attachments.every(file => file.storageUrl)
+    && !db.hasOutgoingFileAttachments(attachments);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   delete recipientHeaders.followupReply;
   delete recipientHeaders.followupConfirmedRecipient;
@@ -743,7 +748,7 @@ function listRow(row, generations, memberships, includeDraftTo = false) {
     forwarded: row.forwarded == null ? null : row.forwarded === 1,
     actionGeneration: generations instanceof Map ? generations.get(row.id) || 0 : actions.generationOf(row.id),
     isDraft: row.is_draft === 1,
-    hasAttachments: row.has_attachments === 1,
+    hasAttachments: row.has_attachments === 1 && !inlineOutgoingOnly,
     unifiedCategory: "primary",
     providerCategory: "primary",
     platform: "imap",
@@ -3262,7 +3267,7 @@ async function ensureBody(row, options) {
       body_retry_blocked: !metadataOnly && fetched.bodySourceLimited ? 1 : 0,
       body_retry_after: !metadataOnly && !fetched.bodyComplete && !fetched.bodySourceLimited ? Date.now() + 60000 : 0,
       attachments_json: JSON.stringify(localFiles.length ? localFiles : fetched.attachments || []),
-      has_attachments: localFiles.length > 0 || fetched.hasAttachments ? 1 : 0,
+      has_attachments: (localFiles.length ? db.hasOutgoingFileAttachments(localFiles) : fetched.hasAttachments) ? 1 : 0,
       subject: fetched.subject || row.subject,
       ...(typeof fetched.from === "string" ? { from_addr: fetched.from } : {}),
       ...(typeof fetched.fromDisplayName === "string" ? { from_display_name: fetched.fromDisplayName } : {}),
@@ -4631,7 +4636,7 @@ function publicScheduled(row) {
     if (payload.threadId) out.threadId = payload.threadId;
     if (Array.isArray(payload.attachments) && payload.attachments.length) out.attachments = payload.attachments;
     out.hasAttachments = Array.isArray(payload.attachments)
-      ? db.hasScheduledFileAttachments(payload.attachments)
+      ? db.hasOutgoingFileAttachments(payload.attachments)
       : payload.hasFileAttachments === true;
   }
   return out;
@@ -4835,7 +4840,7 @@ function recoverScheduledDraft(row) {
     from: payload.fromAddress || account.email, fromDisplayName: typeof payload.fromDisplayName === "string" ? payload.fromDisplayName : "",
     to: addrList(payload.to), cc: addrList(payload.cc), bcc: addrList(payload.bcc),
     date: now.toISOString(), listSortTs: now.getTime(), isDraft: true,
-    hasAttachments: resolved.meta.length > 0,
+    hasAttachments: db.hasOutgoingFileAttachments(resolved.meta),
     attachments: resolved.meta,
     htmlBody: html, textBody: text,
     snippet: plainFromHtml(html).replace(/\s+/g, " ").trim().slice(0, 180), bodyComplete: true,
@@ -4883,6 +4888,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
   const when = new Date();
   const keptId = (info && info.messageId) || messageId;
   const files = (extra && extra.files) || [];
+  const attachments = (extra && extra.meta) || [];
   const receipt = deliveryReceipt.fromSmtp(info, messageId);
   const confirmedRecipient = sentFollowup.confirmation(receipt.accepted, receipt.rejected, options);
   if (sent) {
@@ -4903,8 +4909,8 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       dateSource: "local",
       listSortTs: when.getTime(),
       isDraft: false,
-      hasAttachments: files.length > 0,
-      attachments: (extra && extra.meta) || [],
+      hasAttachments: db.hasOutgoingFileAttachments(attachments),
+      attachments,
       htmlBody: options.html,
       textBody: options.text,
       bodyComplete: true,
@@ -5821,7 +5827,7 @@ function answer(channel, args, event) {
           listSortTs: when.getTime(),
           unread: false,
           isDraft: true,
-          hasAttachments: resolved.meta.length > 0,
+          hasAttachments: db.hasOutgoingFileAttachments(resolved.meta),
           attachments: resolved.meta,
           htmlBody: html,
           textBody: presented.textBody || plainFromHtml(html),

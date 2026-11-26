@@ -1431,7 +1431,7 @@ function applyFolderSync(accountId, folderPath, report, budget = null) {
         const kept = prior && Number(prior.is_draft) === 1 ? localOutgoingAttachments(prior.attachments_json) : null;
         if (kept) {
           attachmentRows = kept;
-          attachmentBit = 1;
+          attachmentBit = Number(hasOutgoingFileAttachments(kept));
         }
       }
       const fields = [
@@ -2494,8 +2494,8 @@ function insertScheduled(row) {
   return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
 }
 
-function hasScheduledFileAttachments(attachments) {
-  // Queued outgoing MIME uses contentId to mark an inline part.
+function hasOutgoingFileAttachments(attachments) {
+  // Outgoing MIME uses contentId to mark an inline part.
   return Array.isArray(attachments) && attachments.some(item =>
     item && typeof item === "object" && !item.contentId);
 }
@@ -2504,7 +2504,7 @@ function scheduledHeader(raw) {
   let payload = {};
   try { payload = JSON.parse(raw) || {}; } catch {}
   const { body, attachments, ...metadata } = payload;
-  if (metadata.outbox === true) metadata.hasFileAttachments = hasScheduledFileAttachments(attachments);
+  if (metadata.outbox === true) metadata.hasFileAttachments = hasOutgoingFileAttachments(attachments);
   return JSON.stringify(metadata);
 }
 
@@ -2904,7 +2904,7 @@ function applyGmailMessage(accountId, folderPaths, message) {
           ...retainedFollowupHeaders(found, message),
           ...(found.uid === mapping.local_uid && found.uid_validity === account.gmail_generation
             ? { dsnRedraft: dsnForRetainedBody(found, message) } : {}) } : {}),
-        ...(attachments ? { attachments, hasAttachments: true } : {}) };
+        ...(attachments ? { attachments, hasAttachments: hasOutgoingFileAttachments(attachments) } : {}) };
       if (!found) insertMessageRecord(input);
       else {
         const patch = { uid: input.uid, uid_validity: input.uidValidity, subject: input.subject || "", snippet: input.snippet || found.snippet,
@@ -3240,7 +3240,7 @@ module.exports = {
   insertScheduled,
   listScheduled,
   scheduledOverview,
-  hasScheduledFileAttachments,
+  hasOutgoingFileAttachments,
   dueScheduled,
   deleteScheduled,
   markScheduledFailed,
