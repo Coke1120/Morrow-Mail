@@ -7,6 +7,12 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "1.0.0": [
+      "Copy a local link from the message reader to reopen the original email later in the same Morrow profile.",
+      "Add two available times from your checked calendars to a reply. Quote a selected passage or check a selected timestamp in your local time.",
+      "Set a follow-up reminder on a sent message when you are waiting for a reply.",
+      "Save selected attachments from several messages to one folder. Forward selected Local Folders messages together as original email attachments.",
+    ],
     "0.4.20": [
       "Compare two PDF quotes side by side in separate message windows. Preview a PDF you just attached before saving the draft.",
       "Find downloaded drafts by recipient across pages. When the recipient column is hidden, preview the recipients directly in the draft list.",
