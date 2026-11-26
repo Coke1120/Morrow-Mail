@@ -346,6 +346,7 @@ function projectionFixture() {
   const db = { jsonList: value => JSON.parse(value || "[]"), maxActionGenerations: ids => new Map(ids.map(id => [id, 0])), gmailLabelMemberships,
     gmailMap: (_accountId, providerId) => { singles++; return { labels_json: JSON.stringify(memberships.get(providerId)) }; } };
   const projected = functions("host/mail/engine.js", ["parseUnsubscribeMetadata", "listRow", "listRows", "detailOf"], { db, publicAttachment: value => value,
+    dsn: require("../host/mail/dsn-report"),
     listUnsubscribe: require("../host/mail/list-unsubscribe"),
     composePolicy: require("../shared/compose-policy"), composeIdentity: { savedAddress: () => "sender@fixture.invalid" },
     actions: { generationOf: () => 0 }, textEncoding: { repairMojibake: value => value, presentMessage: value => value },
@@ -608,5 +609,5 @@ test("Features: wave3 catalog, rendered Features/Shortcuts/CLI tabs and identity
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
   assert.match(html, /id="agent-learned-help"[^<]*After a temporary loading error, a successful read restores the list and Delete/);
   assert.match(html, /id="cli-folder-labels"[^]*ambiguous legacy Message-ID matches are refused/);
-  assert.equal(require("../package.json").version, "0.4.20");
+  assert.equal(require("../package.json").version, "1.0.0");
 });

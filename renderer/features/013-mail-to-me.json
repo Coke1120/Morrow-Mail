@@ -1,0 +1,6 @@
+{
+  "id": "mail-to-me",
+  "title": "To Me filter",
+  "category": "Mail",
+  "blurb": "Use To Me to show downloaded messages with the owning mailbox's primary address in To. Address matching ignores letter case. Cc-only, Bcc-only, aliases, plus variants, delivery headers and display-name mentions do not match. Each account is checked separately. Sent mail to yourself can match; Outbox is excluded. It keeps folder, Unread/Starred, search, page text and sort choices, resets paging and clears selection. Matching happens before paging and before search's 100-result limit. The chip remains when folder chips are hidden. Its choice lasts until changed or restarted. Matching uses cached headers. Normal sync and page body prefetch continue."
+}

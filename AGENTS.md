@@ -10,7 +10,7 @@
 ## UI and help
 
 - Match existing icon and Motion conventions. Preserve accessible labels, decorative-icon semantics, and reduced-motion behavior. Do not introduce a framework for a scoped UI fix.
-- Update the Features catalog and affected help in the same change as user-facing behavior, including the CLI tab for bot/API/command changes. Keep capabilities, permission and cancellation limits, and examples aligned with handlers. Do not describe planned work as shipped.
+- Update the Features catalog and affected help in the same change as user-facing behavior, including the CLI tab for bot/API/command changes. Edit the feature's JSON in `renderer/features/` and its independent expectation tuple under the same filename in `scripts/check-boot-path/features/`. Use `900-<id>.json` for routine additions and choose a unique lower-case kebab-case ID. Keep capabilities, permission and cancellation limits, and examples aligned with handlers. Describe shipped behavior only. See the [Features manifests ADR](docs/adr/2026-11-25-feature-manifests.md).
 - Add or update regression checks and validate the affected rendered tab with synthetic data before approval. Host tests alone do not verify UI or help.
 
 ## OAuth and provider writes

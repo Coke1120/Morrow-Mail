@@ -6,6 +6,7 @@ const { isRateLimit } = require("./provider-http");
 const mailboxRoles = require("../../shared/mailbox-roles");
 const textEncoding = require("./text-encoding");
 const decoding = require("./mime-decoding");
+const dsn = require("./dsn-report");
 const { isGmail } = require("./gmail-policy");
 const { diagnosticMessage } = require("./gmail-error");
 const clientAccounts = new WeakMap();
@@ -302,12 +303,24 @@ function threadIdOf(parsed, envelope, fallback) {
   return `thr:${String(root).replace(/[<>\s]/g, "").slice(0, 180)}`;
 }
 
-async function parseSource(source, truncated) {
+async function parseSource(source, truncated, envelope, sourceSize) {
   if (!source || !source.length) return null;
   try {
     const parsed = await simpleParser(source);
     const decodedQuality = await decoding.inspectSource(source);
     decoding.noteHeaders(decodedQuality, parsed);
+    const completeSource = !truncated && (sourceSize == null || sourceSize === source.length);
+    let dsnRedraft = null;
+    if (dsn.isDeliveryReport(parsed.headers.get("content-type"))) {
+      dsnRedraft = dsn.fromReport(source, completeSource);
+    } else if (completeSource && parsed.attachments.length === 0 && envelope.from?.length === 1
+        && (!envelope.messageId || envelope.messageId === parsed.messageId)
+        && (parsed.subject || "") === (envelope.subject || "")
+        && parsed.from?.value?.[0]?.address === envelope.from[0].address
+        && (parsed.from.value[0].name || "") === (envelope.from[0].name || "")
+        && envelope.date instanceof Date && parsed.date?.getTime() === envelope.date.getTime()) {
+      dsnRedraft = dsn.original(source, parsed, decodedQuality);
+    }
     return {
       html: typeof parsed.html === "string" ? parsed.html : null,
       text: typeof parsed.text === "string" ? parsed.text : null,
@@ -315,7 +328,9 @@ async function parseSource(source, truncated) {
       inReplyTo: parsed.inReplyTo || null,
       references: parsed.references || null,
       replyTo: parsed.replyTo || null,
+      reaction: parsed.attachments.some(part => require("./sent-followup").isReactionMime(part.contentType)),
       decoding: decodedQuality,
+      dsnRedraft,
       complete: !truncated,
     };
   } catch {
@@ -385,12 +400,17 @@ async function listFolderRecords(client) {
   return { folders, delimiter };
 }
 
+function hasReactionPart(node) {
+  return !!node && (require("./sent-followup").isReactionMime(node.type)
+    || (node.childNodes || []).some(hasReactionPart));
+}
+
 async function readFetched(msg, validity, cap) {
   const envelope = msg.envelope || {};
   const source = msg.source ? Buffer.from(msg.source) : null;
   const limit = cap || SOURCE_CAP;
   const truncated = !!(source && source.length >= limit - 1);
-  const parsed = await parseSource(source, truncated);
+  const parsed = await parseSource(source, truncated, envelope, msg.size);
   if (parsed?.decoding) decoding.noteHeaders(parsed.decoding, { subject: envelope.subject, from: { value: envelope.from || [] } });
   const presented = textEncoding.presentMessage({
     subject: envelope.subject || "",
@@ -406,6 +426,12 @@ async function readFetched(msg, validity, cap) {
     ? envelope.date
     : (receivedDate ? msg.internalDate : new Date());
   const uid = Number(msg.uid);
+  const recipientHeaders = require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo,
+    receivedDate ? msg.internalDate.getTime() : null);
+  if (recipientHeaders.followupReply?.kind === "ordinary") {
+    if (parsed?.reaction || hasReactionPart(msg.bodyStructure)) recipientHeaders.followupReply = { kind: "automatic" };
+    else if (!msg.bodyStructure && !parsed?.complete) delete recipientHeaders.followupReply;
+  }
   return {
     uid,
     dateSource: headerDate ? "header" : receivedDate ? "received" : "unknown",
@@ -420,7 +446,7 @@ async function readFetched(msg, validity, cap) {
     to: formatList(envelope.to),
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
-    recipientHeaders: require("./recipient-headers").recipientHeaders(source, parsed?.replyTo || envelope.replyTo),
+    recipientHeaders,
     listUnsubscribe: source ? require("./list-unsubscribe").parseHeaders(source) : null,
     date: when.toISOString(),
     receivedAt: msg.internalDate instanceof Date && Number.isFinite(msg.internalDate.getTime()) ? msg.internalDate.getTime() : null,
@@ -434,6 +460,7 @@ async function readFetched(msg, validity, cap) {
     textBody: presented.textBody,
     attachments,
     decoding: parsed?.decoding || null,
+    dsnRedraft: parsed?.dsnRedraft?.kind === "original" && attachments.length ? null : parsed?.dsnRedraft || null,
     bodyComplete: !!(parsed && parsed.complete),
     // Keep the intentional full-source bound distinct from MIME/download failures.
     bodySourceLimited: truncated && limit === FULL_CAP,
@@ -454,6 +481,7 @@ const FETCH_FIELDS = {
   flags: true,
   envelope: true,
   bodyStructure: true,
+  size: true,
   internalDate: true,
   source: { maxLength: SOURCE_CAP },
 };
@@ -587,15 +615,7 @@ async function syncFolder(client, folderPath, options) {
     let messages = [];
     let flags = [];
     if (range) {
-      const query = {
-        uid: true,
-        flags: true,
-        envelope: true,
-        bodyStructure: true,
-        internalDate: true,
-        source: { maxLength: SOURCE_CAP },
-      };
-      const collected = await collectFetched(client.fetch(range, query, { uid: byUid }), validity);
+      const collected = await collectFetched(client.fetch(range, FETCH_FIELDS, { uid: byUid }), validity);
       messages = collected.messages;
       flags = collected.flags;
     }
@@ -627,6 +647,7 @@ async function fetchSource(client, folderPath, uid, expectedValidity, options) {
       uid: true,
       source: { maxLength: FULL_CAP },
       bodyStructure: true,
+      size: true,
       flags: true,
       envelope: true,
       internalDate: true,
@@ -654,7 +675,9 @@ async function readPart(client, folderPath, uid, part, expectedValidity, options
     assertUidValidity(client, expectedValidity);
     const downloaded = await client.download(String(uid), part || "1", { uid: true,
       ...(maxBytes ? { maxBytes: maxBytes + 1 } : {}) });
-    if (!downloaded || !downloaded.content) return Buffer.alloc(0);
+    if (!downloaded?.content) {
+      throw Object.assign(new Error("This attachment is no longer available."), { code: "source-unavailable" });
+    }
     content = downloaded.content;
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) { abort(); signal.throwIfAborted(); }

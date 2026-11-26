@@ -1,0 +1,6 @@
+[
+  "signatures",
+  "Signatures",
+  "Mail",
+  "Settings → Signatures lists an Account default and one row per send-as domain. Saving a domain row does not replace the account default. Compose uses that domain signature, then the account default, then no signature. Saving… shows while a save waits, and switching identities keeps the new editing target. Edit signature on a From card opens the same dialog. A cold open waits for its settings dependency before loading the signature list. Name, plain-text, rich-text and HTML-mode edits made before the first list returns stay in the editor, even if you clear them again. An untouched editor may select its default. Late signature results cannot overwrite newer editor changes."
+]

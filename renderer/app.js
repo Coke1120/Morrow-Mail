@@ -41,7 +41,10 @@ const state = {
   agentLearning: null,
   composeAttachments: [],
   composePdfBytes: new Map(),
+  composeDraftPdf: null,
   composePdfPreview: null,
+  composeInboxDraft: null,
+  composeInboxPicker: null,
   composeFileJobs: [],
   composeSuggestions: null,
   composeMeta: null,
@@ -117,12 +120,18 @@ const state = {
 let accountGen = 0;
 let listGen = 0;
 let listFilterTimer = null;
+let listFilterEditPending = false;
+let filterBeforeComposition = null;
+let displayedListFilter = "";
+let emptyLocalFilterResult = null;
+let localFilterSearchOrigin = null;
 const filterSelection = new Map();
 let mailboxNavigationGen = 0;
 const LIST_PAGE_SIZE = 200;
 let openGen = 0;
 let pendingOpenId = "";
 let pendingOpenBody = false;
+let shellLocalLinkBound = false;
 const latestBodies = new Map();
 const BODY_CACHE_LIMITS = Object.freeze({ entries: 32, bytes: 8 * 1024 * 1024, entryBytes: 2 * 1024 * 1024 });
 let latestBodyBytes = 0;
@@ -461,6 +470,7 @@ function selectedAccount() {
 }
 
 function defaultMailSearchScope(accountId) {
+  endLocalFilterSearch();
   if (accountId === LOCAL_ACCOUNT_ID) state.searchAccountId = LOCAL_ACCOUNT_ID;
   else if (state.searchAccountId === LOCAL_ACCOUNT_ID) state.searchAccountId = "";
 }
@@ -496,7 +506,7 @@ async function manageLocalFolder(action, folder) {
   showStatus(action === "delete" ? "Empty local folder deleted." : "Local folder saved.");
 }
 
-function openLocalMessageMenu(messages, x, y, origin) {
+function openLocalMessageMenu(messages, x, y, origin, selection) {
   messages = messages.map(row => ({ ...row }));
   const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local messages");
   appendMenuAction(menu, "Move to folder…", () => openLocalTransfer(messages, "move"));
@@ -505,25 +515,83 @@ function openLocalMessageMenu(messages, x, y, origin) {
   appendMessageFlagActions(menu, messages);
   appendMenuAction(menu, "Move to trash", () => guard(() => trashLocalMessages(messages)), contextTrashReason(messages));
   if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
+  if (selection && window.morrowForwardOriginals) {
+    const { ids, view } = selection;
+    const reason = messages.length !== ids.length ? "A selected message is unavailable. Select the originals again."
+      : !state.accounts.some(isLive) ? "Connect a sending account before forwarding originals." : "";
+    const sources = messages.map(({ id, folderId }) => ({ id, folderId }));
+    appendMenuAction(menu, "Forward as attachments…", () => openForwardOriginals(sources, view), reason);
+  }
   placeMenu(menu, x, y, origin);
 }
 
+function openForwardOriginals(sources, view) {
+  const assertSelection = () => {
+    if (view !== mailboxViewKey() || sources.length !== state.selectedIds.length
+        || !sources.every(({ id }, index) => state.selectedIds[index] === id)) {
+      throw new Error("The selection changed. Close this review and select the originals again.");
+    }
+  };
+  const request = { accountId: LOCAL_ACCOUNT_ID, sources };
+  return window.morrowForwardOriginals.openReview({
+    template: $("forward-originals-template"), openDialog, closeDialog,
+    formatDate: value => shownWhen(new Date(value), true), formatSize: fileSize,
+    async read() {
+      assertSelection();
+      const review = await call("mail:reviewForwardOriginals", request);
+      assertSelection();
+      return review;
+    },
+    async confirm(review) {
+      assertSelection();
+      const seed = newMailSeed();
+      if (!state.accounts.some(account => account.id === seed.accountId && isLive(account))) {
+        throw new Error("Connect a sending account before forwarding originals.");
+      }
+      const staged = await call("mail:stageForwardOriginals", { ...request, proof: review.proof });
+      assertSelection();
+      const attachments = composeAttachmentList(staged?.attachments);
+      if (attachments.length !== review.items.length || attachments.some((file, index) =>
+        file.filename !== review.items[index].filename || file.size !== review.items[index].size)) {
+        throw new Error("The complete original attachments could not be prepared.");
+      }
+      await presentCompose({ ...seed, skipRecipientDefaults: true, attachments });
+    },
+  });
+}
+
 let mboxReview = null;
+const mboxStatusLabels = { completed_with_errors: "completed with errors" };
+function mboxJobLabel(job) {
+  return `${job.files.map(file => file.name).join(", ")} · ${mboxStatusLabels[job.status] || job.status}`;
+}
+
+function mboxDialogActive(session) {
+  const dialog = $("mbox-import");
+  return mboxReview === session && dialog.open && dialog.dataset.closing !== "1";
+}
+
+function mboxJobSelected(session, job) {
+  return mboxDialogActive(session) && !session.historyRequest && session.job === job
+    && $("mbox-history").value === (job?.id || "");
+}
+
+function mboxJobFinished(job) {
+  return !!job && !job.running && (job.status === "completed" || job.status === "completed_with_errors");
+}
+
 async function openMboxImport(folderId) {
   await loadLocalFolders();
-  const session = { trigger: document.activeElement, folderId: folderId || "local-folder:archive", job: null, timer: null };
-  mboxReview = session;
   const dialog = $("mbox-import");
   if (dialog.open && dialog.dataset.closing === "1") releaseClosingDialog(dialog);
+  const session = { trigger: document.activeElement, folderId: folderId || "local-folder:archive", job: null, timer: null };
+  mboxReview = session;
   if (!dialog.dataset.wired) {
     dialog.dataset.wired = "1";
     $("mbox-pick").addEventListener("click", () => guard(pickMboxFiles));
     $("mbox-form").addEventListener("submit", event => { event.preventDefault(); guard(startMboxImport); });
-    $("mbox-history").addEventListener("change", () => guard(async () => {
-      const current = mboxReview;
-      const job = $("mbox-history").value ? await call("mail:mboxStatus", { jobId: $("mbox-history").value }) : null;
-      if (mboxReview === current) { current.job = job; paintMboxImport(); scheduleMboxPoll(current); }
-    }));
+    $("mbox-history").addEventListener("change", selectMboxHistory);
+    $("mbox-open-destination").addEventListener("click", openMboxDestination);
     $("mbox-new-folder").addEventListener("click", () => guard(async () => {
       const name = $("mbox-folder-name").value.trim(); if (!name) return;
       const current = mboxReview;
@@ -535,45 +603,87 @@ async function openMboxImport(folderId) {
     $("mbox-folder").addEventListener("change", () => { if (mboxReview) mboxReview.folderId = $("mbox-folder").value; });
     $("mbox-close").addEventListener("click", () => guard(closeMboxImport));
     $("mbox-discard").addEventListener("click", () => guard(async () => {
-      const current = mboxReview;
-      if (!current?.job || current.job.running) return;
+      const current = mboxReview, job = current?.job;
+      if (!job || job.running || !mboxJobSelected(current, job)) return;
+      current.openingDestination = null;
       const reviewed = await askConfirm({ title: "Remove private import snapshots?", body: "This removes this job's private source copies and ends recovery for failed entries. Your original files and all saved Local Folders messages stay in place.", confirm: "Remove snapshots", cancel: "Keep snapshots" });
-      if (!reviewed.ok || mboxReview !== current) return;
-      current.job = await call("mail:mboxDiscard", { jobId: current.job.id, confirmed: true }); paintMboxImport();
+      if (!reviewed.ok || !mboxJobSelected(current, job)) return;
+      const discarded = await call("mail:mboxDiscard", { jobId: job.id, confirmed: true });
+      if (mboxJobSelected(current, job)) { current.job = discarded; paintMboxImport(); }
     }));
     dialog.addEventListener("cancel", event => {
+      if (mboxReview) mboxReview.openingDestination = null;
       if (mboxReview?.job?.running) { event.preventDefault(); guard(closeMboxImport); }
     });
     dialog.addEventListener("close", () => {
       if (dialog.open) return;
       const current = mboxReview; if (!current) return;
       clearTimeout(current.timer); mboxReview = null;
+      if (current.navigating) return;
       const trigger = current.trigger?.isConnected ? current.trigger : document.querySelector("#folders .local-mbox-open");
       trigger?.focus?.();
     });
   }
   const jobs = await call("mail:mboxJobs");
   if (mboxReview !== session) return;
-  $("mbox-history").replaceChildren(option("", "Choose files to start a new import"), ...jobs.map(job => option(job.id, `${job.files.map(file => file.name).join(", ")} · ${job.status}`)));
+  $("mbox-history").replaceChildren(option("", "Choose files to start a new import"), ...jobs.map(job => option(job.id, mboxJobLabel(job))));
   session.job = jobs.find(job => job.running) || jobs.find(job => job.status !== "discarded") || null;
   $("mbox-history").value = session.job?.id || "";
   paintMboxImport(); openDialog("mbox-import"); $("mbox-pick").focus(); scheduleMboxPoll(session);
 }
 
+async function selectMboxHistory() {
+  const session = mboxReview;
+  if (!session || !mboxDialogActive(session)) return;
+  const history = $("mbox-history"), jobId = history.value;
+  const request = session.historyRequest = {};
+  session.openingDestination = null;
+  paintMboxImport();
+  let job, statusError = "";
+  try {
+    job = jobId ? await call("mail:mboxStatus", { jobId }) : null;
+  } catch {
+    statusError = " Could not load the selected import job.";
+  }
+  if (!mboxDialogActive(session) || session.historyRequest !== request) return;
+  session.historyRequest = null;
+  if (!statusError) session.job = job;
+  history.value = session.job?.id || "";
+  paintMboxImport();
+  if (statusError) $("mbox-status").textContent += statusError;
+  scheduleMboxPoll(session);
+}
+
 function paintMboxImport() {
   const session = mboxReview; if (!session) return;
-  const job = session.job, running = !!job?.running, review = !job || job.status === "review";
+  const pending = !!session.historyRequest;
+  const job = pending ? null : session.job;
+  const running = !!job?.running, review = !pending && (!job || job.status === "review");
+  const history = $("mbox-history"), selected = history.selectedOptions[0];
+  if (job && selected?.value === job.id) selected.textContent = mboxJobLabel(job);
   const folders = foldersOf(state.localAccount);
   $("mbox-folder").replaceChildren(...folders.map(folder => option(folder.id, localFolderPath(folder, folders))));
   $("mbox-folder").value = job?.destination || session.folderId;
   for (const id of ["mbox-folder", "mbox-variant", "mbox-folder-name", "mbox-new-folder"]) $(id).disabled = !review;
-  $("mbox-pick").disabled = running; $("mbox-history").disabled = running;
+  $("mbox-pick").disabled = pending || running || !!session.starting;
+  history.disabled = running || !!session.starting;
   if (job?.variant) $("mbox-variant").value = job.variant;
   $("mbox-files").replaceChildren(...(job?.files || []).map(file => {
     const row = document.createElement("li"); row.textContent = `${file.name} · ${fileSize(file.size)}`; return row;
   }));
-  const counts = job ? `${job.imported} imported · ${job.skipped} skipped (${job.expunged} Thunderbird deleted) · ${job.failed} failed.` : "";
-  $("mbox-status").textContent = job ? `${job.status}. ${counts} ${job.detail}` : "Choose exported mailbox files, then review the destination and format.";
+  const deleted = job?.expunged ?? 0, duplicates = (job?.skipped ?? 0) - deleted;
+  const duplicateCount = `${duplicates} ${duplicates === 1 ? "duplicate" : "duplicates"}`;
+  const deletedCount = `${deleted} Thunderbird-deleted ${deleted === 1 ? "entry" : "entries"}`;
+  const counts = job ? `${job.imported} imported · ${job.skipped} skipped (${duplicateCount}, ${deletedCount}) · ${job.failed} failed.` : "";
+  const finished = mboxJobFinished(job);
+  const destination = finished && folders.find(folder => folder.id === job.destination);
+  $("mbox-status").textContent = job
+    ? `${mboxStatusLabels[job.status] || job.status}. ${counts} ${job.detail}${finished && !destination ? " The original destination is unavailable." : ""}`
+    : pending ? "Loading the selected import job…" : "Choose exported mailbox files, then review the destination and format.";
+  $("mbox-result-hint").hidden = duplicates <= 0;
+  const openDestination = $("mbox-open-destination");
+  if (!destination && document.activeElement === openDestination) $("mbox-close").focus();
+  openDestination.hidden = !destination;
   $("mbox-bytes").textContent = job ? `${fileSize(job.consumedBytes)} of ${fileSize(job.totalBytes)} input committed. ${running ? `${fileSize(job.phaseBytes)} examined in this file / phase.` : ""}` : "";
   const progress = $("mbox-progress"); progress.hidden = !job;
   if (running && ["staging", "verifying"].includes(job.status)) progress.removeAttribute("value");
@@ -581,52 +691,104 @@ function paintMboxImport() {
   $("mbox-errors").replaceChildren(...(job?.errors || []).map(item => {
     const row = document.createElement("li"); row.textContent = `${item.file}, bytes ${item.start}–${item.end}: ${item.detail}`; return row;
   }));
-  $("mbox-start").disabled = !job || running || (!review && !job.canContinue);
+  $("mbox-start").disabled = !job || running || !!session.starting || (!review && !job.canContinue);
   $("mbox-start").textContent = job?.status === "review" ? "Import" : "Continue";
   $("mbox-close").textContent = running ? "Stop import" : "Close";
   $("mbox-discard").hidden = !job || running || job.status === "review" || job.status === "discarded";
 }
 
+async function openMboxDestination() {
+  const session = mboxReview, job = session?.job;
+  if (!mboxJobFinished(job) || !mboxJobSelected(session, job) || session.openingDestination
+    || $("confirm").open || $("mbox-open-destination").hidden) return;
+  const request = session.openingDestination = {};
+  let account;
+  try {
+    account = await call("mail:localFolders");
+    if (session.openingDestination !== request || !mboxJobSelected(session, job)) return;
+  } catch {
+    if (session.openingDestination === request && mboxJobSelected(session, job)) {
+      paintMboxImport();
+      $("mbox-status").textContent += " Could not check the original destination. Try again.";
+    }
+    return;
+  } finally {
+    if (session.openingDestination === request) session.openingDestination = null;
+  }
+  state.localAccount = account;
+  if (!foldersOf(account).some(folder => folder.id === job.destination)) {
+    paintMboxImport();
+    return;
+  }
+  session.navigating = true;
+  try {
+    await closeDialog("mbox-import");
+    if ($("mbox-import").open || (mboxReview && mboxReview !== session)) return;
+    showMail();
+    const selecting = selectFolder(LOCAL_ACCOUNT_ID, job.destination);
+    $("message-list").focus();
+    await selecting;
+  } catch (error) {
+    showStatus(error.message, true);
+  }
+}
+
 async function pickMboxFiles() {
   const session = mboxReview; if (!session) return;
+  const previous = session.job;
+  if (!mboxJobSelected(session, previous)) return;
+  session.openingDestination = null;
   const job = await call("mail:mboxPick");
-  if (job.cancelled || mboxReview !== session) return;
+  if (job.cancelled || !mboxJobSelected(session, previous)) return;
   session.job = job;
-  $("mbox-history").appendChild(option(job.id, job.files.map(file => file.name).join(", ") + " · review"));
+  $("mbox-history").appendChild(option(job.id, mboxJobLabel(job)));
   $("mbox-history").value = job.id; paintMboxImport();
 }
 
 async function startMboxImport() {
-  const session = mboxReview; if (!session?.job || session.job.running || session.starting) return;
-  session.starting = true; $("mbox-start").disabled = true;
+  const session = mboxReview, previous = session?.job;
+  if (!previous || previous.running || session.starting || !mboxJobSelected(session, previous)) return;
+  session.starting = true;
+  $("mbox-start").disabled = $("mbox-history").disabled = $("mbox-pick").disabled = true;
   try {
-    const job = await call("mail:mboxStart", { jobId: session.job.id, folderId: $("mbox-folder").value, variant: $("mbox-variant").value });
-    if (mboxReview !== session) return;
+    const job = await call("mail:mboxStart", { jobId: previous.id, folderId: $("mbox-folder").value, variant: $("mbox-variant").value });
+    if (!mboxJobSelected(session, previous)) return;
     session.job = job; paintMboxImport(); scheduleMboxPoll(session);
-  } finally { session.starting = false; if (mboxReview === session) paintMboxImport(); }
+  } finally { session.starting = false; if (mboxDialogActive(session)) paintMboxImport(); }
 }
 
 function scheduleMboxPoll(session) {
   clearTimeout(session.timer);
-  if (mboxReview !== session || !session.job?.running) return;
-  session.timer = setTimeout(() => guard(async () => {
+  const previous = session.job;
+  if (!previous?.running || !mboxJobSelected(session, previous)) return;
+  session.timer = setTimeout(async () => {
     try {
-      const job = await call("mail:mboxStatus", { jobId: session.job.id });
-      if (mboxReview !== session) return;
+      const job = await call("mail:mboxStatus", { jobId: previous.id });
+      if (!mboxJobSelected(session, previous)) return;
       session.job = job; paintMboxImport();
-      if (!job.running) { await loadLocalFolders(); renderAccounts(); if (state.accountId === LOCAL_ACCOUNT_ID) await loadList(); }
+      if (!job.running) {
+        await loadLocalFolders();
+        if (mboxJobSelected(session, job)) paintMboxImport();
+        renderAccounts();
+        if (state.accountId === LOCAL_ACCOUNT_ID) await loadList();
+      }
       scheduleMboxPoll(session);
     } catch (failure) {
-      if (mboxReview === session) { $("mbox-status").textContent = "Progress could not be read. Close and reopen Import MBOX to check the saved job. " + failure.message; scheduleMboxPoll(session); }
+      if (mboxJobSelected(session, previous)) { $("mbox-status").textContent = "Progress could not be read. Close and reopen Import MBOX to check the saved job. " + failure.message; scheduleMboxPoll(session); }
     }
-  }), 400);
+  }, 400);
 }
 
 async function closeMboxImport() {
   const session = mboxReview; if (!session) return;
-  if (session.job?.running) {
-    await call("mail:mboxCancel", { jobId: session.job.id });
-    if (mboxReview === session) { $("mbox-status").textContent = "Stopping at a safe checkpoint. Previously committed messages stay saved."; scheduleMboxPoll(session); }
+  session.openingDestination = null;
+  const job = session.job;
+  if (job?.running) {
+    await call("mail:mboxCancel", { jobId: job.id });
+    if (mboxDialogActive(session) && session.job?.id === job.id && session.job.running) {
+      $("mbox-status").textContent = "Stopping at a safe checkpoint. Previously committed messages stay saved.";
+      scheduleMboxPoll(session);
+    }
   } else closeDialog("mbox-import");
 }
 
@@ -3512,8 +3674,8 @@ function envelopeError(result) {
   return null;
 }
 
-async function call(channel, payload) {
-  const result = await api.invoke(channel, payload);
+async function call(channel, payload, invoke) {
+  const result = await (invoke ? invoke(payload) : api.invoke(channel, payload));
   const message = envelopeError(result);
   if (message) {
     const error = new Error(message);
@@ -5494,6 +5656,7 @@ function quoteStateFromSeed(fields) {
     collapsed: false,
     email: source || null,
     kind: (fields && fields.kind) || "",
+    selected: !!fields?.selectedReplyQuote,
     images: false,
   };
 }
@@ -5504,7 +5667,7 @@ async function fillComposeReplyHistory(fields, session) {
   const quote = state.composeQuote;
   const source = quote && quote.email;
   if (!source || !["reply", "all"].includes(fields.kind) || fields.draftId || fields.recoveredSnapshot
-      || !fields.accountId || !fields.threadId || !source.id || source.id !== fields.sourceMessageId
+      || fields.selectedReplyQuote || !fields.accountId || !fields.threadId || !source.id || source.id !== fields.sourceMessageId
       || (source.accountId && source.accountId !== fields.accountId) || (source.threadId && source.threadId !== fields.threadId)) return;
   const current = () => state.composeSession === session && state.composeQuote === quote;
   quote.historyNote = "Loading earlier conversation messages…";
@@ -7478,10 +7641,62 @@ function filteredEmails(emails, query, drafts) {
 }
 
 function currentListFilter() {
-  return String($("list-filter")?.value || "").trim();
+  return filterBeforeComposition ?? String($("list-filter")?.value || "").trim();
 }
 
-function applyListFilter() {
+function localFilterSearchFolder() {
+  if (state.accountId !== LOCAL_ACCOUNT_ID || state.allInbox || state.outbox) return null;
+  const folder = selectedFolderNode();
+  return folder && !isVirtualMailbox(folder) ? folder : null;
+}
+
+function localFilterSearchText() {
+  if (state.query || state.listLoading || state.listFilterError || filterBeforeComposition !== null) return "";
+  const folder = localFilterSearchFolder();
+  const filter = currentListFilter();
+  return folder && emptyLocalFilterResult?.gen === listGen && emptyLocalFilterResult.folderId === folder.id
+    && emptyLocalFilterResult.filter === filter ? filter : "";
+}
+
+function paintLocalFilterSearch() {
+  const searchButton = $("local-filter-search");
+  const returnButton = $("local-filter-return");
+  if (searchButton) searchButton.hidden = !localFilterSearchText();
+  if (returnButton) returnButton.hidden = !state.query || !localFilterSearchOrigin
+    || localFilterSearchOrigin.folderId !== localFilterSearchFolder()?.id;
+}
+
+function startLocalFilterSearch() {
+  const filter = localFilterSearchText();
+  if (!filter) return;
+  localFilterSearchOrigin = {
+    folderId: state.folderId,
+    filter: $("list-filter").value,
+    searchAccountId: state.searchAccountId,
+  };
+  state.searchAccountId = LOCAL_ACCOUNT_ID;
+  clearListFilterInput();
+  $("search-query").value = filter;
+  focusMailSearch();
+  return applySearch();
+}
+
+function endLocalFilterSearch() {
+  const origin = localFilterSearchOrigin;
+  if (origin) state.searchAccountId = origin.searchAccountId;
+  localFilterSearchOrigin = null;
+  return origin;
+}
+
+function clearListFilterInput() {
+  listFilterEditPending = false;
+  filterBeforeComposition = null;
+  const input = $("list-filter");
+  if (input) input.value = "";
+}
+
+function applyListFilter(event) {
+  if (event?.isComposing || filterBeforeComposition !== null) return;
   clearTimeout(listFilterTimer);
   listFilterTimer = null;
   state.listFilterError = false;
@@ -7490,14 +7705,17 @@ function applyListFilter() {
     return;
   }
   // Invalidate an older response immediately, including during the debounce gap.
-  ++listGen;
-  for (const email of selectedMessages()) filterSelection.set(String(email.id), email);
+  const edit = ++listGen;
+  listFilterEditPending = true;
   state.listOffset = 0;
   state.listCursors = [];
   state.listLoading = true;
-  renderList();
+  // Keep the displayed page and its selection targets stable until the new page arrives.
+  paintListPaging();
+  paintSearchCoverage(state.emails);
   listFilterTimer = setTimeout(() => {
     listFilterTimer = null;
+    if (edit !== listGen) return;
     const pending = loadList(false, 0);
     const gen = listGen;
     pending.catch(error => { if (gen === listGen) showStatus(error.message, true); });
@@ -8719,8 +8937,7 @@ function unreadRetainIds() {
 }
 
 function shownEmails() {
-  const input = $("list-filter");
-  const query = input ? input.value : "";
+  const query = state.listLoading && !state.query && !state.outbox ? displayedListFilter : currentListFilter();
   const emails = state.emails.filter((email) => !optimisticRemovals.has(email.id));
   if (state.outbox) return visibleList(emails, query, null);
   const folder = state.allInbox
@@ -8883,7 +9100,8 @@ function paintSelectionBar(shown) {
 }
 
 function paintSearchCoverage(shown) {
-  const filter = $("list-filter").value.trim();
+  paintLocalFilterSearch();
+  const filter = currentListFilter();
   const scope = $("search-scope");
   scope.hidden = !state.query;
   const picker = $("search-account");
@@ -8962,6 +9180,7 @@ function renderList() {
   renderChips(state.allInbox || state.outbox ? null : account);
   paintToMeFilter();
   if (title) title.classList.toggle("sr", !state.query && !state.allInbox && !state.outbox && state.prefs.chips && chipFolders(account, state.folderId).some(item => item.id === state.folderId));
+  if (!state.listLoading || state.query || state.outbox) displayedListFilter = currentListFilter();
   const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);
@@ -8987,7 +9206,7 @@ function renderList() {
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    const listQuery = $("list-filter") && String($("list-filter").value || "").trim();
+    const listQuery = currentListFilter();
     if (!state.accounts.length && !selectedAccount()?.isLocal && !state.query) {
       empty.textContent = "Connect a mailbox to download messages here.";
     } else if (listQuery) {
@@ -9178,6 +9397,27 @@ function readerButton(action, label, run, iconNode) {
   return button;
 }
 
+function localMessageLinkButton(email) {
+  const button = readerButton("copy-local-message-link", "Copy local link to this message", async () => {
+    if (readerCurrentId() !== email.id || state.email?.accountId !== email.accountId || state.email?.bodyEpoch !== email.bodyEpoch) {
+      throw new Error("That local message link is unavailable.");
+    }
+    const result = await api.invoke("reader:copyLocalMessageLink", {
+      accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch,
+    });
+    if (result?.ok !== true) throw new Error(result?.message || "That local message link is unavailable.");
+    showStatus("Local link copied. It opens in this Morrow profile.");
+  }, strokeIcon(["M10 13a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-2 2", "M14 11a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l2-2"]));
+  const account = state.accounts.find(item => item.id === email.accountId);
+  const folder = foldersOf(account).find(item => item.id === email.folderId);
+  const role = canonicalFolderRole(folder?.wellKnownName);
+  button.disabled = !email.bodyComplete || !!email.bodyWarning || !!account?.needsReauth || email.folderId === "local-folder:trash" ||
+    ["deleteditems", "junkemail", "drafts"].includes(role);
+  return button;
+}
+
+let sentFollowups;
+
 function renderActions(pane, email) {
   if (isLocalMail(email)) {
     const bar = document.createElement("div"); bar.className = "reader-actions";
@@ -9185,6 +9425,7 @@ function renderActions(pane, email) {
       readerButton("move", "Move locally", () => openLocalTransfer([email], "move")),
       readerButton("copy-local", "Copy locally", () => openLocalTransfer([email], "copy"), strokeIcon(["M9 9h12v12H9z", "M5 15H3V3h12v2"])),
       readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
+      localMessageLinkButton(email),
       readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
@@ -9252,6 +9493,12 @@ function renderActions(pane, email) {
   localCopy.disabled = !!email.isDraft;
   menus.appendChild(localCopy);
   if (snooze) menus.append(snooze);
+  const account = state.accounts.find(item => item.id === email.accountId);
+  const inSent = foldersOf(account).some(folder => folder.id === email.folderId
+    && canonicalFolderRole(folder.wellKnownName) === "sentitems");
+  if (!email.isDraft && inSent && email.to?.length === 1 && !email.cc?.length && !email.bcc?.length) {
+    sentFollowups?.addReaderAction(menus, email);
+  }
   if (email.isDraft) {
     const resume = document.createElement("button");
     resume.type = "button";
@@ -9264,9 +9511,130 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, summary, timeline, besideStar, archive, trash, menus);
+  bar.append(reply, replyAll, suggest, forward, summary, timeline);
+  if (!email.isDraft) bar.appendChild(localMessageLinkButton(email));
+  bar.append(besideStar, archive, trash, menus);
+  if (email.dsnRedraftAvailable) {
+    const review = readerButton("dsn-redraft", "Review delivery report", () => openDsnRedraft(email),
+      strokeIcon(["M3 5h18v14H3z", "M3 6l9 7 9-7", "M12 15v1"]));
+    review.setAttribute("aria-haspopup", "dialog");
+    review.setAttribute("aria-controls", "dsn-redraft");
+    bar.appendChild(review);
+  }
   appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+let dsnRedraftView = null;
+
+function paintDsnRedraft() {
+  const view = dsnRedraftView;
+  const ready = !!view?.review && !view.saved;
+  const to = $("dsn-redraft-to"), confirm = $("dsn-redraft-confirm"), save = $("dsn-redraft-save");
+  $("dsn-redraft-review").hidden = save.hidden = !ready;
+  to.disabled = confirm.disabled = !ready || view.saving;
+  save.disabled = !ready || view.saving || !to.value || !confirm.checked;
+  $("dsn-redraft-open").hidden = !view?.saved;
+  const close = $("dsn-redraft-close");
+  close.disabled = !!view?.saving;
+  close.textContent = ready ? "Cancel" : "Close";
+  $("dsn-redraft-status").textContent = view?.status || "";
+}
+
+function acceptDsnRedraft(view, data) {
+  if (data?.draftId) {
+    view.saved = data;
+    view.status = data.alreadySaved ? "A corrected draft is already available in this mailbox’s Drafts."
+      : "Corrected draft saved on this computer in this mailbox’s Drafts.";
+    return;
+  }
+  if (!data?.review) throw new Error("This report could not be reviewed. Check the original in Sent.");
+  view.review = data.review;
+  view.status = "Verify the original mail and failed address, then look up the replacement independently.";
+  $("dsn-redraft-mailbox").textContent = data.mailbox;
+  $("dsn-redraft-from").textContent = window.morrowComposePolicy.senderPreview(data.fromAddress, data.fromDisplayName);
+  $("dsn-redraft-date").textContent = `${shownWhen(new Date(data.date))} (${data.date})`;
+  $("dsn-redraft-failed").textContent = data.failedAddress;
+  $("dsn-redraft-subject").textContent = data.subject || "(no subject)";
+  const preview = $("dsn-redraft-body");
+  preview.textContent = data.htmlBody ? "" : data.body;
+  preview.classList.toggle("is-html", !!data.htmlBody);
+  if (data.htmlBody) appendSafeMailHtml(preview, data.htmlBody, false);
+}
+
+async function openDsnRedraft(email) {
+  const dialog = $("dsn-redraft");
+  if (!email.dsnRedraftAvailable || !dialog || dialog.open) return;
+  const view = { source: { accountId: email.accountId, emailId: email.id, bodyEpoch: email.bodyEpoch }, status: "Checking the report and Sent…" };
+  dsnRedraftView = view;
+  $("dsn-redraft-to").value = "";
+  $("dsn-redraft-confirm").checked = false;
+  $("dsn-redraft-body").textContent = "";
+  paintDsnRedraft();
+  openDialog("dsn-redraft");
+  $("dsn-redraft-title").focus();
+  try {
+    const data = await call("mail:dsnRedraft", { action: "review", ...view.source });
+    if (dsnRedraftView !== view || !dialog.open || dialog.dataset.closing) return;
+    acceptDsnRedraft(view, data);
+  } catch (error) { view.status = error.message; }
+  if (dsnRedraftView === view && dialog.open) paintDsnRedraft();
+}
+
+async function saveDsnRedraft(event) {
+  event.preventDefault();
+  const view = dsnRedraftView;
+  if (!view?.review || view.saved || view.saving || $("dsn-redraft").dataset.closing || $("dsn-redraft-save").disabled) return;
+  if (state.email?.id !== view.source.emailId || state.email.accountId !== view.source.accountId || state.email.bodyEpoch !== view.source.bodyEpoch) {
+    view.review = null;
+    view.status = "The open message changed. Reopen the report to start a new review.";
+    paintDsnRedraft();
+    return;
+  }
+  const to = $("dsn-redraft-to").value, confirmed = $("dsn-redraft-confirm").checked;
+  view.saving = true;
+  view.status = "Saving the corrected draft…";
+  paintDsnRedraft();
+  try {
+    const data = await call("mail:dsnRedraft", { action: "save", ...view.source, review: view.review, to, confirmed });
+    if (!data?.draftId) throw new Error("The corrected draft could not be saved. Reopen the report to review it again.");
+    acceptDsnRedraft(view, data);
+  } catch (error) {
+    view.status = error.message;
+    if (["dsn_changed", "dsn_manual", "dsn_delayed"].includes(error.code)) view.review = null;
+  } finally {
+    view.saving = false;
+    if (dsnRedraftView === view && $("dsn-redraft").open) {
+      paintDsnRedraft();
+      if (view.saved) $("dsn-redraft-open").focus();
+      else if (view.review) $("dsn-redraft-to").focus();
+      else $("dsn-redraft-close").focus();
+    }
+  }
+}
+
+function wireDsnRedraft() {
+  const dialog = $("dsn-redraft");
+  if (!dialog) return;
+  $("dsn-redraft-form").addEventListener("submit", saveDsnRedraft);
+  $("dsn-redraft-to").addEventListener("input", () => {
+    $("dsn-redraft-confirm").checked = false;
+    paintDsnRedraft();
+  });
+  $("dsn-redraft-confirm").addEventListener("change", paintDsnRedraft);
+  $("dsn-redraft-close").addEventListener("click", () => closeDialog("dsn-redraft"));
+  $("dsn-redraft-open").addEventListener("click", () => guard(async () => {
+    const saved = dsnRedraftView?.saved;
+    if (!saved) return;
+    await closeDialog("dsn-redraft");
+    await resumeDraft({ id: saved.draftId, accountId: saved.accountId }, { status: "Corrected draft saved on this computer. Review before sending." });
+  }));
+  dialog.addEventListener("close", () => {
+    if (dialog.open) return;
+    dsnRedraftView = null;
+    $("dsn-redraft-body").textContent = "";
+    $("reader")?.querySelector('[data-action="dsn-redraft"]')?.focus();
+  });
 }
 
 function summarySource(email) {
@@ -9952,6 +10320,7 @@ function renderReader(focus, onlyChanged = false) {
   }
   const pane = $("reader");
   const emailView = state.email;
+  if (!pendingOpenId && (!emailView || emailView.bodyError || emailView.outbox)) clearShellReaderLocalLink();
   const signature = [emailView, emailView?.htmlBody, emailView?.textBody, emailView?.bodyWarning, emailView?.encodingWarning, emailView?.bodyError,
     emailView?.unread, emailView?.isStarred, emailView?.outboxStatus, emailView?.subject, emailView?.from, emailView?.date,
     emailView?.unsubscribe?.kind, emailView?.unsubscribe?.destination, emailView?.unsubscribeChecked,
@@ -9961,6 +10330,7 @@ function renderReader(focus, onlyChanged = false) {
   pane.morrowReaderSignature = signature;
   pane.removeAttribute("aria-busy");
   const email = state.email;
+  syncReaderLocalTime(email);
   if (state.translate && (!email || state.translate.emailId !== email.id)) {
     stopTranslate();
     state.translate = null;
@@ -10112,17 +10482,85 @@ function bodyRetryButton(email, refresh, label = "Retry download") {
 }
 
 const plainBodyViews = new WeakMap();
+let readerLocalTimeSource = null;
+
+function sameReaderLocalTimeSource(email, source) {
+  return email && source && !email.isDraft && !email.outbox && !email.bodyError
+    && email.id === source.id && email.accountId === source.accountId
+    && email.htmlBody === source.htmlBody && email.textBody === source.textBody;
+}
+
+function syncReaderLocalTime(email) {
+  if (!readerLocalTimeSource || sameReaderLocalTimeSource(email, readerLocalTimeSource)) return;
+  readerLocalTimeSource = null;
+  const dialog = $("reader-local-time");
+  if (!dialog) return;
+  releaseClosingDialog(dialog);
+  dialog.remove();
+}
+
+function openReaderLocalTime(email, text) {
+  if ($("reader-local-time")) return;
+  const dialog = $("reader-local-time-template").content.firstElementChild.cloneNode(true);
+  const input = dialog.querySelector("#reader-time-correction");
+  const correction = dialog.querySelector("#reader-time-clarify");
+  const status = dialog.querySelector("#reader-time-result");
+  dialog.querySelector("#reader-time-original").textContent = text;
+  input.value = text;
+
+  function convert(value) {
+    const result = window.morrowReaderLocalTime.convertSelection(value);
+    correction.hidden = result.status === "ok";
+    const confirmed = dialog.querySelector("#reader-time-confirmed");
+    confirmed.textContent = value !== text && correction.hidden ? `Confirmed timestamp: ${value}` : "";
+    confirmed.hidden = !confirmed.textContent;
+    if (result.status === "ok") {
+      const day = result.dayChanged ? " · Different day from the original" : "";
+      status.textContent = `${result.localDate} · ${result.localTime} · ${result.timeZone} (${result.utcOffset})${day}`;
+    } else {
+      status.textContent = "Enter one clear date and time with its original UTC offset, for example 2026-02-12T19:42:00Z.";
+    }
+  }
+
+  const dismiss = () => closeDialog(dialog.id);
+  dialog.querySelector("form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (correction.hidden) return;
+    if (!sameReaderLocalTimeSource(mailShortcutTarget(), email)) return syncReaderLocalTime(null);
+    convert(input.value);
+    if (correction.hidden) status.focus();
+  });
+  dialog.querySelector("#reader-time-close").addEventListener("click", dismiss);
+  dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
+  dialog.addEventListener("close", () => {
+    dialog.remove();
+    if (readerLocalTimeSource !== email) return;
+    readerLocalTimeSource = null;
+    if (sameReaderLocalTimeSource(mailShortcutTarget(), email) && !topOpenDialog()) {
+      $("reader").querySelector("[data-action='local-time']")?.focus({ preventScroll: true });
+    }
+  });
+  convert(text);
+  readerLocalTimeSource = email;
+  document.body.appendChild(dialog);
+  openDialog(dialog.id);
+  (correction.hidden ? status : input).focus();
+}
+
 function renderBody(pane, email, refresh) {
   if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
     pane.appendChild(warning);
     pane.appendChild(bodyRetryButton(email, refresh));
-  } else if (!isLocalMail(email) && !email?.isDraft && (email?.unsubscribeChecked === false
-      || state.accounts.some(account => account.id === email?.accountId && account.mailTransport === "gmail_api"))) {
+  } else if (!isLocalMail(email) && !email?.isDraft && (email?.unsubscribeChecked === false || email?.dsnRedraftAvailable
+      || state.accounts.some(account => account.id === email?.accountId && (account.mailTransport === "gmail_api"
+        || String(email.folderId || "").toUpperCase() === "INBOX"
+        || account.folders?.primary?.some(folder => folder.id === email.folderId
+          && (folder.wellKnownName === "inbox" || folder.wellKnownName === "sentitems")))))) {
     // Older corrupted bodies can contain no replacement characters and carry no
-    // warning. Legacy caches can also lack unsubscribe headers. Keep reloading
-    // explicit and available without scanning or downloading on ordinary open.
+    // warning. Older Inbox and Sent caches may lack delivery-failure review evidence.
+    // Keep reloading explicit without a download on ordinary open.
     pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
@@ -10130,9 +10568,13 @@ function renderBody(pane, email, refresh) {
   let choice = plainBodyViews.get(pane);
   if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
   const body = document.createElement("div");
+  let wrapper;
   const paint = () => {
     body.replaceChildren();
-    appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    if (pane.id === "reader" && !choice.plain && email?.htmlBody && typeof window !== "undefined") {
+      window.morrowReaderTableColumns?.mount(wrapper, email.htmlBody, parkMailStyleAttributes);
+    }
   };
   if (email?.htmlBody && email?.textBody?.trim()) {
     const toggle = document.createElement("button");
@@ -10143,6 +10585,38 @@ function renderBody(pane, email, refresh) {
   }
   pane.appendChild(body);
   paint();
+
+  const selection = typeof window !== "undefined" && window.morrowReplySelection;
+  const actions = pane.id === "reader" && !email.isDraft && pane.querySelector(".reader-actions");
+  if (!actions || !selection) return;
+  if (window.morrowReaderLocalTime) {
+    const time = readerButton("local-time", "Show local time", () => {
+      const current = mailShortcutTarget();
+      const text = time.isConnected && sameReaderLocalTimeSource(current, email) && selection.read(wrapper);
+      if (!text) return showStatus("Select a date and time in this message and try again.", true);
+      if (text.length > 256) return showStatus("Select one date and time, up to 256 characters.", true);
+      openReaderLocalTime(current, text);
+    }, strokeIcon(["M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20z", "M12 6v6l4 2"]));
+    time.setAttribute("aria-haspopup", "dialog");
+    time.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
+    actions.insertBefore(time, actions.querySelector(".reader-menus"));
+  }
+  const reply = actions.querySelector("[data-action='reply']");
+  if (!reply) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.dataset.action = "reply-selection";
+  button.textContent = "Reply quoting selection";
+  // A pointer click must leave the selected range intact until the action reads it.
+  button.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
+  button.addEventListener("click", () => guard(() => {
+    const excerpt = button.isConnected && state.email === email && mailShortcutTarget()?.id === email.id
+      && selection.read(wrapper);
+    if (!excerpt) return showStatus("Select text in this message and try again.", true);
+    return openReaderCompose("reply", email, excerpt);
+  }));
+  reply.after(button);
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -10645,6 +11119,7 @@ let attachmentPreviewRequest = null;
 let attachmentPreviewFileId = "";
 let pdfPreviewLoader = null;
 const attachmentTasks = new Map();
+const PDF_PREVIEW_SOURCE_CHANGED = "The attachment list changed. Reopen the PDF to save it.";
 
 function attachmentTaskKey(email, ids) {
   return JSON.stringify([String(email.id), ids]);
@@ -10686,11 +11161,11 @@ function cancelAttachmentTask(task) {
   });
 }
 
-function startAttachmentTask(channel, email, files, label) {
+function startAttachmentTask(channel, email, files, label, accountId) {
   const zip = channel === "mail:downloadAttachmentsZip", draft = channel === "mail:prepareDraft", forward = channel === "mail:prepareForward";
   const prepare = draft || forward;
   const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
-  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids]);
+  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids, accountId]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
   const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? (forward ? "Forward attachments" : "Draft attachments") : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
@@ -10701,6 +11176,7 @@ function startAttachmentTask(channel, email, files, label) {
     if (task === attachmentPreviewRequest && $("attachment-preview-status")) $("attachment-preview-status").textContent = attachmentTaskCopy(task);
   }) : () => {};
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
+    ...(accountId ? { accountId } : {}),
     ...(draft ? { draftRevision: email.draftRevision } : forward ? { accountId: email.accountId, attachmentIds: ids } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
@@ -10765,7 +11241,32 @@ function clearPdfPreviewPages() {
   pages.removeAttribute("aria-busy");
 }
 
+function updatePdfPreviewSave(source) {
+  const button = $("attachment-preview-save");
+  if (!button) return;
+  button.hidden = !source;
+  button.onclick = null;
+  if (!source) return;
+  const activate = () => attachmentAction(() => {
+    if (button.onclick !== activate || !$("attachment-preview").open) return;
+    updatePdfPreviewSave(null);
+    closeAttachmentPreview();
+    if (source.isCurrent()) return source.save();
+    showStatus(PDF_PREVIEW_SOURCE_CHANGED, true);
+  });
+  button.onclick = activate;
+}
+
+function showPdfPreviewSourceChanged() {
+  if (document.activeElement === $("attachment-preview-save")) $("attachment-preview-close").focus();
+  updatePdfPreviewSave(null);
+  const status = $("attachment-preview-status");
+  status.textContent = PDF_PREVIEW_SOURCE_CHANGED;
+  status.hidden = false;
+}
+
 function updatePdfPreviewHeader(email) {
+  updatePdfPreviewSave(null);
   const source = $("attachment-preview-from");
   if (source) {
     source.textContent = email ? "From: " + (email.from || email.fromAddress || "Unknown sender") : "";
@@ -10839,8 +11340,7 @@ function finishAttachmentPreview() {
   if ($("attachment-preview").open) return;
   const origin = state.composePdfPreview;
   clearAttachmentPreview();
-  if (!origin || origin.session !== state.composeSession || !state.composePdfBytes.has(origin.storageUrl)
-      || topOpenDialog()?.id !== "compose") return;
+  if (!origin || origin.session !== state.composeSession || topOpenDialog()?.id !== "compose") return;
   const button = [...$("compose-attachments").querySelectorAll("[data-compose-pdf]")]
     .find((node) => node.dataset.composePdf === origin.storageUrl);
   button?.focus();
@@ -10850,7 +11350,11 @@ function syncAttachmentPreview(email) {
   const dialog = $("attachment-preview");
   if (!dialog || !dialog.open || state.composePdfPreview) return;
   const id = email && email.id;
-  if (id && id === attachmentPreviewEmailId) return;
+  if (id && id === attachmentPreviewEmailId) {
+    // renderReader has already removed the row that opened this preview.
+    if ($("attachment-preview-save")?.hidden === false) showPdfPreviewSourceChanged();
+    return;
+  }
   closeAttachmentPreview();
 }
 
@@ -10918,7 +11422,7 @@ function pdfPreviewError(error, inCompose) {
   return inCompose ? message : message + " Save or Open it instead.";
 }
 
-async function previewAttachment(email, file, composeBytes) {
+async function previewAttachment(email, file, composeBytes, draftPdf, source) {
   const kind = composeBytes ? "pdf" : attachmentPreviewKind(file);
   if (!kind || !file || !file.id) return;
   if (email && attachmentPreviewEmailId === email.id && attachmentPreviewFileId === file.id && $("attachment-preview")?.open) return;
@@ -10933,17 +11437,31 @@ async function previewAttachment(email, file, composeBytes) {
   attachmentPreviewAbort = controller;
   attachmentPreviewEmailId = email && email.id ? email.id : "";
   attachmentPreviewFileId = file.id;
-  state.composePdfPreview = composeBytes ? { session: state.composeSession, storageUrl: file.storageUrl } : null;
-  showAttachmentPreviewShell(file, kind, email);
+  const inCompose = !!(composeBytes || draftPdf);
+  state.composePdfPreview = inCompose ? { session: state.composeSession, storageUrl: file.storageUrl } : null;
+  showAttachmentPreviewShell(file, kind, inCompose ? null : email);
+  const current = () => gen === attachmentPreviewToken && (!draftPdf
+    || ($("attachment-preview").open && $("compose").open && currentComposeDraftPdf() === draftPdf));
+  const changed = "The saved draft or attachment changed. Reopen the draft to preview it.";
+  const status = $("attachment-preview-status");
   const label = file.filename || "attachment";
-  let data;
+  let data, task, savedId;
   try {
     if (!composeBytes) {
-      attachmentPreviewRequest = startAttachmentTask("mail:fetchAttachmentBytes", email, [file], "Preview");
-      data = await attachmentPreviewRequest.promise;
+      let selected = file;
+      if (draftPdf) {
+        if (status) { status.hidden = false; status.textContent = "Loading preview…"; }
+        savedId = await readComposeDraftPdfId(draftPdf, file.storageUrl);
+        if (!current()) return;
+        if (!savedId) throw new Error(changed);
+        selected = { id: savedId, filename: file.filename };
+      }
+      task = startAttachmentTask("mail:fetchAttachmentBytes", draftPdf || email, [selected], "Preview", draftPdf?.accountId);
+      attachmentPreviewRequest = task;
+      data = await task.promise;
     }
   } catch (error) {
-    if (gen !== attachmentPreviewToken) return;
+    if (!current()) return;
     attachmentPreviewFileId = "";
     const message = error instanceof Error ? error.message : String(error);
     if (message === "cancelled") {
@@ -10958,9 +11476,8 @@ async function previewAttachment(email, file, composeBytes) {
     }
     throw error;
   }
-  if (gen !== attachmentPreviewToken) return;
+  if (!current() || (draftPdf && task?.cancelRequested)) return;
   const bytes = composeBytes || attachmentBytes(data);
-  const status = $("attachment-preview-status");
   if (!bytes.byteLength) {
     if (status) {
       status.hidden = false;
@@ -11004,21 +11521,35 @@ async function previewAttachment(email, file, composeBytes) {
   if (status) { status.hidden = false; status.textContent = "Rendering PDF…"; }
   try {
     const pdfApi = await loadPdfPreview();
-    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    if (!current() || controller.signal.aborted) return;
+    if (draftPdf) {
+      const latestId = await readComposeDraftPdfId(draftPdf, file.storageUrl);
+      if (!current() || task.cancelRequested) return;
+      if (latestId !== savedId) {
+        pages.hidden = true;
+        if (status) { status.hidden = false; status.textContent = changed; }
+        return;
+      }
+    }
     await pdfApi.render({
       data: bytes,
       pages,
       stage,
       signal: controller.signal,
       onFirstPage() {
-        if (gen !== attachmentPreviewToken) return;
+        if (!current() || controller.signal.aborted || !$("attachment-preview").open) return;
         if (status) status.hidden = true;
+        if (!inCompose && source) {
+          if (source.isCurrent()) updatePdfPreviewSave(source);
+          else showPdfPreviewSourceChanged();
+        }
       },
     });
   } catch (error) {
-    if (gen !== attachmentPreviewToken || controller.signal.aborted) return;
+    if (!current() || controller.signal.aborted) return;
+    updatePdfPreviewSave(null);
     attachmentPreviewFileId = "";
-    const message = pdfPreviewError(error, !!composeBytes);
+    const message = pdfPreviewError(error, inCompose);
     if (!message || !status) return;
     status.hidden = false;
     status.textContent = message;
@@ -11042,6 +11573,7 @@ async function saveAttachmentsZip(email, files) {
 // Repainting a downloaded body must not close the attachment list again.
 const attachmentDisclosures = new WeakMap();
 let attachmentDisclosureId = 0;
+let readerAttachmentSaveList;
 
 function renderAttachments(pane, email) {
   const key = JSON.stringify([email.accountId || "", email.id || ""]);
@@ -11123,6 +11655,12 @@ function renderAttachments(pane, email) {
     const label = file.filename || "attachment";
     const actionLabel = nameCounts.get(label) > 1 ? `${label}, attachment ${index + 1} of ${files.length}` : label;
     const kind = file.id ? attachmentPreviewKind(file) : "";
+    const save = () => useAttachment("mail:downloadAttachment", email, file);
+    const source = kind === "pdf" && email.id && pane === $("reader") ? {
+      isCurrent: () => item.isConnected && pane.contains(item),
+      save,
+    } : null;
+    const preview = () => attachmentAction(() => previewAttachment(email, file, null, null, source));
     const name = document.createElement(kind ? "button" : "span");
     name.className = "attachment-name";
     name.textContent = label;
@@ -11130,7 +11668,7 @@ function renderAttachments(pane, email) {
     if (kind) {
       name.type = "button";
       name.setAttribute("aria-label", "Preview " + actionLabel);
-      name.addEventListener("click", () => attachmentAction(() => previewAttachment(email, file)));
+      name.addEventListener("click", preview);
     }
     main.appendChild(name);
     if (size) {
@@ -11143,9 +11681,13 @@ function renderAttachments(pane, email) {
     if (file.id) {
       const actions = document.createElement("div");
       actions.className = "attachment-actions";
-      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => previewAttachment(email, file))));
-      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(() => useAttachment("mail:downloadAttachment", email, file))));
+      if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, preview));
+      actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(save)));
       actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      if (pane === $("reader") && readerAttachmentSaveList) {
+        actions.appendChild(attachmentGhost("Add to save list", "Add " + actionLabel + " to save list",
+          () => readerAttachmentSaveList.add(email, file)));
+      }
       item.appendChild(actions);
     }
     list.appendChild(item);
@@ -12440,17 +12982,19 @@ async function loadList(fromNetwork, requestedOffset) {
   state.listFilterError = false;
   const listFilter = currentListFilter();
   const gen = ++listGen;
+  if (localFilterSearchOrigin && localFilterSearchOrigin.folderId !== localFilterSearchFolder()?.id) endLocalFilterSearch();
   noteUnreadScope();
   const scope = JSON.stringify([state.allInbox, state.allInboxUnreadOnly, state.allInboxStarredOnly, state.outbox, state.accountId, state.folderId, state.query, state.searchAccountId, state.toMeOnly]);
   const scopeChanged = state.listScope !== scope;
   const filterChanged = state.loadedListFilter !== listFilter;
   state.loadedListFilter = listFilter;
-  if (scopeChanged) filterSelection.clear();
   if (filterChanged) {
     state.listOffset = 0;
     state.listCursors = [];
   }
   if (scopeChanged) {
+    listFilterEditPending = false;
+    filterSelection.clear();
     state.listScope = scope;
     state.listOffset = 0;
     state.listTotal = 0;
@@ -12460,7 +13004,7 @@ async function loadList(fromNetwork, requestedOffset) {
   if (scopeChanged) {
     state.emails = [];
     renderList();
-  }
+  } else paintLocalFilterSearch();
   paintListPaging();
   try {
     if (state.outbox && !state.query) {
@@ -12542,6 +13086,12 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     const rows = data?.emails || [];
     const pageSize = data?.geometry?.pageSize ?? rows.length;
+    // An edit can return to the same phrase or need a retry. Capture the current
+    // selection only once its replacement page has actually arrived.
+    if (listFilterEditPending && state.selectedIds.length) {
+      for (const email of selectedMessages()) filterSelection.set(String(email.id), email);
+    }
+    listFilterEditPending = false;
     // A trailing held row can confirm membership from outside this page.
     state.emails = takeEmails(rows.slice(0, pageSize));
     if (unreadListActive(currentUnreadView()) && !optimisticRemovals.has(state.unreadHold?.id)) {
@@ -12552,6 +13102,10 @@ async function loadList(fromNetwork, requestedOffset) {
     }
     state.listTotal = Number.isFinite(data?.total) ? data.total : offset + state.emails.length;
     state.listSyncDone = data?.initialSyncDone !== false;
+    if (listFilter && request.params.accountId === LOCAL_ACCOUNT_ID && data?.total === 0
+      && Array.isArray(data.emails) && !data.emails.length) {
+      emptyLocalFilterResult = { gen, folderId: request.params.folderId, filter: listFilter };
+    }
     if (!state.allInbox && data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
     state.listLoading = false;
     renderList();
@@ -13964,7 +14518,10 @@ function openSelectionMenu(x, y, origin) {
   const context = contextMessages(selectedMessages());
   const messages = context.rows;
   if (!messages.length) return;
-  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y, origin); return; }
+  if (messages.every(isLocalMail)) {
+    openLocalMessageMenu(messages, x, y, origin, { ids: state.selectedIds.slice(), view: mailboxViewKey() });
+    return;
+  }
   const email = messages[0];
   const account = state.accounts.find((item) => item.id === email.accountId);
   const provider = folderProvider(account);
@@ -14009,9 +14566,22 @@ function selectionButton(id, label, paths, run) {
 }
 
 function wireSelection() {
-  $("filter-chip").addEventListener("click", () => { $("list-filter").value = ""; applyListFilter(); });
+  $("filter-chip").addEventListener("click", () => { clearListFilterInput(); applyListFilter(); });
+  $("local-filter-search")?.addEventListener("click", startLocalFilterSearch);
+  const returnButton = $("local-filter-return");
+  returnButton?.addEventListener("click", () => {
+    if (returnButton.hidden) return;
+    $("search-query").value = "";
+    applySearch();
+  });
   $("list-to-me").addEventListener("click", () => guard(toggleToMeFilter));
-  $("search-account").addEventListener("change", () => { state.searchAccountId = $("search-account").value; guard(applySearch); });
+  $("search-account").addEventListener("change", () => {
+    state.searchAccountId = $("search-account").value;
+    if (localFilterSearchOrigin) {
+      localFilterSearchOrigin.searchAccountId = state.searchAccountId;
+      applySearch();
+    } else guard(applySearch);
+  });
   const bar = $("selection-actions");
   if (!bar || bar.childElementCount) return;
   const mail = ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"];
@@ -14483,8 +15053,7 @@ async function selectOutbox() {
   state.query = "";
   const search = $("search-query");
   if (search) search.value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
+  clearListFilterInput();
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
@@ -14516,8 +15085,7 @@ async function selectAllInbox(unreadOnly, starredOnly = false) {
     state.selectionAnchor = "";
     state.query = "";
     $("search-query").value = "";
-    const listFilter = $("list-filter");
-    if (listFilter) listFilter.value = "";
+    clearListFilterInput();
   } else if (state.allInboxUnreadOnly !== nextUnread) {
     state.selectedIds = [];
     state.selectionAnchor = "";
@@ -14550,8 +15118,7 @@ async function selectFolder(accountId, folderId) {
   state.folderId = folderId;
   state.query = "";
   $("search-query").value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
+  clearListFilterInput();
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
@@ -14581,8 +15148,15 @@ function readerCurrentId() {
   return pendingOpenId || (state.email && state.email.id) || "";
 }
 
+function clearShellReaderLocalLink() {
+  if (!shellLocalLinkBound) return;
+  shellLocalLinkBound = false;
+  api.invoke("reader:clearLocalMessageLink").catch(() => {});
+}
+
 function invalidateReaderOpen() {
   clearMessageSummary();
+  clearShellReaderLocalLink();
   openGen += 1;
   pendingOpenId = "";
   pendingOpenBody = false;
@@ -14698,7 +15272,7 @@ function applyCachedBody(email) {
       || target.email.bodyWarning !== body.bodyWarning || target.email.encodingWarning !== body.encodingWarning || target.email.bodyComplete !== body.bodyComplete;
     const metadata = {};
     for (const field of ["attachments", "hasAttachments", "draftRevision", "draftPending", "from", "fromAddress", "fromDisplayName", "recipientHeaders", "replyTo",
-      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft", "unsubscribe", "unsubscribeChecked"]) {
+      "to", "cc", "bcc", "subject", "messageId", "inReplyTo", "threadId", "conversationId", "isDraft", "unsubscribe", "unsubscribeChecked", "dsnRedraftAvailable"]) {
       if (Object.hasOwn(email, field)) metadata[field] = email[field];
     }
     changed ||= Object.entries(metadata).some(([field, value]) => JSON.stringify(target.email[field]) !== JSON.stringify(value));
@@ -14744,6 +15318,11 @@ function pumpBodyRefreshes() {
 function acceptBodyAccounts(accounts) {
   const previous = new Map(state.accounts.map(account => [account.id, account.bodyEpoch || 0]));
   state.accounts = Array.isArray(accounts) ? accounts : [];
+  if (state.composeMeta) syncComposeCalendarSlots();
+  if (state.composeInboxDraft) {
+    if (state.composeInboxPicker && !currentComposeInboxDraft()) invalidateComposeInboxPicker();
+    syncComposeInboxButton();
+  }
   observeCrossMailboxMoveContext();
   if (messageSummary && !summaryMatches(state.email)) {
     clearMessageSummary();
@@ -14763,6 +15342,10 @@ function acceptBodyAccounts(accounts) {
       { ...target.identity, bodyVersion: account.bodyVersion || 0, attempted: -1 });
   }
   pumpBodyRefreshes();
+  if (state.view === "agent") {
+    const payload = $("agent-home")?.morrowHomePayload;
+    if (payload) paintAgentHome(payload);
+  }
 }
 
 function applyBodyUpdate(payload) {
@@ -14792,6 +15375,7 @@ function applyBodyUpdate(payload) {
 }
 
 function paintReaderPending(email) {
+  syncReaderLocalTime(null);
   const pane = $("reader");
   pane.replaceChildren();
   if (isReaderWindow()) pane.appendChild(readerCloseBar());
@@ -14840,7 +15424,10 @@ async function openMessage(emailId, focus, full = false) {
   renderList();
   let data;
   try {
-    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}), includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) });
+    const openForReader = !isReaderWindow() && api?.openEmailForReader;
+    if (openForReader) shellLocalLinkBound = true;
+    data = await call("mail:openEmail", { emailId, ...(expectedAccountId ? { accountId: expectedAccountId } : {}),
+      includeThread: state.prefs.conversation !== false, ...(full ? { full: true, retry: true } : {}) }, openForReader);
   } catch (error) {
     if (gen !== openGen) return;
     abandonOpen(emailId, error instanceof Error ? error.message : String(error));
@@ -14896,12 +15483,19 @@ async function openMessage(emailId, focus, full = false) {
 }
 
 async function applySearch() {
-  ++mailboxNavigationGen;
+  const navigation = ++mailboxNavigationGen;
   cancelCrossMailboxMoveOnNavigation();
   invalidateReaderOpen();
   const query = $("search-query").value.trim();
   if (query) state.outbox = false;
   state.query = query;
+  const origin = query ? null : endLocalFilterSearch();
+  if (origin && origin.folderId === localFilterSearchFolder()?.id) {
+    clearListFilterInput();
+    const filter = $("list-filter");
+    filter.value = origin.filter;
+    filter.focus();
+  }
   state.email = null;
   state.thread = [];
   state.selectedIds = [];
@@ -14911,11 +15505,11 @@ async function applySearch() {
   try {
     await loadList();
   } catch (error) {
-    if (state.query !== query) return;
+    if (navigation !== mailboxNavigationGen || state.query !== query) return;
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
-  if (state.query !== query) return;
+  if (navigation !== mailboxNavigationGen || state.query !== query) return;
   showStatus("");
 }
 
@@ -15289,13 +15883,15 @@ function seedComposeReplyQuote(fields) {
       || fields.botDraft || fields.partialReceipt || !composeEditorLive()) return;
   const node = document.createElement("div");
   node.setAttribute("data-compose-reply-quote", "1");
-  const message = composeReplyQuoteMessage(quote.email);
-  if (message) node.appendChild(message);
+  const excerpt = fields.selectedReplyQuote;
+  const message = excerpt ? null : composeReplyQuoteMessage(quote.email);
+  if (excerpt) node.appendChild(window.morrowReplySelection.quoteBody(document, excerpt));
+  else if (message) node.appendChild(message);
   else appendSafeMailHtml(node, toHtml(outgoingBody("", quote.text)), false);
   quote.inEditor = true;
   quote.editorNode = node;
   quote.editorHtml = node.innerHTML;
-  quote.editorBodyText = message ? plainFromComposeHtml(message.lastElementChild.innerHTML) : readable(quote.email);
+  quote.editorBodyText = excerpt || (message ? plainFromComposeHtml(message.lastElementChild.innerHTML) : readable(quote.email));
   if (message && message.quoteFormattingLimited) {
     quote.formattingNote = composeQuoteFormattingNote();
     quote.email.quoteFormattingLimited = true;
@@ -15814,7 +16410,7 @@ function syncComposeRecipientRows() {
 function syncComposeActions() {
   const account = composeAccount();
   const live = isLive(account);
-  const locked = state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending || composeFilesPending();
+  const locked = composeActionsLocked();
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
   $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   const sendButton = $("compose-send");
@@ -15825,11 +16421,16 @@ function syncComposeActions() {
     sendNow.hidden = !offerNow;
     sendNow.disabled = !live || locked || !!state.composeIdentityError;
   }
+  syncComposeInboxButton();
+  syncComposeCalendarSlots();
+}
+
+function composeActionsLocked() {
+  return state.composePending || state.composeQueued || state.composeInitializing || !!state.draftWrite?.pending || composeFilesPending();
 }
 
 function syncCompose() {
   const locked = state.composePending || state.composeQueued;
-  syncComposeActions();
   $("compose-close").disabled = state.composePending;
   for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-show-cc", "compose-show-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at", "compose-attach", "compose-file"]) {
     const control = $(id);
@@ -15843,11 +16444,277 @@ function syncCompose() {
     if (control) { control.readOnly = !!state.composePartialReceipt; if (state.composePartialReceipt) control.disabled = false; }
   }
   setComposeFormatLocked(locked);
+  syncComposeActions();
   syncComposeRecipientRows();
   paintComposeAttachments();
   paintComposeNote();
   paintComposeAi();
   if (recipientSuggestInput && (recipientSuggestInput.disabled || recipientSuggestInput.readOnly)) hideRecipientSuggest();
+}
+
+let composeCalendarCaret = null;
+let composeCalendarPicker = null;
+
+function composeCalendarReply() {
+  return !state.botDraftReview && ["reply", "all"].includes(state.composeMeta?.kind);
+}
+
+function composeCalendarSender() {
+  const account = composeAccount();
+  const identity = state.composeIdentity;
+  const from = state.composeMeta?.fromAddress;
+  const editor = $("compose-editor");
+  if (!composeCalendarReply() || !isLive(account) || composeActionsLocked() || sendTimer || composeWindowClosing
+      || state.composeIdentityError || state.composePartialReceipt || !composeEditorLive() || !editor.isConnected
+      || editor.contentEditable !== "true" || !identity || identity.accountId !== account.id || identity.accountEpoch !== account.bodyEpoch
+      || !from || $("compose-from").value !== from || !identity.sendAs?.some(row => row.email === from)) return null;
+  return account;
+}
+
+function composeCalendarChecks(accountId, serialized) {
+  const ids = readCalendarCheckStore(serialized)[accountId];
+  return Array.isArray(ids) ? ids : [];
+}
+
+function sameComposeCalendarChecks(picker, ids) {
+  const checked = new Set(ids);
+  return ids.length === picker.calendarIds.length && picker.calendarIds.every(id => checked.has(id));
+}
+
+function ownsComposeCalendarScope(picker) {
+  const compose = $("compose");
+  const account = composeCalendarSender();
+  return compose.open && compose.dataset.closing !== "1" && state.composeSession === picker.session
+    && account?.id === picker.accountId && state.composeIdentity === picker.identity
+    && state.composeMeta.fromAddress === picker.fromAddress && $("compose-editor") === picker.editor
+    && sameComposeCalendarChecks(picker, composeCalendarChecks(picker.accountId));
+}
+
+function cancelComposeCalendarSlots() {
+  composeCalendarPicker = null;
+  return closeDialog("compose-calendar-slots");
+}
+
+function invalidateComposeCalendarSlots(picker, message) {
+  if (composeCalendarPicker !== picker) return;
+  cancelComposeCalendarSlots();
+  if ($("compose").open && state.composeSession === picker.session) setComposeStatus(message, true);
+}
+
+function syncComposeCalendarSlots() {
+  const button = $("compose-calendar-slots-open");
+  if (!button) return;
+  button.hidden = !composeCalendarReply();
+  const help = $("compose-calendar-slots-help");
+  if (help) help.hidden = button.hidden;
+  button.disabled = !window.morrowComposeCalendarSlots || !composeCalendarSender();
+  const picker = composeCalendarPicker;
+  if (picker && !ownsComposeCalendarScope(picker)) cancelComposeCalendarSlots();
+}
+
+function currentComposeCalendarPicker(picker) {
+  if (!picker || composeCalendarPicker !== picker || !$("compose-calendar-slots").open || picker.inserting) return false;
+  if (ownsComposeCalendarScope(picker)) return true;
+  cancelComposeCalendarSlots();
+  return false;
+}
+
+function composeCalendarPair(picker) {
+  const { formatCalendarSlotPair } = window.morrowComposeCalendarSlots;
+  return formatCalendarSlotPair(picker.picks.flatMap(pick => pick.request.slots), picker.picks.map(pick => pick.slot));
+}
+
+function paintComposeCalendarSlots(picker) {
+  const { formatCalendarSlot } = window.morrowComposeCalendarSlots;
+  const list = $("compose-calendar-slots-time");
+  const picked = new Set(picker.picks.map(pick => pick.slot.startMs));
+  const slots = (picker.request?.slots || []).filter(slot => !picked.has(slot.startMs));
+  list.replaceChildren(option("", "Choose a time"), ...slots.map(slot => option(String(slot.startMs), formatCalendarSlot(slot))));
+  list.disabled = !slots.length || picked.size === 2;
+  $("compose-calendar-slots-add").disabled = true;
+  $("compose-calendar-slots-clear").disabled = !picked.size;
+  const pair = composeCalendarPair(picker);
+  $("compose-calendar-slots-preview").textContent = pair ?? formatCalendarSlot(picker.picks[0]?.slot);
+  $("compose-calendar-slots-status").textContent = picker.status;
+  $("compose-calendar-slots-insert").disabled = !picker.request?.slots || !pair;
+}
+
+function openComposeCalendarSlots() {
+  const account = composeCalendarSender();
+  const calendar = window.morrowComposeCalendarSlots;
+  const dialog = $("compose-calendar-slots");
+  if (!account || !calendar || dialog.open || topOpenDialog()?.id !== "compose") return;
+  const editor = $("compose-editor");
+  const session = state.composeSession;
+  const saved = composeCalendarCaret;
+  const range = document.activeElement === editor ? rememberEditorRange(editor)
+    : saved?.session === session && saved.editor === editor ? saved.range : null;
+  const calendarIds = composeCalendarChecks(account.id);
+  const picker = { session, editor, range, accountId: account.id, identity: state.composeIdentity,
+    fromAddress: state.composeMeta.fromAddress, calendarIds, names: new Map(), picks: [], request: null,
+    status: calendarIds.length ? "" : "Select calendars for this mailbox in Calendar." };
+  composeCalendarPicker = picker;
+  const date = $("compose-calendar-slots-date");
+  date.value = "";
+  date.disabled = !calendar.validCheckedCalendarIds(calendarIds);
+  if (date.disabled && calendarIds.length) picker.status = "Review the checked calendars for this mailbox in Calendar.";
+  paintComposeCalendarSlots(picker);
+  closeComposeAi();
+  $("compose-calendar-slots-open").focus();
+  openDialog(dialog.id);
+  (date.disabled ? $("compose-calendar-slots-cancel") : date).focus();
+}
+
+async function loadComposeCalendarSlots() {
+  const picker = composeCalendarPicker;
+  const date = $("compose-calendar-slots-date");
+  const day = date.value;
+  if (picker?.inserting && day !== picker.request.day) cancelComposeCalendarSlots();
+  if (!currentComposeCalendarPicker(picker) || date.disabled || day === picker.request?.day) return;
+  const calendar = window.morrowComposeCalendarSlots;
+  const range = calendar.calendarDayBounds(day);
+  const request = { day, slots: null };
+  picker.request = request;
+  picker.status = range ? "Checking availability…" : day ? "Choose a valid date." : "";
+  paintComposeCalendarSlots(picker);
+  if (!range) return;
+
+  const { accountId, calendarIds } = picker;
+  let payload;
+  try { payload = await call("calendar:list", { accountId, calendarIds, ...range, availabilityOnly: true }); }
+  catch { /* All checked calendars stay unconfirmed when the read fails. */ }
+  if (!currentComposeCalendarPicker(picker) || picker.request !== request || date.value !== day) return;
+  if (payload?.accountId === accountId) {
+    for (const id of calendarIds) {
+      const name = calendarNameOf(payload.calendars, id);
+      if (typeof name === "string" && name && name !== id) picker.names.set(id, name);
+    }
+  }
+  const { slots, unavailableCalendarIds } = calendar.availableCalendarSlots({ day, accountId, checkedCalendarIds: calendarIds, payload });
+  if (unavailableCalendarIds.length) {
+    const names = unavailableCalendarIds.map(id => picker.names.get(id) || id);
+    picker.picks = [];
+    picker.status = `Could not verify availability for ${names.join(", ")}.`;
+  } else {
+    request.slots = slots;
+    picker.picks = picker.picks.flatMap(pick => {
+      if (pick.request.day !== day) return [pick];
+      const slot = slots.find(candidate => candidate.startMs === pick.slot.startMs);
+      return slot ? [{ request, slot }] : [];
+    });
+    picker.status = slots.length ? "" : "No available times on this date.";
+  }
+  paintComposeCalendarSlots(picker);
+}
+
+function addComposeCalendarSlot() {
+  const picker = composeCalendarPicker;
+  if (!currentComposeCalendarPicker(picker) || picker.picks.length === 2 || picker.request?.day !== $("compose-calendar-slots-date").value) return;
+  const list = $("compose-calendar-slots-time");
+  const request = picker.request;
+  const slot = request.slots?.find(candidate => String(candidate.startMs) === list.value);
+  if (!slot || picker.picks.some(pick => pick.slot.startMs === slot.startMs)) return;
+  picker.picks.push({ request, slot });
+  paintComposeCalendarSlots(picker);
+  if (picker.picks.length === 2) $("compose-calendar-slots-insert").focus();
+  else (list.disabled ? $("compose-calendar-slots-date") : list).focus();
+}
+
+function insertComposeCalendarText(editor, savedRange, text) {
+  const protectedNodes = [...editor.querySelectorAll("[data-compose-signature], [data-compose-reply-quote]")];
+  const boundary = document.createRange();
+  if (protectedNodes.length) boundary.setStartBefore(protectedNodes[0]);
+  boundary.collapse(true);
+  const range = savedRange?.cloneRange() || document.createRange();
+  if (!savedRange || !editor.contains(range.commonAncestorContainer)
+      || (protectedNodes.length && boundary.comparePoint(range.endContainer, range.endOffset) > 0)) range.setStart(editor, 0);
+  range.collapse(true);
+
+  // Keep Chromium from normalizing a caret at the start into a leading
+  // signature or quote, even when all authored content has been deleted.
+  const editable = protectedNodes.map(node => node.getAttribute("contenteditable"));
+  try {
+    for (const node of protectedNodes) node.setAttribute("contenteditable", "false");
+    editor.focus();
+    restoreEditorRange(editor, range);
+    const live = rememberEditorRange(editor);
+    if (document.activeElement !== editor || !live?.collapsed
+        || protectedNodes.some(node => node.contains(live.startContainer))) return false;
+    const anchor = live.startContainer;
+    const element = anchor.nodeType === 1 ? anchor : anchor.parentElement;
+    const block = element.closest("div, p, li, blockquote, pre, td, th, h1, h2, h3, h4, h5, h6") || editor;
+    const before = document.createRange();
+    before.selectNodeContents(block);
+    before.setEnd(anchor, live.startOffset);
+    const after = document.createRange();
+    after.selectNodeContents(block);
+    after.setStart(anchor, live.startOffset);
+    // Keep both proposed times on their own lines when the caret touches existing text.
+    const insertion = (before.toString().trim() ? "\n" : "") + text + (after.toString().trim() ? "\n" : "");
+    return document.execCommand("insertText", false, insertion);
+  } finally {
+    for (const [index, node] of protectedNodes.entries()) {
+      if (editable[index] === null) node.removeAttribute("contenteditable");
+      else node.setAttribute("contenteditable", editable[index]);
+    }
+  }
+}
+
+async function confirmComposeCalendarSlots() {
+  const picker = composeCalendarPicker;
+  if (!currentComposeCalendarPicker(picker)) return;
+  const request = picker.request;
+  if (!request?.slots || request.day !== $("compose-calendar-slots-date").value) return;
+  const pair = composeCalendarPair(picker);
+  if (!pair) return;
+  picker.inserting = true;
+  $("compose-calendar-slots-insert").disabled = true;
+  await closeDialog("compose-calendar-slots");
+  if (composeCalendarPicker !== picker) return;
+  composeCalendarPicker = null;
+  if ($("compose-calendar-slots").open || !ownsComposeCalendarScope(picker) || request.day !== $("compose-calendar-slots-date").value
+      || topOpenDialog()?.id !== "compose") return;
+  let inserted = false;
+  try { inserted = insertComposeCalendarText(picker.editor, picker.range, pair); }
+  catch { /* Leave the editor alone if native insertion is unavailable. */ }
+  if (!inserted) setComposeStatus("Could not insert the proposed times. Open Offer two times… to try again.", true);
+}
+
+function wireComposeCalendarSlots() {
+  const dialog = $("compose-calendar-slots");
+  if (!dialog) return;
+  const editor = $("compose-editor");
+  const trigger = $("compose-calendar-slots-open");
+  editor.addEventListener("focusout", () => {
+    const range = rememberEditorRange(editor);
+    if (range && composeCalendarReply()) composeCalendarCaret = { session: state.composeSession, editor, range };
+  });
+  trigger.addEventListener("mousedown", event => event.preventDefault());
+  trigger.addEventListener("click", openComposeCalendarSlots);
+  for (const event of ["input", "change"]) $("compose-calendar-slots-date").addEventListener(event, loadComposeCalendarSlots);
+  const list = $("compose-calendar-slots-time");
+  list.addEventListener("change", () => { $("compose-calendar-slots-add").disabled = !list.value || list.disabled; });
+  $("compose-calendar-slots-add").addEventListener("click", addComposeCalendarSlot);
+  $("compose-calendar-slots-clear").addEventListener("click", () => {
+    const picker = composeCalendarPicker;
+    if (!currentComposeCalendarPicker(picker)) return;
+    picker.picks = [];
+    paintComposeCalendarSlots(picker);
+    (list.disabled ? $("compose-calendar-slots-date") : list).focus();
+  });
+  $("compose-calendar-slots-insert").addEventListener("click", confirmComposeCalendarSlots);
+  $("compose-calendar-slots-cancel").addEventListener("click", cancelComposeCalendarSlots);
+  dialog.addEventListener("cancel", event => { event.preventDefault(); cancelComposeCalendarSlots(); });
+  dialog.addEventListener("close", () => {
+    if (!dialog.open && !composeCalendarPicker?.inserting) composeCalendarPicker = null;
+  });
+  window.addEventListener("storage", event => {
+    const picker = composeCalendarPicker;
+    if (!picker || (event.key !== "morrow.calendarChecks" && event.key !== null)) return;
+    if (!sameComposeCalendarChecks(picker, composeCalendarChecks(picker.accountId, event.newValue))) {
+      invalidateComposeCalendarSlots(picker, "Checked calendars changed. Open Offer two times… again.");
+    }
+  });
 }
 
 function paintComposeNote() {
@@ -15886,6 +16753,246 @@ function setComposeAttachError(text) {
   el.textContent = message;
 }
 
+function matchingDraftPdfId(files, storageUrl, originalId) {
+  if (!Array.isArray(files) || typeof storageUrl !== "string" || !storageUrl.startsWith("local:") || storageUrl.length === 6) return null;
+  const rows = files.filter(file => file?.storageUrl === storageUrl);
+  if (rows.length !== 1 || !rows[0].id || attachmentPreviewKind(rows[0]) !== "pdf") return null;
+  const id = String(rows[0].id);
+  if ((originalId != null && id !== originalId) || files.filter(file => file?.id != null && String(file.id) === id).length !== 1) return null;
+  return id;
+}
+
+function currentComposeDraftPdf() {
+  const scope = state.composeDraftPdf;
+  return scope && scope.id === state.draftId && scope.accountId === state.composeMeta?.accountId
+    && scope.draftRevision === state.draftRevision && !state.composeQueued ? scope : null;
+}
+
+async function readComposeDraftPdfId(scope, storageUrl) {
+  const source = scope.files.find(file => file.storageUrl === storageUrl);
+  if (!source) return null;
+  const result = await call("mail:readCachedBody", {
+    emailId: scope.id, accountId: scope.accountId, bodyEpoch: scope.bodyEpoch,
+  }).catch(() => null);
+  const draft = result?.email;
+  if (!draft?.isDraft || draft.id !== scope.id || draft.accountId !== scope.accountId
+      || draft.bodyEpoch !== scope.bodyEpoch || draft.draftRevision !== scope.draftRevision) return null;
+  // An explicit Save can normalize legacy attachment IDs to blob IDs.
+  const originalId = scope.draftRevision === scope.originalRevision ? source.id : null;
+  return matchingDraftPdfId(draft.attachments, storageUrl, originalId);
+}
+
+const inboxRecipientFields = ["to", "cc", "bcc"];
+
+function currentComposeInboxDraft() {
+  const draft = state.composeInboxDraft;
+  if (!draft || draft.id !== state.draftId || !state.draftRevision || state.composeQueued
+      || state.composeInitializing || state.composeIdentityError) return null;
+  const account = composeAccount();
+  return isLive(account) && draft.accountId === account.id && draft.bodyEpoch === account.bodyEpoch ? draft : null;
+}
+
+function syncComposeInboxButton() {
+  const button = $("compose-attach-inbox");
+  if (!button) return;
+  button.hidden = !state.composeInboxDraft;
+  button.disabled = !currentComposeInboxDraft() || state.composePending
+    || state.draftWrite?.pending || (!state.composeInboxPicker && composeFilesPending());
+}
+
+function inboxPickerRecipients() {
+  return inboxRecipientFields.map(field => $("compose-" + field).value.trim());
+}
+
+function closeComposeInboxPicker() {
+  const picker = state.composeInboxPicker;
+  if (!picker) return;
+  state.composeInboxPicker = null;
+  if (picker.requestId) call("mail:cancelAttachmentRequest", { requestId: picker.requestId }).catch(() => {});
+  picker.selected.clear();
+  picker.cursors.length = 0;
+  $("compose-inbox-sources").replaceChildren();
+  for (const field of inboxRecipientFields) $("compose-inbox-" + field).textContent = "";
+  $("compose-inbox-attached").textContent = "";
+  $("compose-inbox-status").textContent = "";
+  syncComposeActions();
+  return closeDialog("compose-inbox-picker");
+}
+
+function invalidateComposeInboxPicker(message = "The draft or its mailbox changed. Reopen the saved draft to review Inbox files.") {
+  if (!state.composeInboxPicker) return;
+  closeComposeInboxPicker();
+  setComposeAttachError(message);
+}
+
+function ownsComposeInboxPicker(picker) {
+  if (state.composeInboxPicker !== picker || !$("compose-inbox-picker").open) return false;
+  const { review } = picker;
+  if (!$("compose").open || state.composeSession !== picker.session || currentComposeInboxDraft() !== picker.draft
+      || state.draftRevision !== review.draftRevision || state.composePending) {
+    invalidateComposeInboxPicker();
+    return false;
+  }
+  if (inboxPickerRecipients().some((value, index) => value !== review.recipients[index])) {
+    invalidateComposeInboxPicker("The draft recipients changed. Choose Inbox files again.");
+    return false;
+  }
+  return true;
+}
+
+let composeInboxPickerController;
+
+function getComposeInboxPickerController() {
+  return composeInboxPickerController ??= window.morrowCreateComposeInboxPicker({
+    list: $("compose-inbox-sources"),
+    heading: $("compose-inbox-sources-title"),
+    newer: $("compose-inbox-newer"),
+    older: $("compose-inbox-older"),
+    confirm: $("compose-inbox-confirm"),
+    addOlder: $("compose-inbox-add-older"),
+    status: $("compose-inbox-status"),
+    cancel: $("compose-inbox-cancel"),
+    shownWhen, fileSize,
+    owns: ownsComposeInboxPicker,
+    reportError: showComposeInboxError,
+    listPage: (review, cursor) => call("mail:listFromCache", {
+      strictLocal: true, inboxAttachmentReview: review, cursor,
+    }),
+    pinPart: (review, requestId, part) => call("mail:prepareDraft", {
+      strictLocal: true, pinSelection: true, inboxAttachmentReview: review, requestId, existingBytes: 0, parts: [part],
+    }),
+  });
+}
+
+function showComposeInboxError(picker, error, retry = "") {
+  if (!ownsComposeInboxPicker(picker)) return;
+  if (["draft_conflict", "account_removed"].includes(error?.code)) {
+    state.composeInboxDraft = null;
+    invalidateComposeInboxPicker(error.message);
+  } else {
+    const message = error?.message || String(error);
+    $("compose-inbox-status").textContent = retry && !error?.code ? `${message} ${retry}` : message;
+  }
+}
+
+function paintComposeInboxAttached() {
+  const attached = $("compose-inbox-attached");
+  const names = composeAttachmentList(state.composeAttachments).map(file => file.filename);
+  attached.hidden = !names.length;
+  attached.textContent = names.length ? `Attached in this editor: ${names.join(", ")}` : "";
+}
+
+function openComposeInboxPicker() {
+  const draft = currentComposeInboxDraft();
+  if (!draft || state.composePending || state.draftWrite?.pending || composeFilesPending()
+      || !$("compose").open || $("compose-inbox-picker").open || $("compose-preview").open || $("attachment-preview").open) return;
+  const controller = getComposeInboxPickerController();
+  const recipients = inboxPickerRecipients();
+  const review = { id: crypto.randomUUID(), draftId: draft.id, accountId: draft.accountId, bodyEpoch: draft.bodyEpoch,
+    draftRevision: state.draftRevision, recipients };
+  const picker = { draft, review, session: state.composeSession, page: 0, cursors: [null], selected: new Map() };
+  state.composeInboxPicker = picker;
+  hideRecipientSuggest();
+  setComposeAttachError("");
+  for (const [index, field] of inboxRecipientFields.entries()) $("compose-inbox-" + field).textContent = recipients[index] || "None";
+  paintComposeInboxAttached();
+  $("compose-attach-inbox").focus();
+  openDialog("compose-inbox-picker");
+  $("compose-inbox-title").focus();
+  syncComposeActions();
+  controller.loadPage(picker, 0);
+}
+
+async function confirmComposeInboxFiles(viewOlder = false) {
+  const picker = state.composeInboxPicker;
+  if (!picker || picker.busy || !picker.selected.size || !ownsComposeInboxPicker(picker)) return;
+  if (viewOlder && !picker.cursors[picker.page + 1]) return;
+  const controller = getComposeInboxPickerController();
+  const selected = [...picker.selected.values()];
+  const existing = composeAttachmentList(state.composeAttachments);
+  const provider = folderProvider(composeAccount());
+  const plan = reviewComposeFiles(existing, selected, provider);
+  if (plan.errors.length) {
+    $("compose-inbox-status").textContent = plan.errors[0];
+    return;
+  }
+  picker.busy = true;
+  picker.requestId = crypto.randomUUID();
+  controller.sync(picker);
+  $("compose-inbox-cancel").focus();
+  $("compose-inbox-status").textContent = "Checking selected Inbox files…";
+  try {
+    const result = await call("mail:prepareDraft", { strictLocal: true, inboxAttachmentReview: picker.review,
+      requestId: picker.requestId, existingBytes: existing.reduce((sum, file) => sum + file.size, 0),
+      parts: selected.map(file => ({ emailId: file.emailId, partId: file.id, proof: file.proof, contentProof: file.contentProof })) });
+    if (!ownsComposeInboxPicker(picker)) return;
+    const files = result?.attachments;
+    if (!Array.isArray(files) || files.length !== selected.length) throw new Error("Review the selected Inbox files again.");
+    const verified = files.map((file, index) => {
+      const bytes = attachmentBytes(file?.bytes);
+      if (!bytes.length || bytes.length !== selected[index].size || file.filename !== selected[index].filename)
+        throw new Error("An Inbox file changed. Review the selection again.");
+      return { file, bytes };
+    });
+    const currentDraft = async () => {
+      const check = await call("mail:listFromCache", { strictLocal: true, inboxAttachmentReview: picker.review, checkDraft: true });
+      return ownsComposeInboxPicker(picker) && check?.current === true;
+    };
+    if (!await currentDraft()) return;
+    const added = [];
+    for (const { file, bytes } of verified) {
+      const saved = await call("mail:uploadAttachment", { filename: file.filename, mimeType: file.mimeType, fileBytes: bytes });
+      if (!ownsComposeInboxPicker(picker)) return;
+      const meta = composeFileMeta(saved);
+      if (!meta || meta.size !== bytes.length) throw new Error("The selected file could not be attached. Try again.");
+      added.push(meta);
+    }
+    if (!await currentDraft()) return;
+    const current = composeAttachmentList(state.composeAttachments);
+    const check = reviewComposeFiles(current, added, provider);
+    if (check.errors.length) throw new Error(check.errors[0]);
+    for (const [index, meta] of added.entries()) {
+      if (attachmentPreviewKind(meta) === "pdf") state.composePdfBytes.set(meta.storageUrl, verified[index].bytes);
+    }
+    state.composeAttachments = current.concat(added);
+    picker.requestId = null;
+    if (viewOlder) {
+      const { draft, session, page, cursors, review } = picker;
+      const nextPicker = { draft, session, page, cursors: cursors.slice(),
+        review: { ...review, id: crypto.randomUUID() }, selected: new Map() };
+      picker.selected.clear();
+      state.composeInboxPicker = nextPicker;
+      paintComposeInboxAttached();
+      controller.loadPage(nextPicker, page + 1);
+    } else closeComposeInboxPicker();
+    paintComposeAttachments();
+    paintComposeNote();
+    setComposeStatus("Inbox files added to this draft. Save draft to keep the changes.");
+  } catch (error) { showComposeInboxError(picker, error); }
+  finally {
+    picker.requestId = null;
+    picker.busy = false;
+    if (ownsComposeInboxPicker(picker)) controller.sync(picker);
+  }
+}
+
+function wireComposeInboxPicker() {
+  const dialog = $("compose-inbox-picker");
+  if (!dialog) return;
+  $("compose-attach-inbox").addEventListener("click", openComposeInboxPicker);
+  $("compose-inbox-confirm").addEventListener("click", () => confirmComposeInboxFiles());
+  $("compose-inbox-add-older").addEventListener("click", () => confirmComposeInboxFiles(true));
+  $("compose-inbox-cancel").addEventListener("click", closeComposeInboxPicker);
+  for (const [id, step] of [["compose-inbox-newer", -1], ["compose-inbox-older", 1]]) {
+    $(id).addEventListener("click", () => {
+      const picker = state.composeInboxPicker;
+      if (picker) getComposeInboxPickerController().loadPage(picker, picker.page + step);
+    });
+  }
+  dialog.addEventListener("cancel", event => { event.preventDefault(); closeComposeInboxPicker(); });
+  dialog.addEventListener("close", () => { if (!dialog.open) closeComposeInboxPicker(); });
+}
+
 function paintComposeAttachments() {
   const list = $("compose-attachments");
   if (!list || typeof list.replaceChildren !== "function") return;
@@ -15900,13 +17007,16 @@ function paintComposeAttachments() {
   }
   const locked = !!(state.composePending || state.composeQueued || state.composeInitializing);
   const session = state.composeSession;
+  const draftPdf = currentComposeDraftPdf();
   for (const [index, row] of rows.entries()) {
     const item = typeof document.createElement === "function" ? document.createElement("li") : null;
     if (!item) continue;
     item.className = "compose-file";
+    const duplicate = rows.some(other => other !== row && other.filename === row.filename);
+    const actionLabel = duplicate ? `${row.filename}, attachment ${index + 1} of ${rows.length}` : row.filename;
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = row.filename;
+    name.textContent = duplicate ? `${index + 1} · ${row.filename}` : row.filename;
     const size = document.createElement("span");
     size.className = "size";
     const label = fileSize(row.size);
@@ -15917,19 +17027,21 @@ function paintComposeAttachments() {
     remove.className = "ghost";
     remove.textContent = "Remove";
     remove.disabled = locked;
-    if (typeof remove.setAttribute === "function") remove.setAttribute("aria-label", `Remove ${row.filename}`);
+    if (typeof remove.setAttribute === "function") remove.setAttribute("aria-label", `Remove ${actionLabel}`);
     if (typeof remove.addEventListener === "function") {
       remove.addEventListener("click", () => removeComposeAttachment(row.storageUrl));
     }
     const controls = [name, size];
-    if (state.composePdfBytes?.has(row.storageUrl)) {
-      const actionLabel = rows.some((other) => other !== row && other.filename === row.filename)
-        ? `${row.filename}, attachment ${index + 1} of ${rows.length}` : row.filename;
+    if (state.composePdfBytes?.has(row.storageUrl) || draftPdf?.files.some(file => file.storageUrl === row.storageUrl)) {
       const preview = attachmentGhost("Preview", "Preview " + actionLabel, () => attachmentAction(() => {
         if (session !== state.composeSession || state.composePending || state.composeQueued || state.composeInitializing || !$("compose").open
             || $("attachment-preview").open) return;
         const bytes = state.composePdfBytes.get(row.storageUrl);
         if (bytes) return previewAttachment(null, row, bytes);
+        if (draftPdf && currentComposeDraftPdf() === draftPdf
+            && state.composeAttachments.some(file => file.storageUrl === row.storageUrl && file.id === row.id)) {
+          return previewAttachment(null, row, null, draftPdf);
+        }
       }));
       preview.dataset.composePdf = row.storageUrl;
       preview.disabled = locked;
@@ -15948,6 +17060,8 @@ function removeComposeAttachment(storageUrl) {
   if (state.composePending || state.composeQueued || state.composeInitializing) return;
   state.composeAttachments = composeAttachmentList(state.composeAttachments).filter((row) => row.storageUrl !== storageUrl);
   state.composePdfBytes?.delete(storageUrl);
+  const draftPdf = state.composeDraftPdf;
+  if (draftPdf) draftPdf.files = draftPdf.files.filter(file => file.storageUrl !== storageUrl);
   if (state.composePdfPreview?.storageUrl === storageUrl) closeAttachmentPreview();
   setComposeAttachError("");
   paintComposeAttachments();
@@ -15955,7 +17069,7 @@ function removeComposeAttachment(storageUrl) {
 }
 
 function composeFilesPending() {
-  return (state.composeFileJobs || []).some((job) => job.session === state.composeSession);
+  return !!state.composeInboxPicker || (state.composeFileJobs || []).some((job) => job.session === state.composeSession);
 }
 
 async function addComposeFiles(list) {
@@ -17380,7 +18494,9 @@ function paintComposeChrome() {
   const history = has && ((quote.messages && quote.messages.length > 1) || quote.historyNote);
   const label = $("compose-quote-label");
   if (label) label.textContent = history ? "Conversation history" : "Original message";
-  note.textContent = quote && quote.inEditor
+  note.textContent = quote?.selected
+    ? "Edit or remove the selected quotation in Message. The original message here is for reference."
+    : quote && quote.inEditor
     ? "Edit or remove quoted text in Message. Safe HTML formatting is retained; remote content stays blocked in Message. Only Message contents are saved, sent, or scheduled; this original preview is for reference."
     : history
     ? "The quoted original and available earlier message text are included when you save, send, or schedule."
@@ -17545,8 +18661,9 @@ async function initializeComposeIdentity(fields) {
     if (!edits || edits.to === versions.to) $("compose-to").value = parties.to;
     if (!edits || edits.cc === versions.cc) $("compose-cc").value = parties.cc;
   }
-  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot || fields.unsubscribeDraft === true;
-  state.composeIdentity = { ...context, kind: fields.kind || "new",
+  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot
+    || fields.unsubscribeDraft === true || fields.skipRecipientDefaults === true;
+  state.composeIdentity = { ...context, accountId: account.id, accountEpoch: account.bodyEpoch, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   for (const field of ["cc", "bcc"]) if (edits && edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;
   paintComposeFromPicker(state.composeIdentity);
@@ -17564,6 +18681,7 @@ function applyComposeRecipients() {
   $("compose-cc").value = seeded.cc;
   $("compose-bcc").value = seeded.bcc;
   syncComposeRecipientRows();
+  if (state.composeInboxPicker) ownsComposeInboxPicker(state.composeInboxPicker);
 }
 
 function paintComposeIdentity() {
@@ -17590,6 +18708,7 @@ function paintComposeIdentity() {
 
 function changeComposeFrom() {
   if (!state.composeIdentity || state.composePending || state.composeQueued || state.composeInitializing) return;
+  if (composeCalendarPicker) cancelComposeCalendarSlots();
   const fromAddress = $("compose-from").value;
   const nextId = composeFromAccountId(fromAddress);
   if (nextId && state.composeMeta && nextId !== state.composeMeta.accountId) return switchComposeMailbox(nextId, fromAddress);
@@ -17628,9 +18747,11 @@ function changeComposeFrom() {
   }
   paintComposeIdentity();
   paintComposeNote();
+  syncComposeCalendarSlots();
 }
 
 async function switchComposeMailbox(accountId, fromAddress) {
+  invalidateComposeInboxPicker();
   const session = state.composeSession;
   const previous = {
     accountId: state.composeMeta.accountId,
@@ -17645,6 +18766,7 @@ async function switchComposeMailbox(accountId, fromAddress) {
   state.composeInitializing = true;
   syncCompose();
   state.composeMeta.accountId = accountId;
+  const account = composeAccount();
   // The previous draft id belongs to the other mailbox. Leave that draft where it is.
   state.draftId = null;
   state.draftRevision = null;
@@ -17663,6 +18785,8 @@ async function switchComposeMailbox(accountId, fromAddress) {
     state.composeMeta.fromDisplayName = rows.find((row) => row.email === fromAddress).displayName || "";
     state.composeIdentity = {
       ...context,
+      accountId,
+      accountEpoch: account?.bodyEpoch,
       kind: previous.identity.kind || "new",
       seeds: previous.identity.seeds,
       signatureFollowsFrom: follows,
@@ -17675,6 +18799,8 @@ async function switchComposeMailbox(accountId, fromAddress) {
     paintComposeIdentity();
     paintComposeNote();
     switched = true;
+    state.composeDraftPdf = null;
+    state.composeInboxDraft = null;
     if (previous.draftId) setComposeStatus("The earlier draft stays in the original mailbox. Save draft stores a new copy here.");
   } catch (error) {
     if (session !== state.composeSession) return;
@@ -17797,11 +18923,30 @@ function presentCompose(seed) {
   return pending;
 }
 
-function publishComposeTitle(text) {
+function publishComposeTitle(text, windowLabel) {
   if (!isComposeWindow()) return;
-  const title = String(text || "New message").trim() || "New message";
-  document.title = title + " — Morrow Mail";
+  if (windowLabel === undefined) {
+    const control = $("compose-window-label-control");
+    const input = $("compose-window-label");
+    if (control) control.hidden = true;
+    if (input) input.value = "";
+  }
+  const base = String(text || "New message").trim() || "New message";
+  const title = windowLabel ? windowLabel + " — " + base : base;
+  const pageTitle = title + " — Morrow Mail";
+  if (windowLabel !== undefined && document.title === pageTitle) return;
+  document.title = pageTitle;
   if (api && typeof api.setComposeTitle === "function") api.setComposeTitle(title).catch(() => {});
+}
+
+function updateComposeWindowLabel(event) {
+  if (event.isComposing || !$("compose").open || state.composeQueued
+      || $("compose-window-label-control")?.hidden !== false) return;
+  const input = event.currentTarget;
+  const clean = input.value.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, "")
+    .slice(0, input.maxLength).replace(/[\uD800-\uDFFF]/gu, "");
+  if (input.value !== clean) input.value = clean;
+  publishComposeTitle("Resume draft", clean.trim());
 }
 
 function dismissComposeSurface() {
@@ -18019,6 +19164,7 @@ async function bootReaderWindow() {
   state.accountId = email.accountId || accountId || state.accountId;
   publishReaderTitle(email.subject || "");
   renderReader(false);
+  if (seed.openedFromLocalLink) return;
   pumpBodyRefreshes();
   const openedId = email.id;
   loadSnoozed().then(() => loadProviderFolders(accountGen)).then(() => {
@@ -18041,6 +19187,7 @@ async function openCompose(seed) {
   hideRecipientSuggest();
   const fields = seed || {};
   state.composeSession = (state.composeSession || 0) + 1;
+  composeCalendarCaret = null;
   state.composePdfBytes?.clear();
   state.composeInputVersions = { to: 0, cc: 0, bcc: 0, subject: 0, body: 0 };
   state.composeFileJobs = [];
@@ -18056,6 +19203,10 @@ async function openCompose(seed) {
   closeComposeAi();
   state.draftId = fields.draftId || null;
   state.draftRevision = fields.draftRevision || null;
+  state.composeDraftPdf = fields.draftPdf ? { ...fields.draftPdf, originalRevision: fields.draftPdf.draftRevision } : null;
+  state.composeInboxDraft = fields.ordinaryDraftResume === true && isComposeWindow() && state.draftId && state.draftRevision
+    && Number.isSafeInteger(fields.draftBodyEpoch) && fields.draftBodyEpoch >= 0
+    ? { id: state.draftId, accountId: fields.accountId, bodyEpoch: fields.draftBodyEpoch } : null;
   state.composeQueued = false;
   state.composePartialReceipt = false;
   state.signatureText = "";
@@ -18104,6 +19255,11 @@ async function openCompose(seed) {
   paintQuoteBody();
   state.composeBaseline = fields.body && !fields.draftId ? "" : composeSnapshot();
   openDialog("compose");
+  if (fields.ordinaryDraftResume === true && fields.draftId && isComposeWindow()) {
+    // Keep the dialog's initial focus on its existing compose controls.
+    const control = $("compose-window-label-control");
+    if (control) control.hidden = false;
+  }
   scheduleComposeLayout();
   // Start both before the user can type: identity resolution snapshots the
   // recipient edit versions and must not mistake edits during history loading
@@ -18188,6 +19344,8 @@ async function requestComposeClose() {
   const preview = $("compose-preview");
   if (preview && preview.open) return false;
   if (state.composePending) return false;
+  if (composeCalendarPicker) await cancelComposeCalendarSlots();
+  if (state.composeInboxPicker) await closeComposeInboxPicker();
   if (state.composePdfPreview) closeAttachmentPreview();
   if (!state.composeQueued && composeSnapshot() !== state.composeBaseline) {
     const choice = await new Promise((resolve) => {
@@ -18203,6 +19361,8 @@ async function requestComposeClose() {
   // Await the exit before another composition reuses this dialog.
   state.composeSession += 1;
   state.composePdfBytes?.clear();
+  state.composeDraftPdf = null;
+  state.composeInboxDraft = null;
   state.composeInitializing = false;
   signatureGen += 1;
   await closeDialog("compose");
@@ -18221,9 +19381,10 @@ function resumeDraft(email, extra) {
 async function prepareDraftCompose(email, extra) {
   const data = await call("mail:openEmail", { emailId: email.id, full: true, includeThread: false });
   let draft = data && data.email;
-  if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
+  if (!draft?.isDraft || draft.id !== email.id || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   if (!draft.fromAddress) throw new Error("This draft's sender address could not be resolved. The saved draft was retained.");
   if (!draft.bodyComplete || draft.bodyWarning) throw new Error("The complete draft body could not be downloaded. The saved draft was retained; reopen it to retry.");
+  const original = draft;
   if (draft.attachments?.length) {
     const prepared = await startAttachmentTask("mail:prepareDraft", draft, draft.attachments, "Prepare draft").promise;
     draft = prepared.email;
@@ -18232,7 +19393,21 @@ async function prepareDraftCompose(email, extra) {
       throw new Error("Draft attachments could not be prepared. The saved draft was retained; retry from Drafts.");
     }
   }
+  // Only files already local on the saved draft qualify. Preparation can
+  // give provider files new local keys that do not belong to the saved row.
+  const draftPdfFiles = [];
+  const reviewedDraft = !extra && original.id === draft.id && original.draftRevision && original.draftRevision === draft.draftRevision
+    && Number.isSafeInteger(original.bodyEpoch) && original.bodyEpoch >= 0 && original.bodyEpoch === draft.bodyEpoch;
+  if (reviewedDraft) {
+    for (const file of original.attachments || []) {
+      const storageUrl = file?.storageUrl;
+      const id = matchingDraftPdfId(original.attachments, storageUrl);
+      if (id && matchingDraftPdfId(draft.attachments, storageUrl, id)) draftPdfFiles.push({ id, storageUrl });
+    }
+  }
   await presentCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+    ...(!extra ? { ordinaryDraftResume: true } : {}),
+    ...(reviewedDraft ? { draftBodyEpoch: draft.bodyEpoch } : {}),
     draftRevision: draft.draftRevision,
     fromAddress: draft.fromAddress,
     fromDisplayName: draft.fromDisplayName,
@@ -18240,6 +19415,9 @@ async function prepareDraftCompose(email, extra) {
     body: readable(draft),
     htmlBody: typeof draft.htmlBody === "string" ? draft.htmlBody : "",
     attachments: draft.attachments,
+    ...(draftPdfFiles.length ? { draftPdf: {
+      id: draft.id, accountId: draft.accountId, bodyEpoch: draft.bodyEpoch, draftRevision: draft.draftRevision, files: draftPdfFiles,
+    } } : {}),
     inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "",
     ...(draft.draftPending ? { status: "Local changes are protected and waiting for upload. Save draft to retry; nothing sends automatically." } : {}),
     ...(extra || {}) });
@@ -18648,6 +19826,165 @@ function pendingScheduleWhen() {
   return defaultSendAt(new Date(), state.prefs.scheduleDelay);
 }
 
+function resetComposePreviewLinks() {
+  const review = $("compose-preview-links");
+  if (!review) return null;
+  const body = $("compose-preview-body");
+  body.querySelector("[data-preview-link-target]")?.removeAttribute("data-preview-link-target");
+  body.querySelector(".preview-link-location")?.remove();
+  const list = $("compose-preview-link-list");
+  list.scrollTop = 0;
+  list.replaceChildren();
+  review.open = false;
+  review.hidden = true;
+  $("compose-preview-link-count").textContent = "";
+  return review;
+}
+
+function composePreviewLinkRanges(body) {
+  const blockTags = /^(?:p|div|br|hr|blockquote|pre|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|caption|center|h[1-6])$/;
+  const blockDisplay = /^(?:block|flex|list-item|table(?:-.+)?)$/;
+  const chunks = [];
+  const ranges = new Map();
+  let offset = 0;
+  let endsInSpace = true;
+
+  function append(text) {
+    let part = text.replace(/[ \t\r\n\f]+/g, " ");
+    if (endsInSpace && part.startsWith(" ")) part = part.slice(1);
+    if (!part) return;
+    chunks.push(part);
+    offset += part.length;
+    endsInSpace = part.endsWith(" ");
+  }
+
+  function lineBreak() {
+    if (!offset || chunks.at(-1) === "\n") return;
+    chunks.push("\n");
+    offset++;
+    endsInSpace = true;
+  }
+
+  // Record each anchor's offsets in one pass so excerpts stay local even when
+  // many links share a long paragraph. Inline markup adds no artificial spaces.
+  function visit(node, parentLink) {
+    if (node.nodeType === 3) {
+      append(node.data);
+      return;
+    }
+    if (node.nodeType !== 1 || node.style.display === "none" || node.style.opacity === "0") return;
+    const display = node.style.display;
+    const boundary = blockTags.test(node.localName) || blockDisplay.test(display);
+    if (boundary) lineBreak();
+    const isLink = node.localName === "a";
+    const link = isLink ? { start: offset, end: offset, image: null } : parentLink;
+    // A placeholder already in a frozen payload has its class scoped again.
+    if (link && !link.image && (node.localName === "img" ||
+        (node.localName === "span" && /^(?:mmail-)*mail-image-hold$/.test(node.className)))) {
+      link.image = node;
+    }
+    for (const child of node.childNodes) visit(child, link);
+    if (isLink) {
+      link.end = offset;
+      ranges.set(node, link);
+    }
+    if (boundary) lineBreak();
+  }
+  visit(body);
+  return { text: chunks.join(""), ranges };
+}
+
+function composePreviewLinkExcerpt(text, range, label) {
+  const radius = 56;
+  const { start, end } = range;
+  const left = text.slice(Math.max(0, start - radius), start).replace(/^[\uDC00-\uDFFF]/, "");
+  const right = text.slice(end, end + radius).replace(/[\uD800-\uDBFF]$/, "");
+  let before = left.slice(left.lastIndexOf("\n") + 1);
+  let after = right.split("\n", 1)[0];
+  // A link on its own line can be introduced by the preceding heading.
+  if (!before.trim() && !after.trim()) {
+    const previous = left.trimEnd().split("\n").at(-1);
+    if (previous) before = previous + " ";
+    else after = " " + right.trimStart().split("\n", 1)[0];
+  }
+  if (!before.trim() && !after.trim()) return "";
+  const linkText = text.slice(start, end);
+  let center = linkText.trim() ? linkText : ` ${label} `;
+  if (center.length > radius * 2) {
+    center = center.slice(0, radius).replace(/[\uD800-\uDBFF]$/, "") + "…" +
+      center.slice(-radius).replace(/^[\uDC00-\uDFFF]/, "");
+  }
+  const excerpt = (before + center + after).replace(/ {2,}/g, " ").trim();
+  return (before === left && start > radius ? "…" : "") + excerpt + (after === right && end + radius < text.length ? "…" : "");
+}
+
+function paintComposePreviewLinks(body) {
+  const focused = $("compose-preview-links")?.contains(document.activeElement);
+  const review = resetComposePreviewLinks();
+  if (!review) return;
+  const anchors = Array.from(body.querySelectorAll("a[href]"))
+    .filter(anchor => /^https?:$/.test(anchor.protocol) && anchor.hostname);
+  if (!anchors.length) {
+    if (focused) $("compose-preview-confirm").focus();
+    return;
+  }
+
+  const { text, ranges } = composePreviewLinkRanges(body);
+  const list = $("compose-preview-link-list");
+  let currentAnchor;
+  let currentRow;
+  let locationMarker;
+  for (const anchor of anchors) {
+    const range = ranges.get(anchor);
+    const visibleText = range ? text.slice(range.start, range.end).trim() : "";
+    const image = range?.image;
+    const alt = image?.getAttribute("alt") || image?.getAttribute("aria-label");
+    const label = visibleText || (image ? (alt ? `Image link (${alt})` : "Image link") : "Unlabeled link");
+    const context = range ? composePreviewLinkExcerpt(text, range, label) : "Hidden in message preview";
+    const item = document.createElement("li");
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "preview-link-row";
+    for (const [kind, value] of [["label", label], ["context", context], ["url", anchor.getAttribute("href")]]) {
+      if (!value) continue;
+      const line = document.createElement("span");
+      line.className = `preview-link-${kind}`;
+      line.dir = kind === "url" ? "ltr" : "auto";
+      line.textContent = value;
+      row.appendChild(line);
+    }
+    row.addEventListener("click", () => {
+      if (!list.contains(row)) return;
+      currentAnchor?.removeAttribute("data-preview-link-target");
+      currentRow?.removeAttribute("aria-current");
+      currentAnchor = anchor;
+      currentRow = row;
+      anchor.setAttribute("data-preview-link-target", "");
+      row.setAttribute("aria-current", "true");
+      locationMarker?.remove();
+      locationMarker = null;
+      if (!range || (!visibleText && !image)) {
+        // Keep hidden content hidden. Mark its place next to the outermost
+        // hidden element, or immediately before an otherwise empty anchor.
+        let position = anchor;
+        for (let node = anchor; node !== body; node = node.parentElement) {
+          if (node.style.display === "none" || node.style.opacity === "0") position = node;
+        }
+        locationMarker = document.createElement("span");
+        locationMarker.className = "preview-link-location";
+        locationMarker.textContent = "Link location";
+        position.before(locationMarker);
+      }
+      (locationMarker || anchor).scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: "instant" });
+    });
+    item.appendChild(row);
+    list.appendChild(item);
+  }
+  $("compose-preview-link-count").textContent = anchors.length;
+  review.hidden = false;
+  if (focused) review.firstElementChild.focus({ preventScroll: true });
+}
+
 function paintPreview(draft) {
   const schedule = draft && draft.kind === "schedule";
   const payload = draft.payload || draft;
@@ -18679,12 +20016,14 @@ function paintPreview(draft) {
   }
   const body = $("compose-preview-body");
   body.replaceChildren();
-  appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
+  const content = appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
+  paintComposePreviewLinks(content);
   $("compose-preview-confirm").textContent = schedule ? "Confirm schedule" : "Confirm send";
 }
 
 function openComposePreview(when) {
   if (!composeReady()) return false;
+  window.morrowComposeBccRoster?.reset();
   const fields = composeFields();
   const quote = state.composeQuote;
   if (quote && quote.inEditor) fields.body = plainFromComposeHtml(readComposeEditorHtml());
@@ -18726,6 +20065,7 @@ async function confirmComposePreview() {
   const draft = previewDraftState;
   if (!draft) return false;
   previewDraftState = null;
+  window.morrowComposeBccRoster?.reset();
   await closeDialog("compose-preview");
   if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending || composeFilesPending()) {
     setComposeStatus("The message changed. Review a new preview before sending or scheduling.", true);
@@ -18738,6 +20078,8 @@ async function confirmComposePreview() {
 
 function cancelComposePreview() {
   previewDraftState = null;
+  resetComposePreviewLinks();
+  window.morrowComposeBccRoster?.reset();
   closeDialog("compose-preview");
 }
 
@@ -18747,9 +20089,15 @@ async function saveDraft() {
   return composeOperation(async () => {
     setComposeStatus("Saving draft…");
     const snapshot = composeSnapshot();
+    const draftPdf = state.composeDraftPdf;
     const saved = await call("mail:upsertDraft", composePayload(account));
-    state.draftId = (saved && (saved.emailId || saved.draftId)) || state.draftId;
+    const savedId = saved && (saved.emailId || saved.draftId);
+    state.draftId = savedId || state.draftId;
     state.draftRevision = saved?.draftRevision || null;
+    if (draftPdf && draftPdf === state.composeDraftPdf && draftPdf.id === savedId
+        && draftPdf.accountId === account.id && state.draftRevision) {
+      state.composeDraftPdf = { ...draftPdf, draftRevision: state.draftRevision };
+    }
     if (!state.draftId) throw new Error("Draft could not be saved. Your text is still here.");
     state.composeBaseline = snapshot;
     setComposeStatus(saved && saved.remoteSaved === false ? "Draft saved on this computer. " + (saved.warning || "Server copy could not be updated.") : "Draft saved." + (saved?.warning ? " " + saved.warning : ""));
@@ -18943,12 +20291,12 @@ async function removeAccount() {
   clearUndo();
   showStatus("Removing account…");
   await call("mail:removeAccount", { accountId: account.id });
+  endLocalFilterSearch();
   state.accountId = null;
   state.folderId = null;
   state.query = "";
   $("search-query").value = "";
-  const listFilter = $("list-filter");
-  if (listFilter) listFilter.value = "";
+  clearListFilterInput();
   state.email = null;
   state.thread = [];
   showStatus("Account removed.");
@@ -19220,12 +20568,13 @@ function mailShortcut(event, context) {
   return "";
 }
 
-function openReaderCompose(kind, email = mailShortcutTarget()) {
+function openReaderCompose(kind, email = mailShortcutTarget(), selectedReplyQuote = "") {
   if (!email || email.outbox) return;
   const account = state.accounts.find((item) => item.id === email.accountId);
   if (!account) return;
   const self = (account.preferredFromAddress || account.email) || "";
-  return presentCompose(composeSeed(email, kind, self));
+  const seed = composeSeed(email, kind, self);
+  return presentCompose(selectedReplyQuote ? { ...seed, quote: selectedReplyQuote, selectedReplyQuote } : seed);
 }
 
 function focusMailSearch() {
@@ -24252,6 +25601,13 @@ function styleFollowButton(follow) {
   return button;
 }
 
+function agentMailboxLine(mailbox) {
+  const line = document.createElement("p");
+  line.className = "agent-mailbox";
+  line.textContent = "Receiving mailbox: " + mailbox;
+  return line;
+}
+
 function agentCard(item, options) {
   const card = document.createElement("article");
   card.className = "agent-item";
@@ -24297,6 +25653,7 @@ function agentCard(item, options) {
   subject.className = "agent-subject";
   subject.textContent = (item && item.subject) || "(no subject)";
   copy.appendChild(subject);
+  if (options?.mailbox) copy.appendChild(agentMailboxLine(options.mailbox));
   const summary = String((item && item.summary) || "").trim();
   if (summary) {
     const summaryLine = document.createElement("p");
@@ -25361,14 +26718,15 @@ function paintAgent(payload, errorText) {
 const agentHomeCards = new Map();
 let agentHomeUsed = new Set();
 
-function retainedAgentCard(item, section) {
+function retainedAgentCard(item, section, mailboxes) {
   const key = `${section.id || section.name}\0${item.accountId || ""}\0${item.messageId || item.id || JSON.stringify(item)}`;
+  const mailbox = mailboxes?.get(item.accountId) || "";
   const signature = JSON.stringify([item, section.name, section.title, agentTodoView, agentLooksUnread(item), agentWhen(item.date),
-    agentReplySelection.has(agentSelectionKey(item)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning)]);
+    agentReplySelection.has(agentSelectionKey(item)), agentPendingReads.has(String(item.messageId)), learningApplyStamp(state.agentLearning), mailbox]);
   agentHomeUsed.add(key);
   const previous = agentHomeCards.get(key);
   if (previous?.signature === signature) return previous.node;
-  const node = agentTodoCard(item, section);
+  const node = agentTodoCard(item, section, mailbox);
   agentHomeCards.set(key, { node, signature });
   return node;
 }
@@ -25376,6 +26734,7 @@ function retainedAgentCard(item, section) {
 function paintAgentHome(payload) {
   const root = $("agent-home");
   if (!root) return;
+  root.morrowHomePayload = payload;
   syncAgentTodoViewControls();
   const greet = $("agent-greeting");
   if (greet) greet.textContent = agentGreeting();
@@ -25389,10 +26748,12 @@ function paintAgentHome(payload) {
     for (const key of agentReplySelection) if (!visible.has(key)) agentReplySelection.delete(key);
     paintAgentActionSurface();
   }
-  const key = JSON.stringify([sections, reason, agentTodoView, [...agentReplySelection], [...agentMarkedRead], [...agentPendingReads.keys()],
+  const mailboxEntries = state.accounts.length > 1 ? state.accounts.map(({ id, email }) => [id, email]) : [];
+  const key = JSON.stringify([sections, reason, agentTodoView, [...agentReplySelection], [...agentMarkedRead], [...agentPendingReads.keys()], mailboxEntries,
     learningApplyStamp(state.agentLearning), state.prefs.markReadCompletesTodos, sections.flatMap(section => (section.items || []).map(item => agentWhen(item.date)))]);
   if (root.morrowHomeKey === key) return;
   root.morrowHomeKey = key;
+  const mailboxes = new Map(mailboxEntries);
   const focused = root.contains(document.activeElement) ? document.activeElement : null;
   const panel = $("agent-panel");
   const scrollTop = panel ? panel.scrollTop : 0;
@@ -25431,6 +26792,7 @@ function paintAgentHome(payload) {
     const tools = document.createElement("div");
     tools.className = "agent-section-tools";
     const role = agentPileRole(section);
+    const receivingMailboxes = role === "reply" ? mailboxes : null;
     if ((role === "fyi" || role === "other") && items.length) tools.appendChild(agentCategoryReadButton(role, items));
     if (items.some(agentSelectionKey)) tools.appendChild(agentReplySelectionTools(block, items, role));
     if (section.collapseView && items.length) {
@@ -25459,12 +26821,12 @@ function paintAgentHome(payload) {
       const grid = document.createElement("div");
       grid.className = "agent-card-grid";
       for (const item of items) {
-        if (item && typeof item === "object") grid.appendChild(retainedAgentCard(item, section));
+        if (item && typeof item === "object") grid.appendChild(retainedAgentCard(item, section, receivingMailboxes));
       }
       if (grid.childNodes.length) block.appendChild(grid);
     } else {
       for (const item of items) {
-        if (item && typeof item === "object") block.appendChild(retainedAgentCard(item, section));
+        if (item && typeof item === "object") block.appendChild(retainedAgentCard(item, section, receivingMailboxes));
       }
     }
     root.appendChild(block);
@@ -26254,7 +27616,7 @@ function bindAgentCardDetail(card) {
   }, true);
 }
 
-function agentSkimCard(item, section) {
+function agentSkimCard(item, section, mailbox) {
   const context = agentMessageContext(item);
   const card = document.createElement("article");
   card.className = "agent-item agent-card";
@@ -26293,7 +27655,9 @@ function agentSkimCard(item, section) {
   const line = document.createElement("p");
   line.className = "agent-card-line";
   line.textContent = reason;
-  face.append(top, subject, line);
+  face.append(top, subject);
+  if (mailbox) face.appendChild(agentMailboxLine(mailbox));
+  face.appendChild(line);
   const learned = agentLearnedLine(item);
   if (learned) face.appendChild(learned);
   const chips = document.createElement("div");
@@ -26337,11 +27701,11 @@ function agentSkimCard(item, section) {
   return card;
 }
 
-function agentTodoCard(item, section) {
+function agentTodoCard(item, section, mailbox) {
   if (section && item && typeof item === "object" && !item.categoryId) item = { ...item, categoryId: section.id || "" };
-  if (!agentMessageContext(item)) return agentCard(item);
-  if (agentTodoView === "card") return agentSkimCard(item, section);
-  const card = agentCard(item, { actions: false });
+  if (!agentMessageContext(item)) return agentCard(item, { mailbox });
+  if (agentTodoView === "card") return agentSkimCard(item, section, mailbox);
+  const card = agentCard(item, { actions: false, mailbox });
   if (agentSelectionKey(item)) {
     const main = card.querySelector(".agent-item-main");
     if (main) main.prepend(agentSelectBox(item));
@@ -27021,9 +28385,10 @@ function paintMiniMonth(year, month) {
   root.append(bar, grid);
 }
 
-function readCalendarCheckStore() {
+function readCalendarCheckStore(serialized) {
   try {
-    const parsed = JSON.parse(localStorage.getItem("morrow.calendarChecks") || "{}");
+    const raw = serialized === undefined ? localStorage.getItem("morrow.calendarChecks") : serialized;
+    const parsed = JSON.parse(raw || "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return parsed;
   } catch {
@@ -27052,6 +28417,14 @@ function saveCalendarChecks(accountId, ids) {
   } catch { /* the choice stays for this window */ }
 }
 
+function updateCalendarChecks(accountId, ids) {
+  saveCalendarChecks(accountId, ids);
+  const picker = composeCalendarPicker;
+  if (picker?.accountId === accountId && !sameComposeCalendarChecks(picker, composeCalendarChecks(accountId))) {
+    invalidateComposeCalendarSlots(picker, "Checked calendars changed. Open Offer two times… again.");
+  }
+}
+
 function ensureCalendarChecks(account) {
   if (!account || state.calendarChecksAccountId === account.id) return;
   state.calendarChecksAccountId = account.id;
@@ -27071,7 +28444,7 @@ function toggleCalendarCheck(input, id) {
   if (input.checked) state.calendarId = id;
   else if (state.calendarId === id) state.calendarId = next[0];
   state.calendarEventId = "";
-  saveCalendarChecks((calendarAccount() && calendarAccount().id) || "", next);
+  updateCalendarChecks((calendarAccount() && calendarAccount().id) || "", next);
   if (state.calendarPayload) paintCalendar(state.calendarPayload);
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
@@ -27393,7 +28766,7 @@ function applyCalendarPayload(payload) {
   if (returned.length) {
     state.calendarIds = returned;
     if (!returned.includes(state.calendarId)) state.calendarId = returned[0];
-    saveCalendarChecks((payload && payload.accountId) || state.calendarAccountId, returned);
+    updateCalendarChecks((payload && payload.accountId) || state.calendarAccountId, returned);
   }
   if (!(payload?.events || []).some((event) => calendarEventKey(event) === state.calendarEventId)) state.calendarEventId = "";
   state.calendarPayload = payload;
@@ -27601,7 +28974,7 @@ async function submitCalendarEvent(event) {
   if (draft.calendarId && !state.calendarIds.includes(draft.calendarId)) {
     state.calendarIds = state.calendarIds.concat(draft.calendarId);
     state.calendarId = draft.calendarId;
-    saveCalendarChecks(account && account.id, state.calendarIds);
+    updateCalendarChecks(account && account.id, state.calendarIds);
   }
   calendarEditingId = "";
   calendarEditingIdentity = null;
@@ -29186,11 +30559,19 @@ function wireRecipientSuggest() {
 
 function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
+  readerAttachmentSaveList = window.morrowAttachmentSaveList?.mount({
+    call, notify: showStatus, formatDate: value => shownWhen(new Date(value), true),
+  });
   wireRecipientSuggest();
   wireComposeFormat();
+  wireComposeCalendarSlots();
+  wireComposeInboxPicker();
   $("scheduled-more")?.addEventListener("click", () => guard(() => loadScheduled({ more: true })));
   for (const field of ["to", "cc", "bcc", "subject", "body"]) $("compose-" + field).addEventListener("input", () => {
     if (state.composeInputVersions) state.composeInputVersions[field] += 1;
+    if (state.composeInboxPicker && inboxRecipientFields.includes(field)) {
+      invalidateComposeInboxPicker("The draft recipients changed. Choose Inbox files again.");
+    }
   });
   $("compose-editor")?.addEventListener("input", () => { if (state.composeInputVersions) state.composeInputVersions.body += 1; });
   $("compose-from").addEventListener("change", changeComposeFrom);
@@ -29221,6 +30602,15 @@ function wire() {
   wireAgentTodoView();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "compose-preview") {
+        event.preventDefault();
+        cancelComposePreview();
+        return;
+      }
+      if (dialog.id === "dsn-redraft" && dsnRedraftView?.saving) {
+        event.preventDefault();
+        return;
+      }
       if (dialog.id === "google-onboarding") {
         event.preventDefault();
         dismissGoogleOnboarding();
@@ -29232,7 +30622,7 @@ function wire() {
         else closeDialog("quit-scheduled");
         return;
       }
-      if (dialog.id === "compose-close-review") return;
+      if (dialog.id === "compose-close-review" || dialog.id === "compose-inbox-picker" || dialog.id === "compose-calendar-slots") return;
       if (dialog.id === "connect") {
         event.preventDefault();
         dismissConnect();
@@ -29240,6 +30630,10 @@ function wire() {
       }
       if (dialog.id === "compose") {
         event.preventDefault();
+        if (state.composeInboxPicker) {
+          closeComposeInboxPicker();
+          return;
+        }
         if (state.composePdfPreview && $("attachment-preview").open) {
           closeAttachmentPreview();
           return;
@@ -29386,18 +30780,35 @@ function wire() {
   for (const id of ["imap-tls", "smtp-tls"]) {
     $(id).addEventListener("change", () => { customEndpointEdits.add(id.split("-")[0]); });
   }
+  const searchQuery = $("search-query");
+  let searchComposing = false;
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    applySearch();
+    if (!searchComposing) applySearch();
   });
-  const searchQuery = $("search-query");
   const restoreListIfCleared = (event) => {
-    if (!event.isComposing && !searchQuery.value.trim() && state.query) applySearch();
+    if (!searchComposing && !event.isComposing && !searchQuery.value.trim() && state.query) applySearch();
   };
+  searchQuery.addEventListener("compositionstart", () => { searchComposing = true; });
+  searchQuery.addEventListener("compositionend", (event) => {
+    searchComposing = false;
+    restoreListIfCleared(event);
+  });
   searchQuery.addEventListener("input", restoreListIfCleared);
   searchQuery.addEventListener("search", restoreListIfCleared);
   const listFilter = $("list-filter");
   if (listFilter) {
+    listFilter.addEventListener("compositionstart", () => {
+      filterBeforeComposition = currentListFilter();
+      clearTimeout(listFilterTimer);
+      listFilterTimer = null;
+      paintLocalFilterSearch();
+    });
+    listFilter.addEventListener("compositionend", () => {
+      if (filterBeforeComposition === null) return;
+      filterBeforeComposition = null;
+      applyListFilter();
+    });
     listFilter.addEventListener("input", applyListFilter);
     listFilter.addEventListener("search", applyListFilter);
   }
@@ -29805,7 +31216,20 @@ function wire() {
   $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("schedule-at").addEventListener("change", syncScheduleFields);
+  const windowLabel = $("compose-window-label");
+  if (windowLabel && typeof windowLabel.addEventListener === "function") {
+    windowLabel.addEventListener("input", updateComposeWindowLabel);
+    windowLabel.addEventListener("compositionend", updateComposeWindowLabel);
+    windowLabel.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.stopPropagation();
+      if (!event.isComposing) event.preventDefault();
+    });
+  }
   $("compose").addEventListener("close", () => {
+    if (!$("compose").open && composeCalendarPicker) cancelComposeCalendarSlots();
+    if (!$("compose").open && state.composeInboxPicker) closeComposeInboxPicker();
+    if (!$("compose").open && $("compose-window-label-control")?.hidden === false) publishComposeTitle("Resume draft");
     stopDraftWrite();
     closeComposeAi();
   });
@@ -29866,7 +31290,14 @@ function wire() {
     guard(confirmComposePreview);
   });
   $("compose-preview-cancel").addEventListener("click", () => cancelComposePreview());
-  $("compose-preview").addEventListener("close", () => { previewDraftState = null; });
+  window.morrowComposeBccRoster?.wire(() => previewDraftState?.payload);
+  $("compose-preview").addEventListener("close", (event) => {
+    if (event.currentTarget.open) return;
+    previewDraftState = null;
+    resetComposePreviewLinks();
+    window.morrowComposeBccRoster?.reset();
+  });
+  wireDsnRedraft();
   $("undo-schedule").addEventListener("click", () => {
     undoCancelScheduled().catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
@@ -29879,7 +31310,8 @@ function wire() {
 function watchNetwork() {
   if (!api || typeof navigator === "undefined") return;
   const send = () => {
-    api.invoke("mail:setOnline", { online: navigator.onLine !== false }).catch(() => {});
+    api.invoke("mail:setOnline", { online: navigator.onLine !== false })
+      .then(() => sentFollowups?.refresh()).catch(() => {});
   };
   window.addEventListener("online", send);
   window.addEventListener("offline", send);
@@ -30045,6 +31477,11 @@ async function boot() {
     await bootTranslateWindow();
     return;
   }
+  if (api) {
+    sentFollowups = window.morrowSentFollowups?.create({
+      call, paintOriginal: (parent, email) => appendMessageBody(parent, email, false),
+    });
+  }
   if (isReaderWindow()) {
     await bootReaderWindow();
     return;
@@ -30053,6 +31490,7 @@ async function boot() {
     showStatus("Mail preload is unavailable.", true);
     return;
   }
+  sentFollowups?.installList(document.querySelector(".sidebar-mail-actions"));
   api.invoke("morrow:configGetLayoutPanes").then((value) => {
     const panes = layoutPanesPref(value);
     state.prefs.layout = panes;
@@ -30075,6 +31513,7 @@ async function boot() {
   api.on("mail:localFoldersUpdated", payload => {
     if (!payload?.account) return;
     state.localAccount = payload.account; rememberSelection(); renderAccounts();
+    paintLocalFilterSearch();
   });
   api.on("mail:folderManagementChanged", onFolderManagementChanged);
   api.on("mail:accountsUpdated", () => setTimeout(() => { if ($("setup-guide").open) paintSetupGuide(); }, 0));
@@ -30083,7 +31522,10 @@ async function boot() {
     agentPaintPayload = payload;
     if (state.view === "agent") paintAgent(payload, "");
   });
-  api.on("mail:emailsUpdated", onEmailsUpdated);
+  api.on("mail:emailsUpdated", payload => {
+    onEmailsUpdated(payload);
+    sentFollowups?.refresh();
+  });
   api.on("mail:notificationClicked", onMailNotificationClick);
   api.on("mail:bodyUpdated", applyBodyUpdate);
   api.on("mail:bodySyncStatus", acceptBodySync);
@@ -30092,6 +31534,7 @@ async function boot() {
     rememberSyncStatus(payload);
     paintSyncControl();
     pushDebug("sync", syncDetail(payload) || syncStatusLabel(payload));
+    if (["done", "error", "paused"].includes(payload?.state)) sentFollowups?.refresh();
     // Background sync updates its own control; action receipts stay readable.
   });
   api.on("mail:translate:event", onTranslateEvent);

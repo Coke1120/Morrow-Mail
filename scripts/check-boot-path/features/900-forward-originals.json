@@ -1,0 +1,6 @@
+[
+  "forward-originals",
+  "Forward original messages as files",
+  "Mail",
+  "Select messages in Local Folders and choose Forward as attachments. Review the senders, subjects, dates, sizes and filenames. Confirm to open one new draft with the exact original messages as separate EML files, including their original headers, quoted text and embedded attachments. Choose the sender and recipients in Compose. Cancelling leaves the source messages unchanged. If any original is unavailable or the set exceeds the 25 MiB outgoing attachment limit, no files are added."
+]

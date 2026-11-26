@@ -4,6 +4,7 @@ const readerState = require("./reader-window-state");
 
 const CHANNELS = ["reader:open", "reader:pullSeed", "reader:arrangePair"];
 const OPEN_FAILED = "That message could not be opened.";
+const LINK_UNAVAILABLE = "That local message link is unavailable.";
 const ARRANGE_FAILED = "Could not place the reader windows side by side.";
 const READER_WIDTH = 960;
 const READER_HEIGHT = 760;
@@ -136,6 +137,7 @@ function createReaderHost(options) {
   const { BrowserWindow, ipcMain, shell, screen } = require("electron");
   const opts = options || {};
   const records = new Map();
+  let shellOpen = null;
   let boundsChangeOrder = 0;
 
   function trackReaderBounds(record, originShift) {
@@ -270,7 +272,131 @@ function createReaderHost(options) {
     try { opener.send("reader:openFailed", { message: OPEN_FAILED }); } catch { /* the opener is gone */ }
   }
 
-  function open(seed, opener) {
+  function receiptRecord(win) {
+    if (!win || !isVisibleReader(win)) return null;
+    const record = records.get(win.webContents.id);
+    return record?.win === win && record.url ? record : null;
+  }
+
+  // Capture the epoch from the original seeded open, before its result reaches
+  // the Reader. Subsequent opens cannot rebind an existing document.
+  function observeOpen(event, params) {
+    const record = records.get(event.sender.id);
+    if (!record && opts.isShellFrame?.(event)) {
+      if (params?.bindReaderLocalLink !== true) return null;
+      const observation = { sender: event.sender, frame: event.senderFrame, email: null };
+      shellOpen = observation;
+      return reply => {
+        const email = reply?.data?.email;
+        if (shellOpen === observation && reply?.success === true && email?.id === params?.emailId) {
+          observation.email = { id: email.id, accountId: email.accountId, bodyEpoch: email.bodyEpoch };
+        }
+      };
+    }
+    const document = record?.receiptDocument;
+    const frame = event.senderFrame;
+    if (!document || document.openStarted || frame !== document.frame ||
+        !receiptDocumentCurrent(record, document) || params?.includeThread !== false ||
+        params?.accountId !== record.seed.accountId || params?.emailId !== record.seed.messageId) return null;
+    document.openStarted = true;
+    return reply => {
+      const email = reply?.data?.email;
+      if (reply?.success === true && receiptDocumentCurrent(record, document) &&
+          email?.id === record.seed.messageId && email.accountId === record.seed.accountId &&
+          Number.isSafeInteger(email.bodyEpoch) && email.bodyEpoch >= 0) document.bodyEpoch = email.bodyEpoch;
+    };
+  }
+
+  function clearShellLocalLink(event) {
+    if (opts.isShellFrame?.(event)) shellOpen = null;
+  }
+
+  function readLink(event, params, cached = false) {
+    const record = records.get(event.sender.id);
+    if (!record?.readLocalLink) return undefined;
+    if (event.senderFrame === record.win.webContents.mainFrame && event.senderFrame?.url === record.url &&
+        params?.emailId === record.seed.messageId && params?.accountId === record.seed.accountId) {
+      try {
+        const result = record.readLocalLink();
+        if (result?.success === true && (!cached || params.bodyEpoch === result.data.email.bodyEpoch)) return result;
+      } catch { /* invalid or removed source */ }
+    }
+    return { success: false, error: { code: "message-link-unavailable", message: LINK_UNAVAILABLE } };
+  }
+
+  function copyLocalLink(event, params) {
+    const record = records.get(event.sender.id);
+    const detached = record && event.senderFrame === record.win.webContents.mainFrame && receiptSource(record.win);
+    const current = !record && opts.isShellFrame?.(event) && shellOpen?.sender === event.sender &&
+      shellOpen.frame === event.senderFrame ? shellOpen.email : null;
+    const source = detached || (current && { accountId: current.accountId, messageId: current.id, bodyEpoch: current.bodyEpoch });
+    if (!source || source.messageId !== params?.messageId || source.accountId !== params?.accountId ||
+        source.bodyEpoch !== params?.bodyEpoch) return { ok: false, message: LINK_UNAVAILABLE };
+    return opts.copyLocalLink?.(source) || { ok: false, message: LINK_UNAVAILABLE };
+  }
+
+  function receiptDocumentCurrent(record, document) {
+    const win = record.win;
+    return !document.controller.signal.aborted && !win.isDestroyed() &&
+      record.receiptDocument === document && records.get(win.webContents.id) === record &&
+      win.webContents.mainFrame === document.frame && !document.frame.detached && document.frame.url === record.url;
+  }
+
+  function receiptSource(win) {
+    const record = receiptRecord(win);
+    const document = record?.receiptDocument;
+    if (document?.bodyEpoch == null || !receiptDocumentCurrent(record, document)) return null;
+    const isCurrent = () => receiptDocumentCurrent(record, document);
+    return {
+      ...record.seed,
+      bodyEpoch: document.bodyEpoch,
+      signal: document.controller.signal,
+      isCurrent,
+      renderedIdentity() {
+        // Read the presentation from app.js's pane-keyed state in the verified
+        // main frame. Mail markup cannot set this choice.
+        if (!isCurrent()) return null;
+        return document.frame.executeJavaScript(`(() => {
+          if (location.href !== ${JSON.stringify(record.url)}) return null;
+          if (typeof state === "undefined" || pendingOpenId || pendingOpenBody || !state.email || state.email.bodyError) return null;
+          const { id, accountId, bodyEpoch } = state.email;
+          const choice = plainBodyViews.get($("reader"));
+          if (choice?.key !== JSON.stringify([accountId, id])) return null;
+          const presentation = choice.plain || !state.email.htmlBody ? "plain" : "html";
+          return { id, accountId, bodyEpoch, presentation };
+        })()`);
+      },
+    };
+  }
+
+  function trackReceiptDocument(record) {
+    const { win } = record;
+    const contents = win.webContents;
+    const retire = () => {
+      record.receiptDocument?.controller.abort();
+      record.receiptDocument = null;
+    };
+    contents.on("did-start-navigation", (details, _url, _inPlace, isMainFrame) => {
+      if (details?.isMainFrame ?? isMainFrame) retire();
+    });
+    contents.on("did-frame-navigate", (_event, url, _code, _status, isMainFrame, processId, routingId) => {
+      if (!isMainFrame) return;
+      retire();
+      const frame = contents.mainFrame;
+      if (url === record.url && frame?.url === record.url &&
+          frame.processId === processId && frame.routingId === routingId) {
+        record.receiptDocument = { frame, controller: new AbortController() };
+      }
+    });
+    contents.on("did-navigate-in-page", (_event, _url, isMainFrame) => {
+      if (isMainFrame) retire();
+    });
+    contents.on("render-process-gone", retire);
+    win.on("close", retire);
+    win.on("closed", retire);
+  }
+
+  function open(seed, opener, readLocalLink = null) {
     const clean = sanitizeReaderSeed(seed);
     let index = 0;
     for (const record of records.values()) {
@@ -299,7 +425,7 @@ function createReaderHost(options) {
     });
     try { win.webContents.setZoomLevel(0); } catch { /* the page still opens at the default zoom */ }
     const id = win.webContents.id;
-    const record = { win, seed: clean, boundsTimer: null, temporaryBounds: null, arranging: false };
+    const record = { win, seed: clean, readLocalLink, boundsTimer: null, temporaryBounds: null, arranging: false };
     records.set(id, record);
     trackReaderBounds(record, originShift);
     let failed = false;
@@ -327,7 +453,12 @@ function createReaderHost(options) {
       if (isMainFrame === false) return;
       fail();
     });
-    const loading = mode() === "asar"
+    const external = mode() === "asar";
+    // The optional external renderer has its own UI and preload. The export's
+    // identity query is defined only for the bundled first-party document.
+    if (!external && opts.htmlFile) record.url = require("node:url").pathToFileURL(opts.htmlFile).href + "?role=reader";
+    if (record.url) trackReceiptDocument(record);
+    const loading = external
       ? win.loadURL("morrow://local/index.html?role=reader")
       : win.loadFile(opts.htmlFile, { query: { role: "reader" } });
     loading.catch(fail);
@@ -339,13 +470,14 @@ function createReaderHost(options) {
     ipcMain.handle("reader:pullSeed", (event) => {
       const record = records.get(event.sender.id);
       if (!record) return null;
-      return { accountId: record.seed.accountId, messageId: record.seed.messageId };
+      return { accountId: record.seed.accountId, messageId: record.seed.messageId,
+        ...(record.readLocalLink ? { openedFromLocalLink: true } : {}) };
     });
     ipcMain.handle("reader:arrangePair", arrangePair);
     return { open: open, records: records };
   }
 
-  return { open: open, register: register, records: records };
+  return { open, register, records, receiptRecord, receiptSource, observeOpen, readLink, copyLocalLink, clearShellLocalLink };
 }
 
 module.exports = {

@@ -1,0 +1,6 @@
+{
+  "id": "support-navigation",
+  "title": "Support and mailbox selection",
+  "category": "Support",
+  "blurb": "Features, Shortcuts and Debug log preserve the hidden Mail selection. Escape clears selected messages only on the Mail page when no overlay or text input owns it. Open in Mail switches pages immediately; a delayed folder read cannot pull you out of a newer Support visit."
+}

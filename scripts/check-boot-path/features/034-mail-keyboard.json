@@ -1,0 +1,6 @@
+[
+  "mail-keyboard",
+  "Mail list keyboard navigation",
+  "Mail",
+  "On the Mail page, ↑ and ↓ move through messages and Enter opens the highlighted message. Focused buttons and links keep their own keys, including pagination, Sync, and Scheduled. Other pages keep their own focus."
+]

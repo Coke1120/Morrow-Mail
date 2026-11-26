@@ -1,0 +1,6 @@
+{
+  "id": "draft-inbox-attachments",
+  "title": "Attach from Inbox in a draft",
+  "category": "Mail",
+  "blurb": "From Drafts in the main Mail window, use Right preview or Bottom preview and choose Resume draft. In the editor, choose Attach from Inbox and check the draft’s exact To, Cc and Bcc. Choose files by their source sender, subject and date. Older and Newer clear unconfirmed checks. Use Add and view older files to add the checked files and continue to the next page, or Add selected files to add them and return to the editor. The picker shows filenames already in the editor. Cancel or Escape keeps confirmed additions. The picker shows files stored on this device, including completed Inbox downloads still in the five-minute transfer cache. If a file has expired, preview it in the reader and reopen the picker. You can preview the added PDF, remove the old version and choose Save draft. The 25 MiB outgoing attachment limit applies across batches."
+}

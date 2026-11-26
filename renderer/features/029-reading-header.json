@@ -1,0 +1,6 @@
+{
+  "id": "reading-header",
+  "title": "Reading header",
+  "category": "Mail",
+  "blurb": "The open message shows its date and time on the From row, right-aligned, in the main reading pane and in a separate reader window. That text uses the reader's existing date and time format. To and Cc stay on the lines below. Main and separate readers apply definitive flag and removal receipts; terminal refusals restore the authoritative flags instead of announcing success. Remote images are on for new profiles. When disabled, normal image, CSS URL and table backgrounds stay blocked until Load remote content is chosen for that message. Unsupported CSS image functions, including image-set, are discarded."
+}

@@ -355,6 +355,429 @@ async function composeReplacementPreview() {
   assert.equal(ui.run("state.composePdfBytes.size"), 0, "an upload finishing after close cannot retain its bytes");
 }
 
+async function resumedDraftPdfPreview() {
+  const f = fixture(true);
+  const revised = syntheticPdf(2, 595, 842, "HKD 1,340");
+  const original = syntheticPdf(2, 595, 842, "HKD 1,240");
+  assert.equal(revised.byteLength, original.byteLength);
+  const files = ["revised", "original"].map(key => ({
+    id: "legacy-" + key, storageUrl: "local:" + key, filename: "quote.pdf",
+    mimeType: "application/pdf", size: original.byteLength,
+  }));
+  const provider = { ...files[0], id: "revised", storageUrl: undefined };
+  let saved = { id: "draft", accountId: "box", bodyEpoch: 7, draftRevision: "before-save", isDraft: true,
+    bodyComplete: true, fromAddress: "owner@example.invalid", textBody: "Saved text", attachments: [...files, provider] };
+  const calls = [];
+  let pendingRead, composeSeed;
+  f.window.morrow = { openComposeWindow(seed) { composeSeed = seed; }, async invoke(channel, params) {
+    calls.push({ channel, params });
+    const ok = data => ({ success: true, data });
+    if (channel === "mail:openEmail") return ok({ email: saved });
+    if (channel === "mail:prepareDraft") {
+      return ok({ email: { ...saved, attachments: [...files, { ...provider, id: "hydrated", storageUrl: "local:hydrated" }] } });
+    }
+    if (channel === "mail:readCachedBody") {
+      assert.deepEqual({ ...params }, { emailId: "draft", accountId: "box", bodyEpoch: 7 });
+      return ok({ email: saved });
+    }
+    if (channel === "mail:fetchAttachmentBytes") {
+      assert.equal(params.messageId, "draft");
+      assert.equal(params.accountId, "box");
+      const file = saved.attachments.find(file => file.id === params.attachmentId);
+      assert.ok(file?.storageUrl, "fetch uses the saved attachment ID, even if a provider ID equals its blob ID");
+      if (pendingRead) await pendingRead.promise;
+      return ok(file.storageUrl === "local:revised" ? revised : original);
+    }
+    if (channel === "mail:upsertDraft") {
+      assert.equal(params.draftRevision, saved.draftRevision);
+      saved = { ...saved, draftRevision: "after-save",
+        attachments: params.attachments.map(file => ({ ...file, id: file.storageUrl.slice(6) })) };
+      return ok({ emailId: saved.id, draftRevision: saved.draftRevision });
+    }
+    assert.equal(channel, "mail:cancelAttachmentRequest");
+    return ok(true);
+  } };
+  const ui = renderer({ ...f.globals, crypto: require("node:crypto").webcrypto });
+  const compose = f.node("compose"), dialog = f.node("attachment-preview"), list = f.node("compose-attachments");
+  compose.id = "compose"; dialog.id = "attachment-preview";
+  dialog.close = () => { dialog.open = false; dialog.listeners.close(); };
+  f.document.querySelectorAll = selector => selector === "dialog[open]" ? [compose, dialog].filter(node => node.open) : [];
+  const buttons = prefix => descendants(list, "ghost").filter(button => button.getAttribute("aria-label").startsWith(prefix));
+  const previews = () => buttons("Preview ");
+  list.querySelectorAll = previews;
+  ui.run(`
+    state.accounts = [{id:'box', email:'owner@example.invalid', platform:'imap'}];
+    openDialog = id => { $(id).open = true; };
+    initializeComposeIdentity = async () => {}; fillSignatures = async () => {}; showComposeSuggestions = async () => {};
+    syncCompose = paintComposeAttachments; paintComposeNote = () => {}; paintComposeEditor = () => {};
+    paintComposeChrome = () => {}; paintQuoteBody = () => {}; scheduleComposeLayout = () => {};
+    syncScheduleFields = () => {}; setAiMode = () => {}; showStatus = () => {};
+    $('attachment-preview').addEventListener('close', finishAttachmentPreview);
+  `);
+  await ui.run("resumeDraft({id:'draft',accountId:'box'})");
+  assert.deepEqual(JSON.parse(JSON.stringify(composeSeed.draftPdf)), {
+    id: "draft", accountId: "box", bodyEpoch: 7, draftRevision: "before-save",
+    files: files.map(({ id, storageUrl }) => ({ id, storageUrl })),
+  });
+  ui.context.resumedSeed = composeSeed;
+  await ui.run("openCompose(resumedSeed)");
+  assert.deepEqual(calls.map(call => call.channel), ["mail:openEmail", "mail:prepareDraft"]);
+  assert.deepEqual(previews().map(button => button.getAttribute("aria-label")), [
+    "Preview quote.pdf, attachment 1 of 3", "Preview quote.pdf, attachment 2 of 3",
+  ], "a prepared provider-only PDF is excluded");
+  assert.equal(new Set(buttons("Remove ").map(button => button.getAttribute("aria-label"))).size, 3);
+  f.node("compose-body").value = "Unsaved recommendation";
+  const dirty = ui.run("composeSnapshot()");
+  const fetchIds = () => calls.filter(call => call.channel === "mail:fetchAttachmentBytes").map(call => call.params.attachmentId);
+  async function inspect(index, amount) {
+    previews()[index].click();
+    await until(() => f.pages.childNodes[1]?.textContent.includes(amount));
+    assert.equal(f.node("attachment-preview-arrange").hidden, true);
+    ui.run("paintComposeAttachments(); closeAttachmentPreview()");
+    assert.equal(f.document.activeElement, previews()[index]);
+    assert.equal(ui.run("composeSnapshot()"), dirty);
+  }
+  await inspect(0, "HKD 1,340");
+  await inspect(1, "HKD 1,240");
+  assert.deepEqual(fetchIds(), ["legacy-revised", "legacy-original"]);
+  assert.equal(calls.some(call => call.channel === "mail:upsertDraft"), false, "preview never saves the dirty editor");
+  assert.equal(await ui.run("saveDraft()"), true);
+  await inspect(0, "HKD 1,340");
+  assert.equal(fetchIds().at(-1), "revised", "after Save the confirmed revision supplies the normalized ID");
+
+  pendingRead = gate();
+  previews()[1].click();
+  await until(() => fetchIds().length === 4);
+  const request = calls.at(-1).params;
+  ui.run("closeAttachmentPreview()");
+  assert.equal(calls.at(-1).params.requestId, request.requestId);
+  assert.equal(calls.at(-1).channel, "mail:cancelAttachmentRequest");
+  pendingRead.resolve();
+  await tick();
+  assert.equal(f.pages.childNodes.length, 0, "late bytes cannot reopen a closed preview");
+  assert.equal(f.document.activeElement, previews()[1]);
+
+  pendingRead = gate();
+  previews()[1].click();
+  await until(() => fetchIds().length === 5);
+  saved = { ...saved, draftRevision: "changed-elsewhere" };
+  pendingRead.resolve();
+  await until(() => /saved draft or attachment changed/.test(f.node("attachment-preview-status").textContent));
+  assert.equal(f.pages.childNodes.length, 0, "a newer saved revision blocks stale bytes");
+  ui.run("closeAttachmentPreview()");
+  buttons("Remove ")[1].click();
+  assert.deepEqual(previews().map(button => button.dataset.composePdf), ["local:revised"]);
+  assert.equal(f.node("compose-body").value, "Unsaved recommendation");
+}
+
+async function receivingDraftInboxPicker() {
+  const f = fixture();
+  f.window.location.search = "?role=compose";
+  const draft = { id: "draft", accountId: "box", bodyEpoch: 0, draftRevision: "saved", isDraft: true, bodyComplete: true,
+    fromAddress: "owner@example.invalid", to: ["To <to@example.invalid>"], cc: ["cc@example.invalid"],
+    bcc: ["bcc@example.invalid"], textBody: "Saved text", attachments: [] };
+  const file = { id: "2", filename: "Inbox quote.pdf", size: 7, proof: "opaque-proof" };
+  const local = { id: "blob", storageUrl: "local:blob", filename: file.filename, size: file.size, mimeType: "application/pdf" };
+  const sources = [{ id: "source", from: "Source <source@example.invalid>", subject: "Source quote",
+    date: "2026-11-24T08:00:00Z", files: [file] }];
+  const olderCursor = "opaque-older-page";
+  const olderFile = { id: "3", filename: "Older quote.pdf", size: 7 };
+  const olderLocal = { ...local, id: "older-blob", storageUrl: "local:older-blob", filename: olderFile.filename };
+  const olderPage = review => ({ sources: [{ ...sources[0], id: "older-source", files: [{ ...olderFile, proof: review.id }] }], nextCursor: null });
+  const calls = [];
+  let seed, pending, pendingList, pendingPin, showOlderFile;
+  f.window.morrow = { openComposeWindow(fields) { seed = fields; }, async invoke(channel, params) {
+    calls.push({ channel, params });
+    let data;
+    if (channel === "mail:openEmail") data = { email: draft };
+    else if (channel === "mail:listFromCache") {
+      assert.equal(params.strictLocal, true);
+      assert.equal(params.inboxAttachmentReview.bodyEpoch, 0);
+      if (params.checkDraft) data = { current: true };
+      else if (pendingList) data = await pendingList.promise;
+      else if (params.cursor === olderCursor) data = showOlderFile ? olderPage(params.inboxAttachmentReview) : { sources: [], nextCursor: null };
+      else {
+        assert.equal(params.cursor, null);
+        data = { sources, nextCursor: olderCursor };
+      }
+    } else if (channel === "mail:prepareDraft") {
+      assert.equal(params.strictLocal, true);
+      const isOlder = params.parts[0].emailId === "older-source";
+      const chosen = isOlder ? olderFile : file;
+      const choice = { emailId: isOlder ? "older-source" : "source", partId: chosen.id,
+        proof: isOlder ? params.inboxAttachmentReview.id : file.proof };
+      const contentProof = isOlder ? `checked-${choice.proof}` : "checked-bytes";
+      if (params.pinSelection) {
+        assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [choice]);
+        if (pendingPin) await pendingPin.promise;
+        data = { attachments: [{ contentProof }] };
+      } else {
+        assert.deepEqual(JSON.parse(JSON.stringify(params.parts)), [{ ...choice, contentProof }]);
+        if (pending) await pending.promise;
+        data = { attachments: [{ filename: chosen.filename, mimeType: local.mimeType, bytes: Buffer.from(isOlder ? "terms-7" : "fixture"), size: 7 }] };
+      }
+    } else if (channel === "mail:uploadAttachment") {
+      const isOlder = params.filename === olderFile.filename;
+      assert.equal(Buffer.from(params.fileBytes).toString(), isOlder ? "terms-7" : "fixture");
+      data = isOlder ? olderLocal : local;
+    } else {
+      assert.equal(channel, "mail:cancelAttachmentRequest");
+      data = true;
+    }
+    return { success: true, data };
+  } };
+  const ui = renderer({ ...f.globals, URLSearchParams, crypto: require("node:crypto").webcrypto });
+  const pickerScript = path.join(root, "renderer/compose-attachments.js");
+  vm.runInContext(fs.readFileSync(pickerScript, "utf8"), ui.context, { filename: pickerScript });
+  const dialog = f.node("compose-inbox-picker");
+  for (const id of ["compose", "compose-inbox-picker", "compose-close-review"]) {
+    const node = f.node(id);
+    node.showModal = () => { node.open = true; };
+    node.close = () => { node.open = false; node.listeners.close?.(); };
+  }
+  ui.run(`
+    state.accounts = [{id:"box", email:"owner@example.invalid", platform:"imap", bodyEpoch:0}];
+    initializeComposeIdentity = async () => {}; fillSignatures = async () => {}; showComposeSuggestions = async () => {};
+    syncCompose = () => { syncComposeActions(); paintComposeAttachments(); }; paintComposeNote = () => {}; paintComposeEditor = () => {};
+    paintComposeChrome = () => {}; paintQuoteBody = () => {}; scheduleComposeLayout = () => {};
+    syncScheduleFields = () => {}; setAiMode = () => {}; showStatus = () => {};
+    wireComposeInboxPicker();
+  `);
+  await ui.run("resumeDraft({id:'draft',accountId:'box'})");
+  assert.equal(seed.draftBodyEpoch, 0);
+  assert.equal(seed.draftPdf, undefined, "receiving scope is independent of existing PDFs or attachments");
+  ui.context.inboxSeed = seed;
+  await ui.run("openCompose(inboxSeed)");
+  const confirm = f.node("compose-inbox-confirm");
+  const list = f.node("compose-inbox-sources");
+  const status = f.node("compose-inbox-status");
+  const openPicker = async () => {
+    f.node("compose-attach-inbox").click();
+    await until(() => list.childNodes.length > 0);
+  };
+  const checkbox = () => descendants(list, "check")[0].childNodes[0];
+  const checkFile = async () => {
+    assert.equal(confirm.disabled, true);
+    assert.match(list.textContent, /Source quote.*Source <source@example\.invalid>.*Inbox quote\.pdf · 7 B/);
+    const input = checkbox();
+    assert.equal(input.type, "checkbox");
+    assert.equal(input.getAttribute("aria-describedby"), list.childNodes[0].childNodes[1].id);
+    assert.equal(Boolean(input.checked), false);
+    input.checked = true;
+    await input.listeners.change();
+    assert.equal(confirm.disabled, false);
+  };
+  const choose = async () => {
+    await openPicker();
+    await checkFile();
+  };
+  assert.equal(f.node("compose-attach-inbox").disabled, false);
+  await choose();
+  assert.deepEqual(["to", "cc", "bcc"].map(field => f.node("compose-inbox-" + field).textContent), [
+    draft.to[0], draft.cc[0], draft.bcc[0],
+  ]);
+  assert.equal(f.node("compose-save").disabled, true);
+  const older = f.node("compose-inbox-older"), newer = f.node("compose-inbox-newer");
+  assert.equal(older.disabled, false);
+  older.click();
+  await until(() => !newer.disabled);
+  assert.equal(calls.at(-1).params.cursor, olderCursor);
+  assert.equal(confirm.disabled, true);
+  assert.equal(list.childNodes.length, 0);
+  newer.click();
+  await until(() => list.childNodes.length > 0);
+  assert.equal(calls.at(-1).params.cursor, null);
+  await checkFile();
+
+  const before = ui.run("composeSnapshot()");
+  pending = gate();
+  const cancelled = ui.run("confirmComposeInboxFiles()");
+  const requestId = calls.at(-1).params.requestId;
+  assert.equal(Boolean(f.node("compose-inbox-cancel").disabled), false);
+  let escaped = false;
+  dialog.listeners.cancel({ preventDefault() { escaped = true; } });
+  assert.equal(escaped, true);
+  assert.equal(dialog.open, false);
+  assert.equal(calls.at(-1).params.requestId, requestId);
+  pending.resolve();
+  await cancelled;
+  assert.equal(ui.run("composeSnapshot()"), before, "a late result after Escape cannot attach");
+
+  await choose();
+  pending = gate();
+  const stale = ui.run("confirmComposeInboxFiles()");
+  f.node("compose-bcc").value = "updated@example.invalid";
+  pending.resolve();
+  await stale;
+  assert.equal(dialog.open, false);
+  assert.equal(ui.run("state.composeAttachments.length"), 0, "a late result for old recipients cannot attach");
+
+  const staleList = gate();
+  pendingList = staleList;
+  f.node("compose-attach-inbox").click();
+  assert.equal(calls.at(-1).channel, "mail:listFromCache");
+  assert.equal(status.textContent, "Checking stored Inbox files…");
+  dialog.listeners.cancel({ preventDefault() {} });
+  pendingList = null;
+  await choose();
+  const currentInput = checkbox();
+  staleList.resolve({ sources: [], nextCursor: null });
+  await tick();
+  assert.ok(list.contains(currentInput), "a late page cannot replace the reopened picker");
+  assert.equal(status.textContent, "1 selected.");
+  assert.equal(confirm.disabled, false);
+  dialog.listeners.cancel({ preventDefault() {} });
+
+  await choose();
+  pending = null;
+  await ui.run("confirmComposeInboxFiles()");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.composeAttachments)")), [local]);
+  assert.equal(dialog.open, false);
+  assert.equal(f.node("compose-body").value, draft.textBody);
+  ui.run('removeComposeAttachment("local:blob")');
+
+  const unsavedTo = "new-to@example.invalid";
+  const unsavedBody = "Unsaved draft recommendation";
+  const unsavedQuote = "New quotation for this draft";
+  f.node("compose-to").value = unsavedTo;
+  f.node("compose-body").value = unsavedBody;
+  ui.context.unsavedQuote = unsavedQuote;
+  ui.run("state.composeQuote = quoteStateFromSeed({quote: unsavedQuote})");
+
+  await openPicker();
+  const stalePin = gate();
+  pendingPin = stalePin;
+  const oldInput = checkbox();
+  oldInput.checked = true;
+  const pin = oldInput.listeners.change();
+  const pinRequestId = calls.at(-1).params.requestId;
+  dialog.listeners.cancel({ preventDefault() {} });
+  assert.equal(calls.at(-1).channel, "mail:cancelAttachmentRequest");
+  assert.equal(calls.at(-1).params.requestId, pinRequestId);
+  pendingPin = null;
+  await openPicker();
+  stalePin.resolve();
+  await pin;
+  assert.equal(Boolean(checkbox().checked), false, "a late pin cannot select a file after reopening");
+  assert.equal(confirm.disabled, true);
+  assert.equal(status.textContent, "Choose files to add to the draft.");
+
+  assert.equal(f.node("compose-inbox-to").textContent, unsavedTo);
+  await checkFile();
+  await ui.run("confirmComposeInboxFiles()");
+  assert.deepEqual(JSON.parse(ui.run("JSON.stringify(state.composeAttachments)")), [local]);
+  assert.equal(dialog.open, false);
+  assert.equal(f.node("compose-to").value, unsavedTo);
+  assert.equal(f.node("compose-body").value, unsavedBody);
+  assert.equal(ui.run("state.composeQuote.text"), unsavedQuote);
+  const closing = ui.run("requestComposeClose()");
+  await until(() => f.node("compose-close-review").open);
+  f.node("draft-close-keep").onclick();
+  assert.equal(await closing, false);
+  assert.equal(ui.run("state.composeAttachments.length"), 1, "Keep editing preserves the attachment");
+
+  // The explicit continuation commits one batch and replaces the review before loading the older page.
+  const addOlder = f.node("compose-inbox-add-older"), attached = f.node("compose-inbox-attached");
+  const attachmentRows = () => JSON.parse(ui.run("JSON.stringify(state.composeAttachments)"));
+  const checkOlderFile = async () => {
+    const input = checkbox();
+    assert.equal(Boolean(input.checked), false);
+    input.checked = true;
+    await input.listeners.change();
+  };
+  const escape = () => dialog.listeners.cancel({ preventDefault() {} });
+  await openPicker();
+  assert.equal(attached.textContent, `Attached in this editor: ${file.filename}`);
+  assert.equal(addOlder.hidden, true);
+  escape();
+  ui.run('removeComposeAttachment("local:blob")');
+  await choose();
+  assert.equal(attached.hidden, true);
+  assert.equal(addOlder.hidden, false);
+  assert.equal(addOlder.disabled, false);
+  const firstReview = calls.at(-1).params.inboxAttachmentReview;
+  const nextPage = gate();
+  pendingList = nextPage;
+  await addOlder.listeners.click();
+  assert.deepEqual(attachmentRows(), [local]);
+  assert.equal(dialog.open, true);
+  assert.equal(f.node("compose-save").disabled, true);
+  assert.equal(older.disabled, true, "the previous confirmation's finally cannot unlock a pending page");
+  const nextRequest = calls.at(-1).params;
+  assert.equal(nextRequest.cursor, olderCursor);
+  const nextReview = nextRequest.inboxAttachmentReview;
+  assert.notEqual(nextReview.id, firstReview.id);
+  assert.deepEqual({ ...nextReview, id: firstReview.id }, { ...firstReview });
+  assert.deepEqual(Object.keys(nextRequest).sort(), ["cursor", "inboxAttachmentReview", "strictLocal"]);
+  pendingList = null;
+  nextPage.resolve(olderPage(nextReview));
+  await until(() => !newer.disabled);
+  assert.equal(f.document.activeElement, f.node("compose-inbox-sources-title"));
+  assert.match(attached.textContent, /Inbox quote\.pdf/);
+  assert.equal(confirm.disabled, true);
+  const changed = new Error("An Inbox message or attachment changed. Open the picker again to review its files.");
+  changed.code = "inbox_attachment";
+  ui.context.changedSourceError = changed;
+  ui.run("showComposeInboxError(state.composeInboxPicker, changedSourceError, 'Check the file again to retry.')");
+  assert.equal(status.textContent, changed.message, "preserve the host's specific recovery instruction");
+  await checkOlderFile();
+  assert.equal(addOlder.hidden, true, "the last page only offers Add selected files");
+  const secondBatchStart = calls.length;
+  await confirm.listeners.click();
+  assert.equal(calls[secondBatchStart].params.inboxAttachmentReview.id, nextReview.id);
+  assert.equal(calls[secondBatchStart].params.existingBytes, local.size);
+  assert.deepEqual(attachmentRows(), [local, olderLocal]);
+  assert.equal(dialog.open, false);
+  assert.equal(attached.textContent, "");
+  assert.equal(f.node("compose-save").disabled, false);
+
+  // The second batch is bounded by the combined size. Escape discards its check and keeps the first batch.
+  ui.run('removeComposeAttachment("local:blob"); removeComposeAttachment("local:older-blob")');
+  showOlderFile = true;
+  olderFile.size = 25 * 1024 * 1024 - local.size + 1;
+  await choose();
+  await addOlder.listeners.click();
+  await until(() => !newer.disabled);
+  await checkOlderFile();
+  const beforeOversize = calls.length;
+  await confirm.listeners.click();
+  assert.equal(calls.length, beforeOversize);
+  assert.match(status.textContent, /These files are .* together/);
+  escape();
+  assert.deepEqual(attachmentRows(), [local]);
+  assert.equal(dialog.open, false);
+
+  // List and pin failures after a commit keep that batch and allow a retry in the same picker.
+  ui.run('removeComposeAttachment("local:blob")');
+  olderFile.size = olderLocal.size;
+  await choose();
+  const failedList = gate();
+  pendingList = failedList;
+  await addOlder.listeners.click();
+  pendingList = null;
+  failedList.reject(new Error("Synthetic list failure"));
+  await until(() => !older.disabled);
+  assert.match(status.textContent, /Synthetic list failure.*Choose Older to try again/);
+  assert.deepEqual(attachmentRows(), [local]);
+  older.click();
+  await until(() => !newer.disabled);
+  const failedPin = gate();
+  pendingPin = failedPin;
+  const retryInput = checkbox();
+  retryInput.checked = true;
+  const pinFailure = retryInput.listeners.change();
+  failedPin.reject(new Error("Synthetic pin failure"));
+  await pinFailure;
+  pendingPin = null;
+  assert.match(status.textContent, /Synthetic pin failure.*Check the file again to retry/);
+  assert.equal(retryInput.checked, false);
+  assert.deepEqual(attachmentRows(), [local]);
+  await checkOlderFile();
+  await confirm.listeners.click();
+  assert.deepEqual(attachmentRows(), [local, olderLocal]);
+  assert.ok(calls.every(({ channel }) => ["mail:openEmail", "mail:listFromCache", "mail:prepareDraft", "mail:cancelAttachmentRequest", "mail:uploadAttachment"].includes(channel)));
+}
+
 async function shippedBundle() {
   const f = fixture(true); await f.render({ data: syntheticPdf() });
   assert.match(f.pages.textContent, /Synthetic accessible PDF body/, "shipped PDF.js bundle parses and exposes actual PDF text");
@@ -383,6 +806,10 @@ function contractAndHelp() {
   const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8"), css = fs.readFileSync(path.join(root, "renderer/app.css"), "utf8");
   assert.match(html, /id="attachment-preview-stage"[^>]*role="region"[^>]*tabindex="0"/);
   assert.match(html, /id="attachment-preview-pages"[^>]*role="document"/);
+  for (const direction of ["newer", "older"]) {
+    assert.match(html, new RegExp(`id="compose-inbox-${direction}"[^>]*aria-describedby="compose-inbox-paging-help"`));
+  }
+  assert.match(html, /id="compose-inbox-add-older"[^>]*>Add and view older files<\/button>/);
   for (const directive of ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'"]) assert.ok(html.includes(directive));
   assert.doesNotMatch(html, /unsafe-eval|unsafe-inline|unsafe-hashes/);
   assert.match(css, /\.attachment-preview-page \{[^}]*max-height: 4096px;[^}]*object-fit: contain;/);
@@ -397,7 +824,7 @@ function contractAndHelp() {
   assert.equal(bitmap(100, 100, 10000, 2).bitmapHeight, 4096);
   f.window.morrowFeaturesCatalog = require("../renderer/features-catalog"); ui.run("paintFeatureCatalog()");
   const help = f.node("features-catalog").textContent;
-  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/]) assert.match(help, claim);
+  for (const claim of [/extracted plain text/, /no OCR/, /load progressively/, /stops remaining preview work/, /shows Retry/, /4096 pixels/, /Text selection, in-preview links/, /verified local PDF in a resumed draft/, /Attach from Inbox in a draft/, /exact To, Cc and Bcc/, /Older and Newer clear unconfirmed checks/, /Add and view older files/]) assert.match(help, claim);
 }
 
 async function run() {
@@ -405,7 +832,7 @@ async function run() {
   assert.equal(crlfSource, source, "Windows CRLF checkouts strip module imports identically");
   new vm.Script(crlfSource, { filename: "pdf-preview-crlf.js" });
   const hostWithResolvers = Promise.withResolvers;
-  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await shippedBundle(); contractAndHelp();
+  await semanticsAndRetry(); await longDocument(); await limitsAndFailures(); await cancellationAndIntegration(); await composeReplacementPreview(); await resumedDraftPdfPreview(); await receivingDraftInboxPicker(); await shippedBundle(); contractAndHelp();
   assert.equal(Promise.withResolvers, hostWithResolvers, "renderer compatibility never patches the host Promise");
   console.log("pdf-preview-ok: source and shipped PDF.js bundle, accessible/inert text, progressive admission/abort, resize failure/Retry, canvas caps, lifecycle/app integration, CSP/assets/rendered Features");
 }

@@ -2,9 +2,13 @@ const { gate: updateGate } = require("../update-quiescence");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const crypto = require("crypto");
 const deliveryReceipt = require("./delivery-receipt");
+const sentFollowup = require("./sent-followup");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { pathToFileURL } = require("node:url");
+const { composePage } = require("../compose-editing-menu");
+const composeWindows = require("../compose-window");
 const db = require("./db");
 const recipientSuggest = require("./recipient-suggest");
 const actions = require("./actions");
@@ -18,7 +22,9 @@ const zipBytes = require("./zip-bytes");
 const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
+const { createAttachmentSaveSessions } = require("./attachment-save-list");
 const localFolders = require("./local-folders");
+const forwardOriginals = require("./forward-originals");
 const contextOwner = require("../../shared/mail-context-owner");
 const { createImporter } = require("./mbox-import");
 const { createJournal: createFolderJournal } = require("./folder-recovery");
@@ -49,6 +55,7 @@ const perf = require("../performance-diagnostics");
 const { diagnosticMessage: gmailDiagnosticMessage } = require("./gmail-error");
 const composeIdentity = require("./compose-identity");
 const textEncoding = require("./text-encoding");
+const dsn = require("./dsn-report");
 const listUnsubscribe = require("./list-unsubscribe");
 const decoding = require("./mime-decoding");
 const composePolicy = require("../../shared/compose-policy");
@@ -422,6 +429,23 @@ async function transferToLocal(params, assertContextCurrent = () => {}) {
 
 function localAnswer(channel, params, event) {
   try {
+    if (channel === "mail:reviewForwardOriginals" || channel === "mail:stageForwardOriginals") {
+      if (params?.accountId !== localFolders.ACCOUNT_ID) return fail("invalid", "Choose messages from Local Folders.");
+      if (!Array.isArray(params.sources) || params.sources.length < 2) return fail("invalid", "Choose at least two messages.");
+      if (!db.isReady()) return fail("mail_not_ready", "Local mail is still opening. Try again when it is ready.");
+      const store = localArchive();
+      if (channel === "mail:reviewForwardOriginals") {
+        return ok(forwardOriginals.reviewOriginals(store, params.sources, ATTACHMENT_CAP));
+      }
+      const files = forwardOriginals.readOriginals(store, params.sources, params.proof, ATTACHMENT_CAP);
+      // Nothing reaches the draft store until all source bytes pass verification.
+      const attachments = db.transaction(() => files.map(({ filename, mimeType, fileBytes }) => {
+        const id = crypto.randomBytes(9).toString("hex");
+        db.saveBlob(id, filename, mimeType, fileBytes);
+        return { id, filename, mimeType, size: fileBytes.length, storageUrl: `local:${id}` };
+      }));
+      return ok({ attachments });
+    }
     const store = localArchive();
     if (params?.accountId && params.accountId !== localFolders.ACCOUNT_ID) return fail("email-gone", "That local message does not belong to this mailbox.");
     if (channel === "mail:localFolders") return ok(store.account());
@@ -680,6 +704,9 @@ function publicAttachment(item) {
 function listRow(row, generations, memberships, includeDraftTo = false) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
+  delete recipientHeaders.followupReply;
+  delete recipientHeaders.followupConfirmedRecipient;
+  delete recipientHeaders.followupUnprovenAdoption;
   const sender = row.from_address || row.from_addr || "";
   const parsedAddress = composePolicy.address(sender);
   const bareSender = parsedAddress && parsedAddress === sender.trim().toLowerCase() ? parsedAddress : "";
@@ -855,19 +882,145 @@ function isSystemDraftFolder(accountId, folderPath) {
   return (role === "draft" || role === "drafts") && !remote.isAllMail(folder);
 }
 
+const dsnReviewKey = crypto.randomBytes(32);
+
+function dsnFolder(account, role, gmailLabel) {
+  const folder = db.folderByWellKnown(account.id, role);
+  return folder && !remote.isAllMail(folder) && (account.mail_transport !== "gmail_api" || folder.provider_id === gmailLabel) ? folder : null;
+}
+
+function dsnInFolder(account, row, folder, allowLocal = false) {
+  if (!folder || !row || row.account_id !== account.id || row.folder_path !== folder.path || row.is_draft || row.draft_pending) return false;
+  if (allowLocal && row.uid === 0) return row.uid_validity === 0 && row.date_source === "local";
+  if (row.uid <= 0 || row.uid_validity <= 0) return false;
+  if (account.mail_transport !== "gmail_api") return row.uid_validity === folder.uid_validity;
+  const mapping = row.gmail_id && db.gmailMap(account.id, row.gmail_id);
+  const labels = db.jsonList(mapping?.labels_json);
+  return row.uid_validity === account.gmail_generation && mapping?.local_uid === row.uid
+    && labels.includes(folder.provider_id) && !labels.some(label => ["TRASH", "SPAM", "DRAFT"].includes(label));
+}
+
+function dsnSnapshot(row) {
+  return [row.id, row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id, row.dsn_redraft_json,
+    row.date_iso, row.date_source, row.from_addr, db.maxActionGeneration(row.id)];
+}
+
+function dsnRedraftAnswer(params, event) {
+  const owner = event?.sender;
+  if (!owner || !event.senderFrame || event.senderFrame !== owner.mainFrame || owner.isDestroyed?.()) {
+    return fail("dsn_reader", "Open the report in the Inbox reader to review a corrected draft.");
+  }
+  const saving = params?.action === "save";
+  const validKey = value => typeof value === "string" && value.length > 0 && value.length <= 200;
+  if ((!saving && params?.action !== "review") || !validKey(params.accountId) || !validKey(params.emailId)) {
+    return fail("invalid", "Open the report in the Inbox reader to start a new review.");
+  }
+  const manual = message => fail("dsn_manual", message);
+  const account = db.accountById(params.accountId);
+  const report = db.messageById(params.emailId);
+  const evidence = dsn.parse(report?.dsn_redraft_json);
+  if (!account || params.bodyEpoch !== (accountEpochs.get(account.id) || 0) || evidence?.kind !== "report"
+    || !dsnInFolder(account, report, dsnFolder(account, "inbox", "INBOX"))) {
+    return manual("This report is no longer available in the original Inbox. Reopen it after syncing the mailbox.");
+  }
+  if (report.body_complete && !report.body_warning && evidence.delayed && dsn.mailbox(evidence.notified)) {
+    try { composeIdentity.outgoingIdentity(account, evidence.notified); }
+    catch { return manual("The report was addressed to a different mailbox. Review it manually."); }
+    return fail("dsn_delayed", "Delivery is delayed. The mail service may retry. Wait for a final delivery report.");
+  }
+  if (!report.body_complete || report.body_warning || !dsn.messageId(evidence.id) || !dsn.mailbox(evidence.failed) || !dsn.mailbox(evidence.notified)) {
+    return manual("The report does not establish one permanent invalid address and one original Message-ID. If its download is incomplete, retry it. Otherwise, review the delivery failure manually.");
+  }
+  const sent = dsnFolder(account, "sentitems", "SENT");
+  const gmail = account.mail_transport === "gmail_api";
+  const original = sent && db.uniqueSentByRfc(account.id, sent.path, evidence.id);
+  if (!dsnInFolder(account, original, sent, true)) {
+    return manual("A unique original could not be verified in this mailbox’s Sent folder. Sync Sent or review the report manually.");
+  }
+  try {
+    actions.assertIdentityReady(report.id);
+    actions.assertIdentityReady(original.id);
+  } catch { return manual("Wait for the message move or removal to settle, then reopen the report."); }
+  const source = dsn.parse(original.dsn_redraft_json);
+  const expectsHtml = source?.body === "html" || source?.body === "both";
+  const htmlBody = expectsHtml ? original.html_body : null;
+  const hasPlain = source?.body === "text" || source?.body === "both";
+  const body = hasPlain ? original.text_body : plainFromHtml(htmlBody);
+  if (original.has_attachments || original.attachments_json !== "[]") {
+    return manual("The original has attachments or its file list is unavailable. Review the original and prepare any replacement manually.");
+  }
+  if (source?.kind !== "original" || !Array.isArray(source.recipients) || !original.body_complete || original.body_warning || !body?.trim() || (expectsHtml && !htmlBody?.trim())) {
+    return manual("The original’s complete content could not be verified. Reload it in Sent, then reopen this review.");
+  }
+  const old = evidence.failed.toLowerCase();
+  const sentAt = Date.parse(original.date_iso), reportedAt = Date.parse(report.date_iso);
+  if (!source.recipients.includes(old) || !(sentAt > 0 && reportedAt > 0) || !["header", "local"].includes(original.date_source)
+    || !["header", "received"].includes(report.date_source) || Math.floor(sentAt / 1000) > Math.floor(reportedAt / 1000)) {
+    return manual("The failed address or the timing does not match the Sent message. Review the delivery failure manually.");
+  }
+  const from = dsn.mailbox(original.from_address);
+  const name = original.from_display_name;
+  let identity;
+  try {
+    if (!from || typeof name !== "string" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name)) throw Error();
+    identity = composeIdentity.outgoingIdentity(account, from, name);
+  } catch { return manual("The original From identity is unavailable for this mailbox. Review the Sent message and its sender manually."); }
+  if (![account.email.toLowerCase(), identity.fromAddress].includes(evidence.notified.toLowerCase())) {
+    return manual("The report was addressed to a different mailbox. Review the delivery failure manually.");
+  }
+  const drafts = dsnFolder(account, "drafts", "DRAFT");
+  if (!drafts) return manual("This mailbox has no verified Drafts folder. Sync its folders before trying again.");
+  const draftId = "m-dsn-" + crypto.createHash("sha256").update(JSON.stringify([account.id, account.created_at,
+    gmail ? [report.gmail_id] : [report.folder_path, report.uid, report.uid_validity]])).digest("hex").slice(0, 32);
+  const subject = original.subject;
+  if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(subject)) return manual("The original subject could not be verified. Review the Sent message manually.");
+  const review = crypto.createHmac("sha256", dsnReviewKey).update(JSON.stringify([owner.id, params.bodyEpoch, account.id, account.email,
+    attachmentConnection(account), dsnSnapshot(report), dsnSnapshot(original), drafts.path, identity, subject, body, htmlBody,
+    original.to_json, original.cc_json, original.bcc_json])).digest("hex");
+  if (saving && params.review !== review) return fail("dsn_changed", "The mailbox, report or original changed. Close this review and open it again.");
+  const existing = db.messageById(draftId, { headersOnly: true });
+  if (existing) {
+    if (existing.account_id !== account.id || existing.folder_path !== drafts.path || !existing.is_draft) {
+      return manual("The earlier corrected draft is no longer in Drafts. Review it manually.");
+    }
+    return ok({ accountId: account.id, draftId, alreadySaved: true });
+  }
+  if (!saving) return ok({ review, mailbox: account.email, ...identity, date: original.date_iso, subject, body, htmlBody,
+    failedAddress: evidence.failed });
+  const to = dsn.mailbox(typeof params.to === "string" ? params.to.replace(/^ +| +$/g, "") : "");
+  if (params.confirmed !== true || !to || to.toLowerCase() === old) {
+    return fail("invalid_recipient", "Enter one different email address and confirm that you checked it in an independent directory.");
+  }
+
+  // Validation and the local draft commit are synchronous. The report and Sent
+  // message are read-only source material; ordinary draft upload is a separate action.
+  const now = new Date();
+  try {
+    db.insertMessage({ id: draftId, accountId: account.id, folderPath: drafts.path, rfcMessageId: rfcMessageId(account.email),
+      from: identity.fromAddress, fromDisplayName: identity.fromDisplayName, to: [to], subject, textBody: body, htmlBody,
+      snippet: decoding.snippet(body.replace(/\s+/g, " ").trim()), date: now.toISOString(), listSortTs: now.getTime(),
+      isDraft: true, draftPending: true, bodyComplete: true, dsnRedraft: dsn.DRAFT, recipientHeaders: { replyTo: [] } });
+  } catch { return fail("dsn_save", "The corrected draft could not be saved on this computer. Try again from the Inbox reader."); }
+  try { emitAccounts(); } catch { /* the draft is already durable */ }
+  return ok({ accountId: account.id, draftId });
+}
+
 function detailOf(row, generations, memberships) {
   const includeDraftTo = row.is_draft === 1 && isSystemDraftFolder(row.account_id, row.folder_path);
+  const redraft = dsn.parse(row.dsn_redraft_json);
+  const reportAccount = redraft?.kind === "report" && db.accountById(row.account_id);
   const presented = decoding.presentation(row, textEncoding.presentMessage({
     subject: row.subject || "",
     htmlBody: row.html_body,
     textBody: row.text_body,
-  }, { preserveDecoded: Number(row.uid) > 0 && !row.draft_pending }));
+  }, { preserveDecoded: redraft?.kind === "draft" || Number(row.uid) > 0 && !row.draft_pending }));
   return {
     ...listRow(row, generations, memberships, includeDraftTo),
     subject: presented.subject,
     htmlBody: presented.htmlBody,
     textBody: presented.textBody,
     encodingWarning: presented.warning,
+    dsnRedraftAvailable: !!(reportAccount && dsnInFolder(reportAccount, row, dsnFolder(reportAccount, "inbox", "INBOX"))),
     bodyMetadataVersion: bodyVersion,
     fromAddress: composeIdentity.savedAddress(row),
     ...(row.is_draft ? { draftRevision: db.draftRevision(row), draftPending: !!row.draft_pending,
@@ -897,6 +1050,46 @@ function summaryMessage(params) {
     throw Object.assign(new Error("The mailbox connection changed. Reopen the message."), { code: "message_changed" });
   }
   return cachedBody(row);
+}
+
+function localLinkSource({ accountId, messageId }) {
+  if (accountId === localFolders.ACCOUNT_ID && localFolders.isMessage(messageId)) {
+    const email = localArchive().verify(messageId);
+    if (email.folderId === localFolders.TRASH_ID) return null;
+    return { email, identity: [accountId, messageId, email.folderId, email.textBody, email.htmlBody] };
+  }
+  const account = db.accountById(accountId);
+  const row = account && db.messageById(messageId);
+  if (!row || row.account_id !== accountId || account.auth_error || row.is_draft || row.draft_pending ||
+      !Number.isSafeInteger(row.uid) || row.uid <= 0 || !Number.isSafeInteger(row.uid_validity) || row.uid_validity <= 0) return null;
+  const folder = db.folderByPath(accountId, row.folder_path);
+  if (!folder || ["trash", "deleteditems", "junk", "junkemail", "spam"].includes(
+    String(folder.well_known || "").toLowerCase().replace(/[\s_-]/g, "")
+  )) return null;
+  actions.assertIdentityReady(messageId);
+  if (account.mail_transport === "gmail_api") {
+    const mapping = row.gmail_id && db.gmailMap(accountId, row.gmail_id);
+    const labels = db.jsonList(mapping?.labels_json);
+    if (!mapping || mapping.local_uid !== row.uid || row.uid_validity !== account.gmail_generation ||
+        labels.some(label => ["TRASH", "SPAM", "DRAFT"].includes(label)) ||
+        (!remote.isAllMail(folder) && (!folder.provider_id || !labels.includes(folder.provider_id)))) return null;
+  } else if (row.uid_validity !== folder.uid_validity) return null;
+  const email = detailOf(row);
+  if (email.bodyComplete !== true || email.bodyWarning) return null;
+  const identity = [accountId, account.created_at, account.auth_kind, account.profile, account.username, account.imap_host,
+    account.imap_port, account.imap_tls, account.mail_transport, messageId, row.folder_path, row.uid, row.uid_validity,
+    row.gmail_id, row.rfc_message_id];
+  return { email, identity };
+}
+
+function localMessageLinkProof(target) {
+  const source = localLinkSource(target);
+  return source && crypto.createHash("sha256").update(JSON.stringify(source.identity)).digest("hex");
+}
+
+function readLocalMessageLink(target) {
+  const source = localLinkSource(target);
+  return source ? ok({ email: source.email, isThread: false, threadMessages: [] }) : null;
 }
 
 function threadMeta(rows) {
@@ -999,16 +1192,27 @@ function listPayload(params) {
   const now = Date.now();
   const query = queryFrom(params);
   const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
-  const summary = db.messageSummary(query, { now });
+  // A named folder combined with explicit mailbox pairs can repeat a row
+  // across SQL branches. Keep the database's independent count for that form.
+  const namedFolder = query.folderId || (query.folderKey && query.folderKey !== "primary");
+  const firstFilterPage = query.listFilter && offset === 0 && query.limit === 200
+    && !(namedFolder && query.mailboxes?.length)
+    ? db.selectMessages(query, { headersOnly: true, now }) : null;
+  const completePage = firstFilterPage !== null && firstFilterPage.length < query.limit;
+  const summary = completePage ? {
+    total: firstFilterPage.length,
+    oldest: firstFilterPage.length ? Math.min(...firstFilterPage.map(row => row.list_sort_ts)) : null,
+  } : db.messageSummary(query, { now });
   const cursor = query.pageCursor;
   const cursorEligible = !query.listFilter && (!query.sortBy || query.sortBy === "date") && query.sortDirection !== "asc" && !query.filterUnread && !query.filterFlagged && typeof query.filterAttachments !== "boolean" && !query.beforeTs;
   const cursorValid = cursorEligible && cursor && cursor.version === summary.version && cursor.offset === offset
     && Number.isSafeInteger(cursor.ts) && typeof cursor.id === "string" && cursor.id.length > 0 && cursor.id.length <= 200;
-  let stored = db.selectMessages(cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query, { headersOnly: true, now });
+  const pageQuery = cursorValid ? { ...query, offset: 0, beforeMessage: { ts: cursor.ts, id: cursor.id } } : query;
+  let stored = firstFilterPage ?? db.selectMessages(pageQuery, { headersOnly: true, now });
   const pageSize = stored.length;
   const retainId = query.retainIds && query.retainIds[0];
   // A read row can fall outside this page and still belong in the Unread list.
-  if (retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
+  if (!completePage && retainId && query.filterUnread === true && !stored.some((row) => row.id === retainId)) {
     const extra = db.selectMessages({
       ...query,
       offset: 0,
@@ -1152,6 +1356,38 @@ const activeFolder = new Map();
 const backgroundCursor = new Map();
 const syncGates = new Map();
 const syncScopes = new Map();
+const followupCoverage = new Map();
+const followups = sentFollowup.createFollowups({
+  db,
+  selfAddresses: account => composeIdentity.accountIdentity(account).sendAs.map(identity => identity.email),
+  hasCoverage: sentFollowupHasCoverage,
+});
+
+function noteFollowupCoverage(account, folderId, started, days, complete) {
+  const key = JSON.stringify([account.id, folderId]);
+  const folder = complete && db.folderByPath(account.id, folderId);
+  if (!folder?.uid_validity || !windowOpen(folder, days)) {
+    followupCoverage.delete(key);
+    return;
+  }
+  followupCoverage.set(key, { started, since: windowStart(days, started), createdAt: account.created_at,
+    epoch: accountEpochs.get(account.id) || 0, validity: folder.uid_validity });
+}
+
+function sentFollowupHasCoverage(account, sentAt, dueAt) {
+  if (!bodyOnline || account.auth_error || !gateOpen(account.id)) return false;
+  const folders = account.profile === "gmail" || account.mail_transport === "gmail_api"
+    ? [db.folderByWellKnown(account.id, "all")].filter(Boolean)
+    : db.foldersFor(account.id).filter(folder => !sentFollowup.excludedReplyFolders.has(folder.well_known));
+  return folders.length > 0 && folders.every(folder => {
+    const key = JSON.stringify([account.id, folder.path]);
+    const proof = followupCoverage.get(key);
+    const state = syncScopes.get(key)?.state;
+    return proof && state !== "error" && state !== "paused" && proof.createdAt === account.created_at
+      && proof.epoch === (accountEpochs.get(account.id) || 0) && proof.validity === folder.uid_validity
+      && proof.started >= Math.max(sentAt, dueAt) && (proof.since == null || proof.since <= sentAt);
+  });
+}
 let syncState = {
   state: "idle",
   phase: "idle",
@@ -1549,7 +1785,7 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
         horizonDays: days,
         uidCursor: cursor,
       }, () => assertAccountCurrent(account));
-      return { paused: false, bootstrapped: true };
+      return { paused: false, bootstrapped: true, followupComplete: true };
     }
     if (pages > 0) await sleep(pageDelayMs());
     assertAccountCurrent(account);
@@ -1578,7 +1814,10 @@ async function bootstrapFolder(client, account, folderPath, started, days, limit
     emitFolderSync(account.id, folderPath, true);
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
     pages += 1;
-    if (missing.length <= size) return { paused: false, bootstrapped: true };
+    if (missing.length <= size) {
+      return { paused: false, bootstrapped: true,
+        followupComplete: page.every(uid => fetched.messages.some(message => message.uid === uid)) };
+    }
   }
   return { paused: false, bootstrapped: false };
 }
@@ -1590,6 +1829,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
   const pageCap = limits && limits.oneBatch ? 1 : REFRESH_PAGES.length;
   const deadline = limits && Number.isFinite(limits.deadline) ? limits.deadline : started + tickMs();
   let backlog = false;
+  let completePages = true;
   for (let index = 0; index < pageCap; index += 1) {
     assertAccountCurrent(account);
     if (index > 0 && Date.now() >= deadline) break;
@@ -1606,6 +1846,7 @@ async function warmFolder(client, account, folder, started, days, limits) {
     assertAccountCurrent(account);
     const page = fresh.slice(0, REFRESH_PAGES[index]);
     const fetched = await remote.fetchMessages(client, folder.path, page);
+    completePages &&= page.every(uid => fetched.messages.some(message => message.uid === uid));
     assertAccountCurrent(account);
     const arrivals = folder.well_known === "inbox" && Number(fetched.validity || found.validity) === Number(folder.uid_validity)
       ? fetched.messages.filter(message => {
@@ -1683,7 +1924,12 @@ async function warmFolder(client, account, folder, started, days, limits) {
     flagCursors.set(flagKey, { validity: live.validity, uid: flagUids[flagUids.length - 1] });
   }
   if (flagsChanged) broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
-  return { paused: false, bootstrapped: true };
+  const caughtUp = completePages && Array.isArray(live.uids) && !live.uids.some(uid => uid > next);
+  // A provider can omit a requested UID earlier in a window. The cursor alone
+  // cannot prove absence when an actual due reminder needs an answer.
+  const missing = caughtUp && db.hasDueSentFollowup(account.id, started)
+    && db.missingUidsFor(account.id, folder.path, live.uids, live.validity).length > 0;
+  return { paused: false, bootstrapped: true, followupComplete: caughtUp && !missing };
 }
 
 async function syncFolderPolicy(client, account, folderPath, limits) {
@@ -1712,6 +1958,9 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
       // whole per-user minute, so this pass stays on the smaller paced page.
       const result = await client.gmail.sync(folderPath, { horizonDays: days, limit: gmailPace.SYNC_PAGE,
         deadline: bounds.deadline, shouldYield: () => priorityWaiting(account.id) });
+      // A resumed history page can complete an old observation. Count only a
+      // current, fully drained delta after this mailbox was bootstrapped.
+      noteFollowupCoverage(account, folderPath, started, days, result.followupComplete === true);
       assertAccountCurrent(account);
       notifications.enqueue(account, result.arrivals || []);
       clearStrikes(account.id);
@@ -1728,6 +1977,7 @@ async function syncFolderPolicy(client, account, folderPath, limits) {
         shouldYield: () => Date.now() >= bounds.deadline || priorityWaiting(account.id),
       });
     }
+    noteFollowupCoverage(account, folderPath, started, days, result.followupComplete === true);
     if (!result.paused) clearStrikes(account.id);
     if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
@@ -2007,6 +2257,7 @@ function idleWake() {
 
 function idleOffline() {
   bodyOnline = false;
+  followupCoverage.clear();
   bodyProgress.changed();
   if (idleController) idleController.offline();
 }
@@ -3016,6 +3267,11 @@ async function ensureBody(row, options) {
       ...(typeof fetched.from === "string" ? { from_addr: fetched.from } : {}),
       ...(typeof fetched.fromDisplayName === "string" ? { from_display_name: fetched.fromDisplayName } : {}),
       recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
+      ...(fetched.dsnRedraft !== undefined && (!metadataOnly || fetched.dsnRedraft?.kind === "report"
+        || dsn.parse(current.dsn_redraft_json)?.kind === "report") ? {
+        dsn_redraft_json: dsn.forFolder(fetched.dsnRedraft?.kind === "original" && fetched.rfcMessageId !== current.rfc_message_id
+          ? null : fetched.dsnRedraft, db.folderByPath(account.id, current.folder_path)?.well_known),
+      } : {}),
       ...(fetched.listUnsubscribe != null ? { list_unsubscribe_json: JSON.stringify(fetched.listUnsubscribe) } : {}),
       from_address: fetched.fromAddress || row.from_address || null,
       ...(fetched.dateSource ? { date_source: fetched.dateSource, date_iso: fetched.date || row.date_iso } : {}),
@@ -3549,11 +3805,88 @@ function saveUpload(params) {
   return ok({ storageUrl: `local:${id}`, pageUrl: null, fileWrapperUrl: `local:${id}`, filename, mimeType: mime, size: bytes.length });
 }
 
+const attachmentReaderUrl = pathToFileURL(path.join(__dirname, "../../renderer/index.html")).href;
+const attachmentSaveSessions = createAttachmentSaveSessions({
+  capture: captureAttachmentSaveSource,
+  requests: attachmentRequests,
+  async chooseFolder(owner) {
+    const { BrowserWindow, dialog } = require("electron");
+    const window = BrowserWindow.fromWebContents(owner);
+    if (!window || window.isDestroyed()) throw attachmentTransfers.cancelled();
+    const choice = await dialog.showOpenDialog(window, {
+      title: "Choose an attachment destination", properties: ["openDirectory", "createDirectory"],
+    });
+    return choice.canceled ? null : choice.filePaths[0];
+  },
+});
+
+function captureAttachmentSaveSource(params) {
+  const { accountId, emailId, attachmentId, folderId, bodyEpoch, filename } = params;
+  const validId = value => typeof value === "string" && value.length > 0 && value.length <= 512;
+  const unavailable = () => Object.assign(new Error("This attachment is no longer available. Reopen the message before adding it."), { code: "source-unavailable" });
+  if (![accountId, emailId, attachmentId].every(validId)
+      || bodyEpoch !== (accountEpochs.get(accountId) || 0)) throw unavailable();
+  const selection = attachmentSelection({ accountId, emailId, attachmentId });
+  if (!selection || selection.row.folder_path !== folderId) throw unavailable();
+  const { row, files: [file] } = selection;
+  const name = file.filename || "attachment";
+  if (name !== filename) throw unavailable();
+  const snapshot = attachmentSnapshot(row);
+  const url = String(file.storageUrl || "");
+  const blobId = !row.local && url.startsWith("local:") ? url.slice(6) : null;
+  const blobVersion = blobId && db.blobVersion(blobId);
+  const storedSize = blobVersion?.size ?? file.size;
+  const decodedSize = row.local || !!blobId || snapshot.account.mail_transport === "gmail_api";
+  // IMAP BODYSTRUCTURE often gives the MIME-encoded length. Apply the
+  // remaining budget to decoded bytes rather than that estimate.
+  const size = Number.isSafeInteger(storedSize) && (decodedSize || storedSize === 0) ? storedSize : undefined;
+  const assertCurrent = () => {
+    snapshot.assertSnapshot();
+    if (row.uid > 0) {
+      actions.assertIdentityReady(row.id);
+      const folder = db.folderByPath(row.account_id, row.folder_path);
+      if (snapshot.account.mail_transport !== "gmail_api" && folder?.uid_validity > 0
+          && Number(folder.uid_validity) !== Number(row.uid_validity)) throw unavailable();
+    }
+    if (blobId) {
+      const current = db.blobVersion(blobId);
+      if (!blobVersion || !current || Object.keys(blobVersion).some(key => current[key] !== blobVersion[key])) throw unavailable();
+    }
+  };
+  assertCurrent();
+  return {
+    accountId, emailId, attachmentId, filename: name, size,
+    message: { from: row.from_addr || "", subject: row.subject || "", date: row.date_iso || "" },
+    assertCurrent,
+    async read(options) {
+      const [part] = await attachmentParts(row, [file], options);
+      if (part.data.length === 0 && decodedSize && size > 0) throw unavailable();
+      return part.data;
+    },
+  };
+}
+
+async function attachmentSaveListAnswer(params, event) {
+  const owner = event?.sender, frame = event?.senderFrame;
+  const page = frame?.url?.split("#", 1)[0];
+  if (!owner || owner.isDestroyed() || !frame || frame !== owner.mainFrame
+      || (page !== attachmentReaderUrl && page !== attachmentReaderUrl + "?role=reader")) {
+    return fail("invalid-review", "Use the attachment save list in the message reader.");
+  }
+  try { return ok(await attachmentSaveSessions.handle(owner, params)); }
+  catch (error) {
+    if (["invalid-review", "source-unavailable", "busy", "destination-changed", "cancelled"].includes(error?.code)) {
+      return fail(error.code, error.message);
+    }
+    return fail("attachment", "The attachment save list could not complete this action. Review it and try again.");
+  }
+}
+
 function attachmentSelection(params, all = false) {
   const id = params && (params.messageId || params.emailId);
   const local = localFolders.isMessage(id) ? localArchive().message(id, false) : null;
   const row = local ? { id: local.id, account_id: localFolders.ACCOUNT_ID, folder_path: local.folderId, subject: local.subject,
-    attachments_json: JSON.stringify(local.attachments), local: true } : db.messageById(id);
+    from_addr: local.from, date_iso: local.date, attachments_json: JSON.stringify(local.attachments), local: true } : db.messageById(id);
   if (!row) return null;
   if (params?.accountId && params.accountId !== row.account_id) throw new Error("That attachment does not belong to this mailbox.");
   const attachments = db.jsonList(row.attachments_json);
@@ -3582,6 +3915,20 @@ function selectableAttachments(attachments, ids) {
   return picked;
 }
 
+function attachmentConnection(account) {
+  return JSON.stringify([account.created_at, account.auth_kind, account.mail_transport, account.gmail_generation,
+    account.username, account.imap_host, account.imap_port, account.imap_tls]);
+}
+
+function attachmentSnapshotKey(account, row, connection) {
+  return JSON.stringify([account.id, account[ACCOUNT_EPOCH], connection, row.id, row.folder_path, row.uid,
+    row.uid_validity, row.gmail_id, row.rfc_message_id, row.attachments_json]);
+}
+
+function attachmentPartKey(key, id) {
+  return JSON.stringify([key, String(id)]);
+}
+
 function attachmentSnapshot(row) {
   if (row.local) {
     const assertSnapshot = () => {
@@ -3592,26 +3939,266 @@ function attachmentSnapshot(row) {
     return { account: { id: localFolders.ACCOUNT_ID }, assertSnapshot, key: row.id };
   }
   const account = bindAccount(db.accountById(row.account_id));
-  const login = value => JSON.stringify([value.created_at, value.auth_kind, value.mail_transport, value.gmail_generation,
-    value.username, value.imap_host, value.imap_port, value.imap_tls]);
-  const connection = login(account);
+  const connection = attachmentConnection(account);
   const assertSnapshot = () => {
     assertAccountCurrent(account);
-    if (login(db.accountById(account.id)) !== connection) throw removedAccountError();
+    if (attachmentConnection(db.accountById(account.id)) !== connection) throw removedAccountError();
     const current = db.messageById(row.id);
     if (!current || ["account_id", "folder_path", "uid", "uid_validity", "gmail_id", "rfc_message_id", "attachments_json"].some(key => current[key] !== row[key])) {
       throw new Error("The message or its attachments changed. Reopen it before saving its files.");
     }
   };
   assertSnapshot();
-  return { account, assertSnapshot, key: JSON.stringify([account.id, account[ACCOUNT_EPOCH], connection, row.id,
-    row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id, row.attachments_json]) };
+  return { account, assertSnapshot, key: attachmentSnapshotKey(account, row, connection) };
 }
 
-async function attachmentParts(row, files, { signal, onProgress = () => {} } = {}) {
+const DRAFT_INBOX_PAGE_MESSAGES = 20;
+const DRAFT_INBOX_PAGE_FILES = 40;
+const draftInboxProofKey = crypto.randomBytes(32);
+
+function inboxReviewId(value) {
+  return typeof value === "string" && value.length <= 200 && value.trim().length > 0;
+}
+
+function validDraftInboxReference({ accountId, draftId, draftRevision, bodyEpoch }) {
+  return inboxReviewId(accountId) && inboxReviewId(draftId) && inboxReviewId(draftRevision)
+    && Number.isSafeInteger(bodyEpoch) && bodyEpoch >= 0;
+}
+
+function assertDraftInboxOwner(owner) {
+  if (owner?.isDestroyed?.()) throw attachmentTransfers.cancelled();
+  if (!Number.isSafeInteger(owner?.id) || owner.id <= 0
+      || !composePage(owner.getURL?.(), path.join(__dirname, "../../renderer/index.html"))) {
+    throw new Error("Open the Inbox attachment picker from the draft editor.");
+  }
+}
+
+function assertDraftInboxBinding(owner, review) {
+  const resumed = composeWindows.getResumedDraftOwner(owner);
+  if (!resumed || resumed.draftId !== review.draftId
+      || resumed.accountId !== review.accountId || resumed.bodyEpoch !== review.bodyEpoch) {
+    throw new Error("Open the Inbox attachment picker from the editor for this draft.");
+  }
+}
+
+function draftInboxReview(params, owner) {
+  assertDraftInboxOwner(owner);
+  const review = params.inboxAttachmentReview;
+  if (params.strictLocal !== true || typeof review?.id !== "string"
+      || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(review.id)
+      || !validDraftInboxReference(review)
+      || !Array.isArray(review.recipients) || review.recipients.length !== 3
+      || review.recipients.some(value => typeof value !== "string" || value.length > 32_768)) {
+    throw new Error("The Inbox attachment review is invalid. Open it again from the draft.");
+  }
+  assertDraftInboxBinding(owner, review);
+  return { id: review.id, accountId: review.accountId, draftId: review.draftId, draftRevision: review.draftRevision,
+    bodyEpoch: review.bodyEpoch, recipients: review.recipients, ownerId: owner.id };
+}
+
+function savedDraftInboxTarget({ accountId, draftId, draftRevision, bodyEpoch }) {
+  const account = bindAccount(db.accountById(accountId));
+  if (account[ACCOUNT_EPOCH] !== bodyEpoch) throw removedAccountError();
+  const draft = db.messageById(draftId);
+  if (!draft?.is_draft || draft.account_id !== account.id || !isSystemDraftFolder(account.id, draft.folder_path)
+      || db.draftRevision(draft) !== draftRevision || db.messageHeld(draft.id)) {
+    throw Object.assign(new Error("This saved draft changed or was removed. Reopen it before attaching Inbox files."), { code: "draft_conflict" });
+  }
+  return { account, draft };
+}
+
+function resolveResumedDraftOwner(seed) {
+  const { ordinaryDraftResume, accountId, draftId, draftRevision, draftBodyEpoch: bodyEpoch } = seed ?? {};
+  const reference = { accountId, draftId, draftRevision, bodyEpoch };
+  if (ordinaryDraftResume !== true || !validDraftInboxReference(reference) || !ready || !db.isReady()) return null;
+  try {
+    const { account, draft } = savedDraftInboxTarget(reference);
+    return { draftId: draft.id, accountId: account.id, bodyEpoch: account[ACCOUNT_EPOCH] };
+  } catch {
+    return null;
+  }
+}
+
+function draftInboxTarget(review) {
+  const { account } = savedDraftInboxTarget(review);
+  const folder = db.folderByWellKnown(account.id, "inbox");
+  const inbox = folder?.path && !remote.isAllMail(folder)
+    && (account.mail_transport !== "gmail_api" || folder.provider_id === "INBOX");
+  return { account, inbox: inbox ? folder : null };
+}
+
+function localInboxParts(row, { account, inbox }) {
+  if (!row || !inbox || row.account_id !== account.id || row.folder_path !== inbox.path || row.is_draft || row.draft_pending) return [];
+  if (account.mail_transport === "gmail_api" && !row.gmail_id) return [];
+  const validity = account.mail_transport === "gmail_api" ? account.gmail_generation : inbox.uid_validity;
+  if (row.uid > 0 && validity > 0 && Number(row.uid_validity) !== Number(validity)) return [];
+  const files = db.jsonList(row.attachments_json);
+  const counts = new Map();
+  for (const file of files) {
+    const id = file?.id == null ? "" : String(file.id);
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const snapshot = attachmentSnapshotKey(account, row, attachmentConnection(account));
+  const parts = [];
+  for (const file of files) {
+    if ((typeof file?.id !== "string" && !Number.isSafeInteger(file?.id)) || !inboxReviewId(String(file.id))
+        || counts.get(String(file.id)) !== 1) continue;
+    if (String(file.storageUrl || "").startsWith("local:")) {
+      if (!/^local:[A-Za-z0-9_-]{1,200}$/.test(file.storageUrl)) continue;
+      const version = db.blobVersion(file.storageUrl.slice(6));
+      if (version && version.size === file.size && version.size > 0 && version.size <= ATTACHMENT_CAP) {
+        parts.push({ ...file, generation: version });
+      }
+    } else if (row.uid > 0) {
+      const cacheKey = attachmentPartKey(snapshot, file.id);
+      const hit = attachmentCache.describeCompleted(account.id, cacheKey);
+      if (hit && hit.size > 0 && hit.size <= ATTACHMENT_CAP) {
+        parts.push({ ...file, cacheKey, generation: hit.generation, size: hit.size });
+      }
+    }
+  }
+  return parts;
+}
+
+function draftInboxSourceProof(review, account, row) {
+  // The page issues proofs only for displayed parts. No renderer-supplied blob
+  // reference is accepted, and a proof cannot move to another draft or window.
+  return crypto.createHmac("sha256", draftInboxProofKey).update(JSON.stringify([review, attachmentConnection(account),
+    row.id, row.folder_path, row.uid, row.uid_validity, row.gmail_id, row.rfc_message_id,
+    row.from_addr, row.from_display_name, row.subject, row.date_iso, row.attachments_json])).digest();
+}
+
+function draftInboxPartProof(sourceProof, file) {
+  return crypto.createHmac("sha256", sourceProof).update(JSON.stringify([String(file.id), file.cacheKey || file.storageUrl, file.generation, file.size])).digest("hex");
+}
+
+function draftInboxPage(review, cursor) {
+  const beforeMessage = cursor?.before;
+  const invalidBoundary = beforeMessage !== null && (!Number.isSafeInteger(beforeMessage?.ts) || !inboxReviewId(beforeMessage?.id));
+  const invalidResume = cursor?.resumeId == null ? cursor?.resumeIndex != null
+    : !inboxReviewId(cursor.resumeId) || !Number.isSafeInteger(cursor.resumeIndex) || cursor.resumeIndex <= 0;
+  if (cursor !== null && (invalidBoundary || invalidResume)) {
+    throw new Error("This Inbox page is invalid. Reopen the attachment picker.");
+  }
+  const target = draftInboxTarget(review);
+  if (!target.inbox) return { sources: [], nextCursor: null };
+  let before = beforeMessage || null;
+  const rows = db.selectMessages({ accountId: review.accountId, folderPath: target.inbox.path,
+    beforeMessage: before, limit: DRAFT_INBOX_PAGE_MESSAGES + 1 }, { headersOnly: true });
+  const memberships = target.account.mail_transport === "gmail_api" ? db.gmailLabelMemberships(rows) : null;
+  const sources = [];
+  let remaining = DRAFT_INBOX_PAGE_FILES;
+  for (const [index, row] of rows.slice(0, DRAFT_INBOX_PAGE_MESSAGES).entries()) {
+    const labels = memberships?.get(JSON.stringify([row.account_id, row.gmail_id]))?.labels_json;
+    const parts = memberships && row.gmail_id && !db.jsonList(labels).includes("INBOX") ? [] : localInboxParts(row, target);
+    const start = cursor?.resumeId === row.id ? cursor.resumeIndex : 0;
+    const files = parts.slice(start, start + remaining);
+    if (files.length) {
+      const proof = draftInboxSourceProof(review, target.account, row);
+      sources.push({ id: row.id, from: row.from_addr || row.from_address, subject: row.subject, date: row.date_iso,
+        files: files.map(file => ({ id: String(file.id), filename: attachmentName(file), size: file.size,
+          proof: draftInboxPartProof(proof, file) })) });
+    }
+    if (parts.length > start + remaining) return { sources, nextCursor: { before, resumeId: row.id, resumeIndex: start + remaining } };
+    remaining -= files.length;
+    before = { ts: row.list_sort_ts, id: row.id };
+    if (!remaining || index === DRAFT_INBOX_PAGE_MESSAGES - 1) {
+      return { sources, nextCursor: rows[index + 1] ? { before } : null };
+    }
+  }
+  return { sources, nextCursor: null };
+}
+
+function selectedDraftInboxParts(review, selections) {
+  const target = draftInboxTarget(review);
+  const sources = new Map();
+  const changed = () => new Error("An Inbox message or attachment changed. Open the picker again to review its files.");
+  const refs = new Set();
+  return selections.map(({ emailId, partId, proof }) => {
+    if (!sources.has(emailId)) {
+      const row = db.messageById(emailId, { headersOnly: true });
+      const files = localInboxParts(row, target);
+      if (!files.length) throw changed();
+      if (target.account.mail_transport === "gmail_api" && row.gmail_id
+          && !db.jsonList(db.gmailMap(review.accountId, row.gmail_id)?.labels_json).includes("INBOX")) throw changed();
+      sources.set(emailId, { proof: draftInboxSourceProof(review, target.account, row), files: new Map(files.map(file => [String(file.id), file])) });
+    }
+    const source = sources.get(emailId);
+    const file = source.files.get(partId);
+    const ref = file?.cacheKey || file?.storageUrl;
+    if (!file || refs.has(ref) || !crypto.timingSafeEqual(Buffer.from(proof, "hex"),
+      Buffer.from(draftInboxPartProof(source.proof, file), "hex"))) throw changed();
+    refs.add(ref);
+    return file;
+  });
+}
+
+async function draftInboxAttachmentAnswer(channel, params, owner) {
+  let request;
+  try {
+    const review = draftInboxReview(params, owner);
+    if (channel === "mail:listFromCache") {
+      if (params.checkDraft === true) {
+        draftInboxTarget(review);
+        return ok({ current: true });
+      }
+      return ok(draftInboxPage(review, params.cursor ?? null));
+    }
+    if (channel !== "mail:prepareDraft") throw new Error("This operation is unavailable for Inbox attachment review.");
+    const { parts, existingBytes, requestId } = params;
+    const pin = params.pinSelection === true;
+    if (!inboxReviewId(requestId) || !Array.isArray(parts) || !parts.length || parts.length > DRAFT_INBOX_PAGE_FILES
+        || parts.some(part => !inboxReviewId(part?.emailId) || !inboxReviewId(part?.partId)
+          || typeof part?.proof !== "string" || !/^[a-f0-9]{64}$/.test(part.proof))
+        || (pin ? parts.length !== 1 : parts.some(part => typeof part.contentProof !== "string" || !/^[a-f0-9]{64}$/.test(part.contentProof)))
+        || !Number.isSafeInteger(existingBytes) || existingBytes < 0 || existingBytes > ATTACHMENT_CAP) {
+      throw new Error("Review the Inbox files again before confirming.");
+    }
+    request = attachmentRequests.begin(params, owner);
+    request.accountId = review.accountId;
+    await new Promise(resolve => setImmediate(resolve));
+    request.signal.throwIfAborted();
+    assertDraftInboxOwner(owner);
+    assertDraftInboxBinding(owner, review);
+    const files = selectedDraftInboxParts(review, parts);
+    if (files.reduce((total, file) => total + file.size, existingBytes) > ATTACHMENT_CAP) {
+      throw new Error("These files exceed the draft's 25 MiB outgoing attachment limit.");
+    }
+    for (const emailId of new Set(parts.map(part => part.emailId))) actions.assertIdentityReady(emailId);
+    // Only checked files are read. Bind confirmation to the exact bytes read on
+    // selection, including a delete/reinsert that reused a SQLite rowid.
+    const attachments = files.map((file, index) => {
+      request.signal.throwIfAborted();
+      const bytes = file.cacheKey
+        ? attachmentCache.readCompleted(review.accountId, file.cacheKey, file.generation, file.size)
+        : db.readBlob(file.storageUrl.slice(6), file.generation)?.data;
+      if (!bytes || bytes.length !== file.size) throw new Error("The stored Inbox file changed. Select it again.");
+      const contentProof = crypto.createHmac("sha256", draftInboxProofKey).update(parts[index].proof).update(bytes).digest("hex");
+      if (pin) return { contentProof };
+      if (!crypto.timingSafeEqual(Buffer.from(contentProof, "hex"), Buffer.from(parts[index].contentProof, "hex"))) {
+        throw new Error("The stored Inbox file changed. Select it again.");
+      }
+      return { filename: attachmentName(file), mimeType: file.mimeType || file.contentType || "application/octet-stream",
+        size: bytes.length, bytes };
+    });
+    request.signal.throwIfAborted();
+    return ok({ attachments });
+  } catch (error) {
+    if (request?.signal.aborted || error?.code === "cancelled" || error?.name === "AbortError") return fail("cancelled", "cancelled");
+    return fail(error.code || "inbox_attachment", error.message);
+  } finally { request?.finish(); }
+}
+
+async function attachmentParts(row, files, { signal, onProgress = () => {}, maxBytes } = {}) {
   signal?.throwIfAborted();
+  const fileLimit = maxBytes ?? attachmentTransfers.LIMITS.fileBytes;
   if (row.local) {
-    const parts = files.map(file => ({ name: file.filename || "attachment", data: localArchive().attachment(row.id, file.id) }));
+    const parts = files.map(file => {
+      if (maxBytes != null && Number(file.size) > fileLimit) throw attachmentTransfers.tooLarge();
+      const data = localArchive().attachment(row.id, file.id);
+      if (maxBytes != null && data.length > fileLimit) throw attachmentTransfers.tooLarge();
+      return { name: file.filename || "attachment", data };
+    });
     if (parts.reduce((sum, part) => sum + part.data.length, 0) > attachmentTransfers.LIMITS.zipBytes) throw attachmentTransfers.tooLarge();
     return parts;
   }
@@ -3619,15 +4206,21 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
   const parts = new Map(), remoteItems = [];
   let localBytes = 0;
   for (const [index, item] of files.entries()) {
-    if (Number(item.size) > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
-    if (String(item.storageUrl || "").startsWith("local:")) {
+    const stored = String(item.storageUrl || "").startsWith("local:");
+    if ((maxBytes == null || stored || account.mail_transport === "gmail_api")
+        && Number(item.size) > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
+    if (stored) {
       const blob = db.readBlob(item.storageUrl.slice(6));
       if (!blob?.data) throw new Error("That local attachment is no longer available. Attach the file again.");
-      if (blob.data.length > attachmentTransfers.LIMITS.fileBytes) throw attachmentTransfers.tooLarge();
+      if (blob.data.length > fileLimit) throw attachmentTransfers.tooLarge();
       localBytes += blob.data.length;
       if (localBytes > attachmentTransfers.LIMITS.zipBytes) throw Object.assign(new Error("These files exceed the 128 MiB combined download limit. Save them separately."), { code: "too-large" });
       parts.set(index, { name: item.filename || blob.filename || "attachment", data: Buffer.from(blob.data) });
-    } else remoteItems.push({ key: JSON.stringify([key, String(item.id)]), item, index });
+    } else {
+      // A bounded final part must not abort another consumer's full-size read.
+      const partKey = attachmentPartKey(key, item.id);
+      remoteItems.push({ key: fileLimit === attachmentTransfers.LIMITS.fileBytes ? partKey : JSON.stringify([partKey, fileLimit]), item, index });
+    }
   }
   const assertRemote = () => {
     assertSnapshot();
@@ -3645,7 +4238,8 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
     for (let start = 0; start < remoteItems.length; start += 8) {
       const batch = remoteItems.slice(start, start + 8);
       const downloaded = await attachmentCache.getMany(batch, { accountId: account.id, signal,
-        maxTotalBytes: attachmentTransfers.LIMITS.zipBytes - [...parts.values()].reduce((sum, part) => sum + part.data.length, 0),
+        maxTotalBytes: Math.min(maxBytes ?? attachmentTransfers.LIMITS.zipBytes,
+          attachmentTransfers.LIMITS.zipBytes - [...parts.values()].reduce((sum, part) => sum + part.data.length, 0)),
         onProgress: value => onProgress({ ...value, index: batch[value.index].index, count: files.length }),
         load: (entries, groupSignal) => updateGate.run(() => exclusive(account.id, async () => {
           groupSignal.throwIfAborted(); assertRemote();
@@ -3659,7 +4253,7 @@ async function attachmentParts(row, files, { signal, onProgress = () => {} } = {
               assertRemote(); entry.report({ phase: "downloading", loaded: 0 });
               try {
                 const data = await remote.readPart(client, row.folder_path, row.uid, entry.item.item.id, row.uid_validity,
-                  { signal: entry.signal, maxBytes: attachmentTransfers.LIMITS.fileBytes, onProgress: entry.report });
+                  { signal: entry.signal, maxBytes: Math.max(1, fileLimit), onProgress: entry.report });
                 assertRemote(); if (!entry.signal.aborted) entry.complete(data);
               } catch (error) { entry.fail(entry.signal.aborted ? attachmentTransfers.cancelled() : error); }
             }
@@ -4286,6 +4880,8 @@ async function fileSentMessage(account, password, options, info, messageId, extr
   const when = new Date();
   const keptId = (info && info.messageId) || messageId;
   const files = (extra && extra.files) || [];
+  const receipt = deliveryReceipt.fromSmtp(info, messageId);
+  const confirmedRecipient = sentFollowup.confirmation(receipt.accepted, receipt.rejected, options);
   if (sent) {
     db.insertMessage({
       id: emailId,
@@ -4301,6 +4897,7 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       cc: options.cc,
       bcc: options.bcc,
       date: when.toISOString(),
+      dateSource: "local",
       listSortTs: when.getTime(),
       isDraft: false,
       hasAttachments: files.length > 0,
@@ -4308,7 +4905,9 @@ async function fileSentMessage(account, password, options, info, messageId, extr
       htmlBody: options.html,
       textBody: options.text,
       bodyComplete: true,
-      recipientHeaders: { replyTo: [] },
+      dsnRedraft: !files.length && dsn.messageId(keptId)
+        ? dsn.originalEvidence(options.html ? (options.text?.trim() ? "both" : "html") : "text", deliveryReceipt.addresses(info?.accepted)) : null,
+      recipientHeaders: { replyTo: [], ...(confirmedRecipient ? { followupConfirmedRecipient: confirmedRecipient } : {}) },
       inReplyTo: (extra && extra.inReplyTo) || null,
     });
     if (account.mail_transport === "gmail_api" && info?.providerId) {
@@ -4716,12 +5315,17 @@ async function importGoogleOauthClientAdmitted(event) {
 }
 
 function answer(channel, args, event) {
-  if (!ready) return undefined;
   const params = args && args.length ? args[0] : undefined;
+  if (params && (Object.hasOwn(params, "strictLocal") || Object.hasOwn(params, "inboxAttachmentReview"))) {
+    if (!ready || !db.isReady()) return fail("mail_not_ready", "Local mail is still opening. Try again when the mailbox is ready.");
+    return draftInboxAttachmentAnswer(channel, params, event?.sender);
+  }
+  if (!ready) return undefined;
   // This reviewed two-account channel validates its own captured source and
   // destination owners, rather than the single-account legacy action guard.
   if (channel === "mail:crossMailboxCopy") return crossMailboxCopyAnswer(params || {});
   if (channel === "mail:crossMailboxMove") return crossMailboxMoveAnswer(params || {}, event);
+  if (channel === "mail:attachmentSaveList") return attachmentSaveListAnswer(params, event);
   let assertContextCurrent;
   try { assertContextCurrent = contextMessageAdmission(channel, params); }
   catch (error) { return fail(error.code || "invalid_context", error.message); }
@@ -4729,6 +5333,9 @@ function answer(channel, args, event) {
   if (channel === "mail:transferToLocal") return transferToLocal(params || {}, assertContextCurrent || undefined);
   if (channel === "mail:folderManagement") return folderManagementAnswer(params || {});
   if (channel === "mail:unsubscribe") return updateGate.run(() => unsubscribeAnswer(params || {}, event));
+  if (channel === "mail:reviewForwardOriginals" || channel === "mail:stageForwardOriginals") {
+    return updateGate.run(() => localAnswer(channel, params, event));
+  }
   const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
     || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
   if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);
@@ -4840,6 +5447,15 @@ function answer(channel, args, event) {
       return ok(cachedList(params));
     case "mail:getSyncStatus":
       return ok(publicSync(params));
+    case "mail:sentFollowups":
+      try {
+        const result = followups.answer(params);
+        if (params?.action !== "open") return ok(result);
+        const row = db.messageById(result.emailId);
+        return ok({ email: detailOf(row) });
+      } catch (error) {
+        return fail("sent_followup", error.message);
+      }
     case "mail:getBodySyncStatus":
       return ok(bodySyncSnapshot());
     case "mail:getIncompleteBodyTarget": {
@@ -4962,6 +5578,8 @@ function answer(channel, args, event) {
     }
     case "mail:prepareForward":
       return updateGate.run(() => prepareForward(params || {}, event?.sender));
+    case "mail:dsnRedraft":
+      return dsnRedraftAnswer(params, event);
     case "mail:prepareDraft":
       return updateGate.run(() => prepareDraft(params || {}, event?.sender));
     case "mail:readEmail":
@@ -5416,6 +6034,9 @@ module.exports = {
   },
   init,
   answer,
+  resolveResumedDraftOwner,
+  localMessageLinkProof,
+  readLocalMessageLink,
   settleActions: actions.settleActions,
   submitBotAction: actions.submitBotAction,
   settleAccount: actions.settleAccount,

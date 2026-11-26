@@ -108,6 +108,8 @@ const INVOKE = [
   "mail:crossMailboxMove",
   "mail:moveLocalMessage",
   "mail:exportLocalMessage",
+  "mail:reviewForwardOriginals",
+  "mail:stageForwardOriginals",
   "mail:getComposeContext",
   "emailBrain:getComposeSettings",
   "emailBrain:saveComposeSettings",
@@ -156,8 +158,10 @@ const INVOKE = [
   "mail:openEmail",
   "mail:unsubscribe",
   "mail:readCachedBody",
+  "mail:sentFollowups",
   "mail:prepareDraft",
   "mail:prepareForward",
+  "mail:dsnRedraft",
   "mail:markRead",
   "mail:markReadBatch",
   "mail:toggleStar",
@@ -169,6 +173,7 @@ const INVOKE = [
   "mail:listThreadMessages",
   "mail:downloadAttachment",
   "mail:downloadAttachmentsZip",
+  "mail:attachmentSaveList",
   "mail:fetchAttachmentBytes",
   "mail:cancelAttachmentRequest",
   "mail:uploadAttachment",
@@ -262,6 +267,8 @@ const INVOKE = [
   "compose:setTitle",
   "reader:open",
   "reader:pullSeed",
+  "reader:copyLocalMessageLink",
+  "reader:clearLocalMessageLink",
   "translate:open",
   "translate:pullSeed",
   "translate:report",
@@ -333,6 +340,9 @@ contextBridge.exposeInMainWorld("morrow", {
   },
   openReaderWindow(seed) {
     return ipcRenderer.invoke("reader:open", seed);
+  },
+  openEmailForReader(payload) {
+    return ipcRenderer.invoke("mail:openEmail", { ...payload, bindReaderLocalLink: true });
   },
   pullReaderSeed() {
     return ipcRenderer.invoke("reader:pullSeed");

@@ -1,20 +1,22 @@
 {
   "name": "morrow-mail",
-  "version": "0.4.20",
+  "version": "1.0.0",
   "description": "Morrow Mail. Open-source Electron mail client for Windows and macOS. Connect your own accounts, read and send mail, and install from GitHub Releases.",
   "main": "host/main.js",
   "private": true,
   "author": "Leo Ho",
   "license": "Apache-2.0",
   "scripts": {
+    "prestart": "node scripts/check-boot-path/feature-catalog.js",
     "start": "electron .",
     "check": "node scripts/check-boot-path.js",
+    "pretest:timeline": "node scripts/check-boot-path/feature-catalog.js",
     "test:timeline": "node scripts/timeline.test.js",
     "bot:call": "node scripts/morrow-bot-call.js",
     "mcp": "node scripts/morrow-mcp.js",
     "mcp:bundle": "node scripts/bundle-mcp.js",
     "test:mcp": "node scripts/check-mcp.js",
-    "postinstall": "node scripts/bundle-motion.js && node scripts/bundle-pdf.js && node scripts/bundle-notices.js && node scripts/bundle-mcp.js",
+    "postinstall": "node scripts/check-boot-path/feature-catalog.js && node scripts/bundle-motion.js && node scripts/bundle-pdf.js && node scripts/bundle-notices.js && node scripts/bundle-mcp.js",
     "motion:bundle": "node scripts/bundle-motion.js",
     "pdf:bundle": "node scripts/bundle-pdf.js",
     "pack": "electron-builder --dir",
@@ -53,6 +55,11 @@
   "build": {
     "appId": "com.coke1120.morrow-mail",
     "productName": "Morrow Mail",
+    "protocols": [{
+      "name": "Morrow Mail local message",
+      "schemes": ["morrow-message"],
+      "role": "Viewer"
+    }],
     "copyright": "Copyright (c) 2026 Leo Ho / HWL-HK",
     "directories": {
       "output": "dist",
@@ -100,6 +107,7 @@
         "to": "icon.ico"
       }
     ],
+    "beforePack": "./scripts/check-boot-path/feature-catalog.js",
     "afterPack": "./scripts/windows-icon.js",
     "asar": true,
     "asarUnpack": [

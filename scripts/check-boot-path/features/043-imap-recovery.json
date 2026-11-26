@@ -1,0 +1,6 @@
+[
+  "imap-recovery",
+  "IMAP connection recovery",
+  "Mail",
+  "Connection timeouts during IMAP sync use the usual connection-error and retry status. Inbox push falls back to polling and reconnects with backoff."
+]

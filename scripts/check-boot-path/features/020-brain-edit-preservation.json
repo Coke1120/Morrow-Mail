@@ -1,0 +1,6 @@
+[
+  "brain-edit-preservation",
+  "Profile edit preservation",
+  "Agent",
+  "Refresh and Rebuild preserve saved user-rule and category edits made during analysis. A changed learned profile rejects an obsolete analysis. Learned facts retain non-Latin names and text. Fix persists the selected row, including voice quotes, only while its stored version still matches; an obsolete Fix asks you to reload. Category-save readback preserves newer local edits and reports them as unsaved. Domain CC/BCC recipients may contain = in the address, and a quoted display name may contain a comma. An invalid address is not saved."
+]

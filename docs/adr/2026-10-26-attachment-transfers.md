@@ -48,3 +48,19 @@ IMAP closes the batch client on final cancellation and destroys the part stream;
 Gmail receives AbortSignals for message and attachment reads. Background sync is
 still serialized through the existing account lane. The patch does not tune IMAP
 chunks, pool connections, redesign body filling or modify PDF workers.
+
+## Save selected attachments from several messages
+
+The Reader keeps one temporary list per window. An entry captures the original
+mailbox, message, part, and attachment snapshot when added. Moving between emails
+keeps the list. Dismissing it, saving it, reloading the page, or destroying the
+reader document discards the selection. Hiding the macOS main window keeps the
+same reader session. The Reader uses the same identity checks and transfers as
+single-file downloads, with a 64 MiB file limit and a 128 MiB combined limit.
+An IMAP response without a part stream never becomes a cached empty file.
+
+The host opens the folder chooser for that window and computes unique filenames
+before writing. Confirmation consumes the reviewed folder and filenames once.
+Exclusive file creation preserves existing files that appear after review.
+The results identify each saved file, unavailable source, and late collision.
+Cancelling skips remaining work. Files already written stay in the destination.

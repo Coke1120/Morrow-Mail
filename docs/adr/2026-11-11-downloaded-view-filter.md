@@ -14,6 +14,15 @@ is covered; sync-history settings remain the download boundary.
 Keep 200-row pages and use offset paging for literal-filtered lists. Avoid stale
 summary counts when displayed text changes. The renderer debounces typing and
 invalidates outstanding responses immediately, before the debounce expires.
+While the user types, keep the previous page and its selection targets on screen.
+Update the pending status immediately and repaint the rows when the result arrives.
+During IME composition, background refreshes use the previously committed phrase.
+Apply the new text after composition ends.
+For a connected cache's first 200-row page, fewer than 200 matches prove the
+exact total and oldest timestamp. Reuse those rows for both the summary and
+the page in the same synchronous read. Full pages still need the exact count.
+Requests combining a named folder with explicit mailbox pairs also use the
+database summary because multiple SQL branches can return the same message.
 Changing or clearing the phrase resets paging; normal navigation cancels pending
 filter work. Selected rows hidden by a filter retain their metadata for explicit
 selection actions rather than silently falling back to the open message.

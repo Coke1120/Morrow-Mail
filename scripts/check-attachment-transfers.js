@@ -70,7 +70,8 @@ function fixture(apiTransport = false) {
     close() { events.push("close"); for (const stream of this.streams) stream.destroy(); }
     async getMailboxLock() { return { release() {} }; }
     async download(uid, part, options) {
-      events.push(`part:${part}`); assert.equal(options.maxBytes, LIMITS.fileBytes + 1);
+      events.push(`part:${part}`); assert.equal(options.maxBytes, (controls.partLimit ?? LIMITS.fileBytes) + 1);
+      if (controls.missingPart) return {};
       const stream = new PassThrough(); this.streams.push(stream);
       void (async () => { if (controls.held) await controls.held.wait; if (stream.destroyed) return;
         if (controls.fail) stream.destroy(Error("synthetic transport failure")); else stream.end(controls.chunk); })();
@@ -180,6 +181,25 @@ async function engineChecks(apiTransport) {
   console.log(`attachment-engine-ok (${apiTransport ? "Gmail API" : "IMAP"}: shared reads, identity, Save ordering, cancellation, reconnect, retry)`);
 }
 async function extraChecks() {
+  const missing = fixture();
+  missing.controls.missingPart = true;
+  await assert.rejects(missing.bytesFor(missing.params), { code: "source-unavailable" });
+  assert.equal(missing.cache.stats().entries, 0, "a missing part is not cached as an empty file");
+  missing.controls.missingPart = false;
+  missing.controls.chunk = Buffer.alloc(0);
+  assert.equal((await missing.bytesFor(missing.params)).data.length, 0, "an existing empty part is still a valid file");
+  missing.cache.clear();
+  const encoded = fixture();
+  encoded.row.attachments_json = JSON.stringify([{ id: "2", filename: "file.pdf", size: 12 }]);
+  encoded.controls.partLimit = 4;
+  encoded.controls.chunk = Buffer.from("four");
+  assert.deepEqual((await encoded.bytesFor(encoded.params, { maxBytes: 4 })).data, encoded.controls.chunk);
+  encoded.row.attachments_json = JSON.stringify([{ id: "2", filename: "file.pdf", size: LIMITS.fileBytes + 1 }]);
+  assert.deepEqual((await encoded.bytesFor(encoded.params, { maxBytes: 4 })).data, encoded.controls.chunk,
+    "save-list decodes IMAP within its byte cap even when the encoded size exceeds the per-file cap");
+  await assert.rejects(encoded.bytesFor(encoded.params), { code: "too-large" }, "legacy download admission is unchanged");
+  encoded.cache.clear();
+
   const f = fixture(), owner = f.owner(), held = gate();
   const active = f.exclusive("account", () => held.wait, { background: true }); await tick();
   const queued = [f.params.attachmentId, "3"].map((attachmentId, index) => f.invoke("mail:fetchAttachmentBytes",
