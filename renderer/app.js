@@ -9495,6 +9495,9 @@ function renderActions(pane, email) {
   const summary = readerButton("summary", "Summary", () => { requestMessageSummary(email); },
     strokeIcon(["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"]));
   summary.setAttribute("aria-controls", "message-summary");
+  const summaryActions = document.createElement("div");
+  summaryActions.className = "reader-summary-actions";
+  summaryActions.appendChild(summary);
   const timeline = readerButton("timeline", "Timeline", () => timelineView?.open(email),
     strokeIcon(["M4 3v18", "M8 5h12", "M8 12h9", "M8 19h12"]));
   timeline.setAttribute("aria-haspopup", "dialog");
@@ -9527,7 +9530,7 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, summary, timeline);
+  bar.append(reply, replyAll, suggest, forward, summaryActions, timeline);
   if (!email.isDraft && !isReaderWindow()) bar.appendChild(openInNewWindowButton(email));
   bar.append(besideStar, archive, trash, menus);
   if (email.dsnRedraftAvailable) {
@@ -10566,6 +10569,7 @@ function openReaderLocalTime(email, text) {
 }
 
 function renderBody(pane, email, refresh) {
+  const controls = (pane.id === "reader" && pane.querySelector(".reader-summary-actions")) || pane;
   if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
@@ -10579,17 +10583,16 @@ function renderBody(pane, email, refresh) {
     // Older corrupted bodies can contain no replacement characters and carry no
     // warning. Older Inbox and Sent caches may lack delivery-failure review evidence.
     // Keep reloading explicit without a download on ordinary open.
-    pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
+    controls.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   const key = JSON.stringify([email?.accountId, email?.id]);
   let choice = plainBodyViews.get(pane);
   if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
   const body = document.createElement("div");
-  let wrapper;
   const paint = () => {
     body.replaceChildren();
-    wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    const wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
     if (pane.id === "reader" && !email.isDraft) {
       wrapper.tabIndex = 0;
       wrapper.setAttribute("role", "region");
@@ -10605,30 +10608,10 @@ function renderBody(pane, email, refresh) {
     toggle.type = "button"; toggle.className = "ghost"; toggle.dataset.action = "plain-body";
     const label = () => { toggle.textContent = choice.plain ? "Show HTML version" : "Show plain-text version"; toggle.setAttribute("aria-pressed", String(choice.plain)); };
     toggle.addEventListener("click", () => { choice.plain = !choice.plain; label(); paint(); });
-    label(); pane.appendChild(toggle);
+    label(); controls.appendChild(toggle);
   }
   pane.appendChild(body);
   paint();
-
-  const selection = typeof window !== "undefined" && window.morrowReplySelection;
-  const actions = pane.id === "reader" && !email.isDraft && pane.querySelector(".reader-actions");
-  if (!actions || !selection) return;
-  const reply = actions.querySelector("[data-action='reply']");
-  if (!reply) return;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost";
-  button.dataset.action = "reply-selection";
-  button.textContent = "Reply quoting selection";
-  // A pointer click must leave the selected range intact until the action reads it.
-  button.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
-  button.addEventListener("click", () => guard(() => {
-    const excerpt = button.isConnected && state.email === email && mailShortcutTarget()?.id === email.id
-      && selection.read(wrapper);
-    if (!excerpt) return showStatus("Select text in this message and try again.", true);
-    return openReaderCompose("reply", email, excerpt);
-  }));
-  reply.after(button);
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -14153,9 +14136,10 @@ function appendReaderBodyActions(menu, email, body) {
     const current = mailShortcutTarget();
     return body.isConnected && sameReaderLocalTimeSource(current, email) ? current : null;
   };
+  // Menu focus can change the selection. Save it while the body still owns it.
+  const selection = window.morrowReplySelection;
+  const text = selection?.read(body);
   if (window.morrowReaderLocalTime) {
-    // Menu focus can change the selection. Save the text while the body still owns it.
-    const text = window.morrowReplySelection?.read(body);
     const time = appendMenuAction(menu, "Show local time", () => guard(() => {
       const current = currentMessage();
       if (!text || !current) return showStatus("Select a date and time in this message and try again.", true);
@@ -14163,6 +14147,13 @@ function appendReaderBodyActions(menu, email, body) {
       openReaderLocalTime(current, text);
     }));
     time.setAttribute("aria-haspopup", "dialog");
+  }
+  if (selection && !isLocalMail(email)) {
+    appendMenuAction(menu, "Reply quoting selection", () => guard(() => {
+      const current = currentMessage();
+      if (!text || !current) return showStatus("Select text in this message and try again.", true);
+      return openReaderCompose("reply", current, text);
+    }));
   }
   const unavailable = "That local message link is unavailable.";
   appendMenuAction(menu, "Copy local link to this message", () => guard(async () => {
