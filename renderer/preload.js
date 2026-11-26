@@ -108,6 +108,8 @@ const INVOKE = [
   "mail:crossMailboxMove",
   "mail:moveLocalMessage",
   "mail:exportLocalMessage",
+  "mail:reviewForwardOriginals",
+  "mail:stageForwardOriginals",
   "mail:getComposeContext",
   "emailBrain:getComposeSettings",
   "emailBrain:saveComposeSettings",

@@ -1925,6 +1925,20 @@
       <p id="settings-status" role="status"></p>
       </div>
     </dialog>
+    <template id="forward-originals-template">
+      <dialog id="forward-originals-review" aria-labelledby="forward-originals-title" aria-describedby="forward-originals-help">
+        <form>
+          <h2 id="forward-originals-title">Forward as attachments</h2>
+          <p class="hint" id="forward-originals-help">Each EML file includes the full original message, including its headers, quoted history and attachments.</p>
+          <ol id="forward-originals-items"></ol>
+          <p class="hint" id="forward-originals-status" role="status">Checking the selected originals…</p>
+          <div class="row">
+            <button type="submit" class="primary" id="forward-originals-confirm" disabled>Open draft</button>
+            <button type="button" class="ghost" id="forward-originals-cancel" autofocus>Cancel</button>
+          </div>
+        </form>
+      </dialog>
+    </template>
     <dialog id="mbox-import" aria-labelledby="mbox-title" aria-describedby="mbox-help">
       <form id="mbox-form">
         <h2 id="mbox-title">Import MBOX to Local Folders</h2>
@@ -2198,6 +2212,7 @@
     <script src="./agent-actions.js"></script>
     <script src="./compose-attachments.js"></script>
     <script src="./reader-attachment-save-list.js"></script>
+    <script src="./forward-originals.js"></script>
     <script src="./compose-calendar-slots.js"></script>
     <script src="./reader-table-columns.js"></script>
     <script src="./reply-selection.js"></script>

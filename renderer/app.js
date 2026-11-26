@@ -505,7 +505,7 @@ async function manageLocalFolder(action, folder) {
   showStatus(action === "delete" ? "Empty local folder deleted." : "Local folder saved.");
 }
 
-function openLocalMessageMenu(messages, x, y, origin) {
+function openLocalMessageMenu(messages, x, y, origin, selection) {
   messages = messages.map(row => ({ ...row }));
   const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local messages");
   appendMenuAction(menu, "Move to folder…", () => openLocalTransfer(messages, "move"));
@@ -514,7 +514,49 @@ function openLocalMessageMenu(messages, x, y, origin) {
   appendMessageFlagActions(menu, messages);
   appendMenuAction(menu, "Move to trash", () => guard(() => trashLocalMessages(messages)), contextTrashReason(messages));
   if (messages.length === 1) appendMenuAction(menu, "Save original EML…", () => guard(() => exportLocalMessage(messages[0])));
+  if (selection && window.morrowForwardOriginals) {
+    const { ids, view } = selection;
+    const reason = messages.length !== ids.length ? "A selected message is unavailable. Select the originals again."
+      : !state.accounts.some(isLive) ? "Connect a sending account before forwarding originals." : "";
+    const sources = messages.map(({ id, folderId }) => ({ id, folderId }));
+    appendMenuAction(menu, "Forward as attachments…", () => openForwardOriginals(sources, view), reason);
+  }
   placeMenu(menu, x, y, origin);
+}
+
+function openForwardOriginals(sources, view) {
+  const assertSelection = () => {
+    if (view !== mailboxViewKey() || sources.length !== state.selectedIds.length
+        || !sources.every(({ id }, index) => state.selectedIds[index] === id)) {
+      throw new Error("The selection changed. Close this review and select the originals again.");
+    }
+  };
+  const request = { accountId: LOCAL_ACCOUNT_ID, sources };
+  return window.morrowForwardOriginals.openReview({
+    template: $("forward-originals-template"), openDialog, closeDialog,
+    formatDate: value => shownWhen(new Date(value), true), formatSize: fileSize,
+    async read() {
+      assertSelection();
+      const review = await call("mail:reviewForwardOriginals", request);
+      assertSelection();
+      return review;
+    },
+    async confirm(review) {
+      assertSelection();
+      const seed = newMailSeed();
+      if (!state.accounts.some(account => account.id === seed.accountId && isLive(account))) {
+        throw new Error("Connect a sending account before forwarding originals.");
+      }
+      const staged = await call("mail:stageForwardOriginals", { ...request, proof: review.proof });
+      assertSelection();
+      const attachments = composeAttachmentList(staged?.attachments);
+      if (attachments.length !== review.items.length || attachments.some((file, index) =>
+        file.filename !== review.items[index].filename || file.size !== review.items[index].size)) {
+        throw new Error("The complete original attachments could not be prepared.");
+      }
+      await presentCompose({ ...seed, skipRecipientDefaults: true, attachments });
+    },
+  });
 }
 
 let mboxReview = null;
@@ -14452,7 +14494,10 @@ function openSelectionMenu(x, y, origin) {
   const context = contextMessages(selectedMessages());
   const messages = context.rows;
   if (!messages.length) return;
-  if (messages.every(isLocalMail)) { openLocalMessageMenu(messages, x, y, origin); return; }
+  if (messages.every(isLocalMail)) {
+    openLocalMessageMenu(messages, x, y, origin, { ids: state.selectedIds.slice(), view: mailboxViewKey() });
+    return;
+  }
   const email = messages[0];
   const account = state.accounts.find((item) => item.id === email.accountId);
   const provider = folderProvider(account);
@@ -18582,7 +18627,8 @@ async function initializeComposeIdentity(fields) {
     if (!edits || edits.to === versions.to) $("compose-to").value = parties.to;
     if (!edits || edits.cc === versions.cc) $("compose-cc").value = parties.cc;
   }
-  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot || fields.unsubscribeDraft === true;
+  const savedRecipients = !!fields.draftId || !!fields.botDraft || !!fields.partialReceipt || !!fields.recoveredSnapshot
+    || fields.unsubscribeDraft === true || fields.skipRecipientDefaults === true;
   state.composeIdentity = { ...context, accountId: account.id, accountEpoch: account.bodyEpoch, kind: fields.kind || "new",
     seeds: window.morrowComposePolicy.openRecipientSeeds(savedRecipients, $("compose-cc").value, $("compose-bcc").value) };
   for (const field of ["cc", "bcc"]) if (edits && edits[field] !== versions[field]) state.composeIdentity.seeds[field].locked = true;

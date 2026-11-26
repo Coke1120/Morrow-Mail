@@ -24,6 +24,7 @@ const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 const { createAttachmentSaveSessions } = require("./attachment-save-list");
 const localFolders = require("./local-folders");
+const forwardOriginals = require("./forward-originals");
 const contextOwner = require("../../shared/mail-context-owner");
 const { createImporter } = require("./mbox-import");
 const { createJournal: createFolderJournal } = require("./folder-recovery");
@@ -428,6 +429,23 @@ async function transferToLocal(params, assertContextCurrent = () => {}) {
 
 function localAnswer(channel, params, event) {
   try {
+    if (channel === "mail:reviewForwardOriginals" || channel === "mail:stageForwardOriginals") {
+      if (params?.accountId !== localFolders.ACCOUNT_ID) return fail("invalid", "Choose messages from Local Folders.");
+      if (!Array.isArray(params.sources) || params.sources.length < 2) return fail("invalid", "Choose at least two messages.");
+      if (!db.isReady()) return fail("mail_not_ready", "Local mail is still opening. Try again when it is ready.");
+      const store = localArchive();
+      if (channel === "mail:reviewForwardOriginals") {
+        return ok(forwardOriginals.reviewOriginals(store, params.sources, ATTACHMENT_CAP));
+      }
+      const files = forwardOriginals.readOriginals(store, params.sources, params.proof, ATTACHMENT_CAP);
+      // Nothing reaches the draft store until all source bytes pass verification.
+      const attachments = db.transaction(() => files.map(({ filename, mimeType, fileBytes }) => {
+        const id = crypto.randomBytes(9).toString("hex");
+        db.saveBlob(id, filename, mimeType, fileBytes);
+        return { id, filename, mimeType, size: fileBytes.length, storageUrl: `local:${id}` };
+      }));
+      return ok({ attachments });
+    }
     const store = localArchive();
     if (params?.accountId && params.accountId !== localFolders.ACCOUNT_ID) return fail("email-gone", "That local message does not belong to this mailbox.");
     if (channel === "mail:localFolders") return ok(store.account());
@@ -5275,6 +5293,9 @@ function answer(channel, args, event) {
   if (channel === "mail:transferToLocal") return transferToLocal(params || {}, assertContextCurrent || undefined);
   if (channel === "mail:folderManagement") return folderManagementAnswer(params || {});
   if (channel === "mail:unsubscribe") return updateGate.run(() => unsubscribeAnswer(params || {}, event));
+  if (channel === "mail:reviewForwardOriginals" || channel === "mail:stageForwardOriginals") {
+    return updateGate.run(() => localAnswer(channel, params, event));
+  }
   const localTarget = channel.startsWith("mail:") && (params?.accountId === localFolders.ACCOUNT_ID || localFolders.isMessage(params?.emailId || params?.messageId)
     || (Array.isArray(params?.items) && params.items.some(item => localFolders.isMessage(item.emailId || item.id))));
   if (["mail:localFolders", "mail:manageLocalFolder", "mail:moveLocalMessage", "mail:exportLocalMessage"].includes(channel) || localTarget) return localAnswer(channel, params || {}, event);
