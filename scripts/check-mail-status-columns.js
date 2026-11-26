@@ -28,6 +28,7 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
       yield { uid: 1, flags, envelope: { subject: "Re: Fwd: needle", messageId: "<source@fixture.invalid>", inReplyTo: "<parent@fixture.invalid>", date: new Date("2026-11-01T00:00:00Z") },
         bodyStructure: { type: "multipart/mixed", childNodes: ["invoice.pdf", "details.pdf"].map((filename, index) => ({
           part: String(index + 2), type: "application/pdf", disposition: "attachment", dispositionParameters: { filename },
+          id: "<provider-file-" + index + ">",
         })) },
         ...(fields.source ? { source: Buffer.from("Subject: Re: Fwd: needle\r\nMessage-ID: <source@fixture.invalid>\r\nIn-Reply-To: <parent@fixture.invalid>\r\n\r\nneedle") } : {}) };
       if (!fields.source) yield { uid: 999, flags: new Set(["\\Answered"]) };
@@ -41,6 +42,7 @@ test("provider flags survive full sync, rotating refresh, cache restart and meta
   const listed = (await ask("mail:listFromCache", { accountId: "imap", folderId: "INBOX" })).emails[0];
   assert.deepEqual([listed.replied, listed.forwarded], [true, true]);
   assert.equal(listed.hasAttachments, true);
+  assert.equal(listed.attachments[0].contentId, "provider-file-0");
   assert.equal(Object.hasOwn(listed, "textBody"), false, "status is available without body strings");
   assert.equal((await ask("mail:searchLocal", { accountId: "imap", query: "needle" }))[0].forwarded, true);
   fieldsSeen = []; flags = new Set();
@@ -187,7 +189,7 @@ test("Undo, saved drafts and local Sent copies count file attachments while reta
       assert.deepEqual(reopened.attachments.map(file => file.contentId), attachments.map(file => file.contentId || null));
       if (index === 0) {
         assert.equal((await engine.bytesFor({ emailId: copy.emailId, attachmentId: inline.id })).data.toString(), "inline bytes");
-        db.updateMessage(copy.emailId, { has_attachments: 1 });
+        db.updateMessage(copy.emailId, { has_attachments: 1, date_source: null });
         legacyIds.push(copy.emailId);
       }
     }

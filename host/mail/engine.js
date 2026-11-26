@@ -705,8 +705,8 @@ function listRow(row, generations, memberships, includeDraftTo = false) {
   const attachments = db.jsonList(row.attachments_json).map(publicAttachment);
   // Older outgoing copies counted every MIME part. Local storage identifies
   // our outgoing metadata, without reinterpreting a provider's attachment bit.
-  const inlineOutgoingOnly = row.has_attachments === 1 && (row.is_draft === 1 || row.date_source === "local")
-    && attachments.length > 0 && attachments.every(file => file.storageUrl)
+  const inlineOutgoingOnly = row.has_attachments === 1 && attachments.length > 0
+    && attachments.every(file => file.storageUrl)
     && !db.hasOutgoingFileAttachments(attachments);
   const recipientHeaders = JSON.parse(row.recipient_headers_json || "{}");
   delete recipientHeaders.followupReply;
