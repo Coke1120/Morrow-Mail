@@ -26,7 +26,7 @@ function original(run, part) {
     `From: <${sender}@example.invalid>`,
     `To: <crew-${part}@example.invalid>`,
     `Subject: ${subject}`,
-    "Date: Tue, 10 Nov 2026 04:05:00 +0000",
+    `Date: Tue, 10 Nov 2026 0${4 + part}:05:00 +0000`,
     `Message-ID: <${name}@example.invalid>`,
     `Delivered-To: <alias-${part}@example.invalid>`,
     "MIME-Version: 1.0",
@@ -107,6 +107,8 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
     assert.deepEqual(review.items.map(item => item.id), ids);
     assert.equal(review.items[0].subject, review.items[1].subject);
     assert.notEqual(review.items[0].from, review.items[1].from);
+    assert.equal(new Date(review.items[0].date).toISOString(), "2026-11-10T04:05:00.000Z");
+    assert.equal(new Date(review.items[1].date).toISOString(), "2026-11-10T05:05:00.000Z");
     assert.notEqual(review.items[0].filename, review.items[1].filename);
     assert.equal(review.totalBytes, first.raw.length + second.raw.length);
     assert.equal(review.overLimit, false);
@@ -176,6 +178,7 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
       for (const [part, selected] of [primary, other].entries()) {
         assert.match(selected.messageId, /^<r[23]-[01]@example\.invalid>$/);
         assert.equal(selected.headers.get("delivered-to").value[0].address, `alias-${part}@example.invalid`);
+        assert.equal(selected.date.toISOString(), `2026-11-10T0${4 + part}:05:00.000Z`);
       }
       assert.notEqual(primary.messageId, other.messageId);
     }
