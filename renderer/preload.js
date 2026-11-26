@@ -171,6 +171,7 @@ const INVOKE = [
   "mail:listThreadMessages",
   "mail:downloadAttachment",
   "mail:downloadAttachmentsZip",
+  "mail:attachmentSaveList",
   "mail:fetchAttachmentBytes",
   "mail:cancelAttachmentRequest",
   "mail:uploadAttachment",

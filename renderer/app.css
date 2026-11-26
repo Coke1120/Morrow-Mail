@@ -4360,6 +4360,19 @@ button.attachment-name:hover { text-decoration: underline; }
   margin-left: auto;
 }
 
+#reader-save-list-open:not([hidden]) {
+  flex: none;
+  align-self: flex-end;
+  margin: 0 6px 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+#reader-save-list .attachments { overflow-wrap: anywhere; }
+#reader-save-list .attachments .hint { display: block; margin: 3px 0; }
+#reader-save-list-folder { overflow-wrap: anywhere; }
+.reader-save-list-actions { flex-wrap: wrap; margin-top: 12px; }
+
 .empty, .meta, .body { padding: 0 20px; }
 
 .empty { color: var(--muted); }

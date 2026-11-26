@@ -675,7 +675,9 @@ async function readPart(client, folderPath, uid, part, expectedValidity, options
     assertUidValidity(client, expectedValidity);
     const downloaded = await client.download(String(uid), part || "1", { uid: true,
       ...(maxBytes ? { maxBytes: maxBytes + 1 } : {}) });
-    if (!downloaded || !downloaded.content) return Buffer.alloc(0);
+    if (!downloaded?.content) {
+      throw Object.assign(new Error("This attachment is no longer available."), { code: "source-unavailable" });
+    }
     content = downloaded.content;
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) { abort(); signal.throwIfAborted(); }

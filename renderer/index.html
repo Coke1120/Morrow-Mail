@@ -243,6 +243,7 @@
       </div>
       <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
       <section id="reader-area" aria-label="Message reader">
+        <button type="button" id="reader-save-list-open" class="ghost" aria-haspopup="dialog" hidden>Save list</button>
         <article id="reader" tabindex="0" aria-label="Message"></article>
       </section>
     </div>
@@ -2023,6 +2024,20 @@
         </details>
       </form>
     </dialog>
+    <dialog id="reader-save-list" aria-labelledby="reader-save-list-title">
+      <div class="dialog-body">
+        <h2 id="reader-save-list-title" tabindex="-1">Attachment save list</h2>
+        <p id="reader-save-list-folder" class="hint" hidden></p>
+        <p id="reader-save-list-status" class="hint" role="status"></p>
+        <ul id="reader-save-list-files" class="attachments"></ul>
+        <div class="row reader-save-list-actions">
+          <button type="button" class="primary" id="reader-save-list-next">Choose folder…</button>
+          <button type="button" class="ghost" id="reader-save-list-back">Continue selecting</button>
+          <button type="button" class="ghost" id="reader-save-list-close">Dismiss list</button>
+          <button type="button" class="ghost" id="reader-save-list-cancel" hidden>Cancel remaining saves</button>
+        </div>
+      </div>
+    </dialog>
     <dialog id="attachment-preview" aria-labelledby="attachment-preview-title">
       <div class="dialog-body">
         <div class="attachment-preview-bar">
@@ -2182,6 +2197,7 @@
     <script src="./agent-safety-review.js"></script>
     <script src="./agent-actions.js"></script>
     <script src="./compose-attachments.js"></script>
+    <script src="./reader-attachment-save-list.js"></script>
     <script src="./compose-calendar-slots.js"></script>
     <script src="./reader-table-columns.js"></script>
     <script src="./reply-selection.js"></script>
