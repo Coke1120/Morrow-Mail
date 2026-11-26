@@ -45,6 +45,7 @@ function mailbox(run) {
   run("check-google-oauth-default-ui.js");
   run("check-account-settings.js");
   run("check-attachment-transfers.js");
+  run("check-attachment-save-list.js");
   run("check-pdf-preview.js");
   run("check-forward-attachments.js");
   run("check-responsive-attachments.js");

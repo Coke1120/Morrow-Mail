@@ -1,12 +1,14 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const { promises: fs } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { createAttachmentSaveList } = require("../host/mail/attachment-save-list");
+const { createAttachmentSaveList, createAttachmentSaveSessions } = require("../host/mail/attachment-save-list");
 const { LIMITS } = require("../host/mail/attachment-cache");
+const { createAttachmentRequests } = require("../host/mail/attachment-requests");
 
 async function scratch(t) {
   const root = process.env.MORROW_SAVE_LIST_TEST_TMP || os.tmpdir();
@@ -185,7 +187,7 @@ test("portable naming and existing per-file and combined transfer limits", async
   for (const name of ["2.pdf", "1.pdf"]) await assert.rejects(fs.stat(path.join(directory, name)), { code: "ENOENT" });
 });
 
-test("a replaced directory or cancelled operation reports every item without further reads", async t => {
+test("changing the folder or reader and cancelling preserve completed files without stale writes", async t => {
   const root = await scratch(t);
   const directory = path.join(root, "approved");
   await fs.mkdir(directory);
@@ -219,7 +221,7 @@ test("a replaced directory or cancelled operation reports every item without fur
   const duringOpen = await list.prepare(racing, [source("safe", "1", "reviewed.pdf", bytes)]);
   const open = fs.open;
   const moved = path.join(root, "racing-moved");
-  t.mock.method(fs, "open", async (...args) => {
+  const switchFolder = t.mock.method(fs, "open", async (...args) => {
     await fs.rename(racing, moved);
     await fs.mkdir(racing);
     return open(...args);
@@ -228,4 +230,40 @@ test("a replaced directory or cancelled operation reports every item without fur
   assert.deepEqual(final.map(file => [file.status, file.cleanupFailed]), [["destination-changed", false]]);
   assert.deepEqual(await fs.readdir(moved), []);
   assert.deepEqual(await fs.readdir(racing), []);
+  switchFolder.mock.restore();
+
+  const oldFolder = await scratch(t), newFolder = await scratch(t);
+  const owner = new EventEmitter();
+  const data = Buffer.from("different document");
+  let startOldRead, completeOldRead;
+  const oldReading = new Promise(resolve => { startOldRead = resolve; });
+  const oldBytes = new Promise(resolve => { completeOldRead = resolve; });
+  let destination = oldFolder;
+  const sessions = createAttachmentSaveSessions({
+    capture: ({ filename, content = data }) => ({
+      ...source(filename, filename, filename, content),
+      read() {
+        if (filename === "old.txt") { startOldRead(); return oldBytes; }
+        return content;
+      },
+    }),
+    chooseFolder: async () => destination,
+    requests: createAttachmentRequests(),
+  });
+  const send = (action, fields) => sessions.handle(owner, { action, ...fields });
+  await send("add", { filename: "old.txt" });
+  const { reviewId: oldId } = await send("prepare");
+  const saving = send("save", { reviewId: oldId });
+  await oldReading;
+  owner.emit("did-start-navigation", {}, "", false, true);
+  await send("add", { filename: "new.txt" });
+  completeOldRead(data);
+  assert.deepEqual((await saving).files.map(file => file.status), ["cancelled"]);
+  assert.deepEqual(await fs.readdir(oldFolder), []);
+  destination = newFolder;
+  const updated = Buffer.from("updated document after reopening its source");
+  assert.equal((await send("add", { filename: "new.txt", content: updated })).items.length, 1);
+  const { reviewId: newId } = await send("prepare");
+  assert.deepEqual((await send("save", { reviewId: newId })).files.map(file => file.status), ["saved"]);
+  assert.deepEqual(await fs.readFile(path.join(newFolder, "new.txt")), updated);
 });

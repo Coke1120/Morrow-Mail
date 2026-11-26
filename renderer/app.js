@@ -11507,6 +11507,7 @@ async function saveAttachmentsZip(email, files) {
 // Repainting a downloaded body must not close the attachment list again.
 const attachmentDisclosures = new WeakMap();
 let attachmentDisclosureId = 0;
+let readerAttachmentSaveList;
 
 function renderAttachments(pane, email) {
   const key = JSON.stringify([email.accountId || "", email.id || ""]);
@@ -11617,6 +11618,10 @@ function renderAttachments(pane, email) {
       if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, preview));
       actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(save)));
       actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
+      if (pane === $("reader") && readerAttachmentSaveList) {
+        actions.appendChild(attachmentGhost("Add to save list", "Add " + actionLabel + " to save list",
+          () => readerAttachmentSaveList.add(email, file)));
+      }
       item.appendChild(actions);
     }
     list.appendChild(item);
@@ -30473,6 +30478,9 @@ function wireRecipientSuggest() {
 
 function wire() {
   if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
+  readerAttachmentSaveList = window.morrowAttachmentSaveList?.mount({
+    call, notify: showStatus, formatDate: value => shownWhen(new Date(value), true),
+  });
   wireRecipientSuggest();
   wireComposeFormat();
   wireComposeCalendarSlots();

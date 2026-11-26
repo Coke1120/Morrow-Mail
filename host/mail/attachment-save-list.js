@@ -1,6 +1,7 @@
 "use strict";
 
 const { lstatSync, promises: fs, unlinkSync } = require("node:fs");
+const { randomUUID } = require("node:crypto");
 const path = require("node:path");
 const { isPromise } = require("node:util").types;
 const { LIMITS } = require("./attachment-cache");
@@ -211,4 +212,103 @@ function createAttachmentSaveList({ readBytes }) {
   return { prepare, save };
 }
 
-module.exports = { createAttachmentSaveList };
+function selectionKey({ accountId, emailId, attachmentId }) {
+  return JSON.stringify([accountId, emailId, attachmentId]);
+}
+
+function createAttachmentSaveSessions({ capture, chooseFolder, requests }) {
+  const sessions = new WeakMap();
+
+  function open(owner) {
+    const entries = new Map();
+    const state = { entries, review: null, request: null };
+    state.saver = createAttachmentSaveList({ readBytes: (source, options) =>
+      entries.get(selectionKey(source)).read(options) });
+    const clear = () => {
+      if (sessions.get(owner) === state) sessions.delete(owner);
+      owner.removeListener("did-start-navigation", navigate);
+      owner.removeListener("destroyed", clear);
+      state.request?.controller.abort(issue("cancelled", "Cancelled."));
+    };
+    const navigate = (_event, _url, inPage, mainFrame) => { if (mainFrame && !inPage) clear(); };
+    owner.on("did-start-navigation", navigate);
+    owner.once("destroyed", clear);
+    state.clear = clear;
+    sessions.set(owner, state);
+    return state;
+  }
+
+  async function handle(owner, params) {
+    const { action } = params || {};
+    const found = sessions.get(owner);
+    if (action === "clear" && !found) return { items: [] };
+    if (!found && action !== "add") throw issue("invalid-review", "Add attachments to the save list first.");
+    const state = found || open(owner);
+    if (state.request) throw issue("busy", "Wait for the current attachment save to finish.");
+    const list = () => Array.from(state.entries.values(), source => source.display);
+    switch (action) {
+      case "add": {
+        const source = capture(params);
+        const id = selectionKey(source);
+        if (!state.entries.has(id) && state.entries.size >= MAX_FILES) throw issue("invalid-review", "The save list is full.");
+        source.display = { id, filename: source.filename, ...source.message };
+        state.entries.set(id, source);
+        state.review = null;
+        return { items: list() };
+      }
+      case "remove":
+        state.entries.delete(params.id);
+        state.review = null;
+        return { items: list() };
+      case "revise":
+        state.review = null;
+        return { items: list() };
+      case "clear":
+        state.clear();
+        return { items: [] };
+      case "prepare":
+      case "save":
+        break;
+      default:
+        throw issue("invalid-review", "This attachment save action is unavailable.");
+    }
+    if (!state.entries.size) throw issue("invalid-review", "Add attachments to the save list first.");
+    if (action === "save" && (!state.review || state.review.id !== params.reviewId)) {
+      throw issue("invalid-review", "Review the selected attachments and folder again.");
+    }
+    const request = requests.begin(params, owner);
+    state.request = request;
+    try {
+      if (action === "prepare") {
+        state.review = null;
+        const directory = await chooseFolder(owner);
+        request.signal.throwIfAborted();
+        if (!directory) return { cancelled: true };
+        const plan = await state.saver.prepare(directory, Array.from(state.entries.values()));
+        request.signal.throwIfAborted();
+        const id = randomUUID();
+        state.review = { id, plan };
+        const files = plan.files.map(row => {
+          const display = state.entries.get(selectionKey(row)).display;
+          return { ...display, filename: row.filename, originalName: display.filename };
+        });
+        return { reviewId: id, directory: plan.directory, files };
+      }
+      const { plan } = state.review;
+      state.review = null;
+      const outcomes = await state.saver.save(plan, { signal: request.signal });
+      const files = outcomes.map(row => ({ ...state.entries.get(selectionKey(row)).display, filename: row.filename,
+        status: row.status, verification: row.verification, cleanupFailed: row.cleanupFailed }));
+      state.request = null;
+      state.clear();
+      return { files };
+    } finally {
+      state.request = null;
+      request.finish();
+    }
+  }
+
+  return { handle };
+}
+
+module.exports = { createAttachmentSaveList, createAttachmentSaveSessions };
