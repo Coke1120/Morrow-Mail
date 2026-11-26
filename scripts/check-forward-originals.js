@@ -120,6 +120,8 @@ test("four saved drafts reopen with all eight originals intact in SQLite and out
     const checked = await engine.answer("mail:reviewForwardOriginals", [params]);
     assert.deepEqual(checked.data, reviewOriginals(archive, ids, LIMIT));
     if (run === 0) {
+      const single = await engine.answer("mail:reviewForwardOriginals", [{ ...params, messageIds: ids.slice(0, 1) }]);
+      assert.equal(single.success, false);
       const wrongAccount = await engine.answer("mail:stageForwardOriginals", [{ ...params, accountId, proof: checked.data.proof }]);
       assert.equal(wrongAccount.success, false);
       const stale = await engine.answer("mail:stageForwardOriginals", [{ ...params, proof: "stale" }]);

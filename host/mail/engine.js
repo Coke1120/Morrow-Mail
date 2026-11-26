@@ -431,6 +431,7 @@ function localAnswer(channel, params, event) {
   try {
     if (channel === "mail:reviewForwardOriginals" || channel === "mail:stageForwardOriginals") {
       if (params?.accountId !== localFolders.ACCOUNT_ID) return fail("invalid", "Choose messages from Local Folders.");
+      if (!Array.isArray(params.messageIds) || params.messageIds.length < 2) return fail("invalid", "Choose at least two messages.");
       if (!db.isReady()) return fail("mail_not_ready", "Local mail is still opening. Try again when it is ready.");
       const store = localArchive();
       if (channel === "mail:reviewForwardOriginals") {

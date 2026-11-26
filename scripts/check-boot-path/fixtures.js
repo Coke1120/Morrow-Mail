@@ -48,6 +48,7 @@ function mailbox(run) {
   run("check-attachment-save-list.js");
   run("check-pdf-preview.js");
   run("check-forward-attachments.js");
+  run("check-forward-originals.js");
   run("check-responsive-attachments.js");
   run("check-sent-followup.js");
   run("check-gmail-cache.js");
