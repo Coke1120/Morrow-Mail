@@ -124,6 +124,14 @@ function createComposeHost(options) {
     });
     require("./compose-editing-menu").installComposeEditingMenu(win, { Menu, htmlFile: opts.htmlFile });
     const contents = win.webContents;
+    if (process.platform === "darwin") {
+      // The native app Hide command uses Cmd+H. Leave its menu item and
+      // every other window untouched; pass only this chord to Compose.
+      contents.on("before-input-event", (_event, input) => {
+        contents.setIgnoreMenuShortcuts(input.type === "keyDown" && input.meta
+          && !input.control && !input.alt && !input.shift && String(input.key).toLowerCase() === "h");
+      });
+    }
     const id = contents.id;
     const record = { win, seed: clean, allowClose: false, closeRequested: false };
     records.set(id, record);

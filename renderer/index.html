@@ -1076,6 +1076,9 @@
             <span class="compose-swatch" aria-hidden="true"></span>
             <input type="color" data-command="hiliteColor" value="#fff3a0" aria-label="Highlight" />
           </label>
+          <button type="button" id="compose-find-open" aria-label="Find and replace" title="Find and replace" aria-expanded="false" aria-controls="compose-find-panel">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+          </button>
           <button type="button" id="compose-ai-open" aria-label="Write with AI" title="Write with AI" aria-haspopup="dialog" aria-expanded="false" aria-controls="compose-ai-popover">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path><path d="M20 3v4"></path><path d="M22 5h-4"></path><path d="M4 17v2"></path><path d="M5 18H3"></path></svg>
           </button>
@@ -1105,6 +1108,22 @@
           </div>
         </div>
         </div>
+        <section id="compose-find-panel" aria-label="Find and replace in the message body" hidden>
+          <div class="compose-find-row">
+            <label for="compose-find-query">Find</label>
+            <input type="search" id="compose-find-query" maxlength="256" spellcheck="false" autocomplete="off" />
+            <button type="button" class="ghost" id="compose-find-previous">Previous</button>
+            <button type="button" class="ghost" id="compose-find-next">Next</button>
+            <button type="button" class="ghost" id="compose-find-close" aria-label="Close Find and Replace">Close</button>
+          </div>
+          <div class="compose-find-row" id="compose-find-replace-row" hidden>
+            <label for="compose-find-replacement">Replace with</label>
+            <input type="text" id="compose-find-replacement" maxlength="512" spellcheck="false" autocomplete="off" />
+            <button type="button" class="ghost" id="compose-find-replace-next">Replace Next</button>
+            <button type="button" class="ghost" id="compose-find-replace-all">Replace All</button>
+          </div>
+          <p class="hint" id="compose-find-status" role="status"></p>
+        </section>
         <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="compose-body-label" data-placeholder="Message" spellcheck="true"></div>
         <span id="compose-body-label" class="sr">Message</span>
         <textarea id="compose-body" class="compose-body-source" tabindex="-1" aria-hidden="true"></textarea>
@@ -1121,6 +1140,7 @@
           <p id="compose-attach-error" class="error" role="status" hidden></p>
         <details id="compose-editing-help"><summary>Editing and attachment help</summary>
           <p class="hint">Use A− and A+ to change font size one step at a time. Text color opens common colors, Default text color, and Custom…. Formatting applies to selected text or the next text you type. Use Command+Z on Mac or Ctrl+Z on Windows to undo an edit.</p>
+          <p class="hint">Find &amp; Replace searches your editable message text, not its signature, quoted history or other fields. It ignores case and treats symbols literally. Use Command+F or Command+H on Mac, or Ctrl+F or Ctrl+H on Windows/Linux. An empty replacement deletes matching text. Undo reverses one replacement action.</p>
           <p class="hint" id="compose-calendar-slots-help" hidden>In Reply or Reply All, choose Offer two times… and add two available half-hours from one or two dates. The options use the checked calendars for the From mailbox. Insert times adds the two lines at your message caret. Cancel leaves your draft as it was.</p>
           <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
           <p class="hint">Forward includes the original files after preparation. Review or remove them here before sending. Preparation failures keep the original unchanged; retry from the message.</p>
@@ -2219,6 +2239,7 @@
     <script src="./reader-local-time.js"></script>
     <script src="./compose-bcc-roster.js"></script>
     <script src="./sent-followup.js"></script>
+    <script src="./compose-find.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
