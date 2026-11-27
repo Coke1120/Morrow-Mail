@@ -714,6 +714,28 @@ test("Timeline opens one local sheet with optional keywords and editable From/To
   assert.equal(fixture.calls.some(value => /generate|download|search/.test(value.channel)), false);
   fixture.dom.window.close();
 });
+test("Timeline shows the verified account and reviewed counts without an extra choice or AI request", async context => {
+  const f = integratedTimeline(context, { rows: [row(), row("partial", { body_complete: 0 })] });
+  await f.ui.mounted.open(f.ui.email);
+  assert.equal(f.node("timeline-thread-scope").textContent, "Scope: this downloaded thread · owner@example.org");
+  assert.match(f.node("timeline-preview").textContent, /Account: owner@example.org · 1 included \/ 2 selected/);
+  assert.equal(f.node("timeline-generate").disabled, true, "partial coverage still requires consent");
+  f.node("timeline-mode").value = "case";
+  f.node("timeline-mode").dispatchEvent(new f.ui.window.Event("change")); await settleTimeline();
+  assert.equal(f.node("timeline-thread-scope").hidden, true);
+  assert.match(f.node("timeline-case-scope").textContent, /Search in: owner@example.org · downloaded mail only/);
+  assert.match(f.node("timeline-search").getAttribute("aria-describedby"), /timeline-case-scope/);
+  assert.doesNotMatch(f.node("timeline-preview").textContent, /owner@example.org/, "old review clears when scope changes");
+  f.node("timeline-review-case").click(); await settleTimeline();
+  assert.match(f.node("timeline-preview").textContent, /Account: owner@example.org · 1 included \/ 2 selected/);
+  f.changeAccount();
+  f.ui.events.get("mail:accountsUpdated")(); await settleTimeline();
+  assert.equal(f.node("timeline-case-scope").textContent, "Search account not verified.");
+  assert.doesNotMatch(f.node("timeline-preview").textContent, /owner@example.org/);
+  assert.equal(f.node("timeline-generate").disabled, true);
+  assert.equal(f.calls.length, 0);
+});
+
 test("Timeline derives title, supported language and timezone without exposing settings", async () => {
   const fixture = rendererFixture();
   Object.defineProperty(fixture.window.navigator, "language", { value: "zh-HK" });
@@ -1788,6 +1810,7 @@ test("Case mode recovers from oversized thread capture using an account-bound co
     f.node("timeline-mode").value = "case"; f.node("timeline-mode").dispatchEvent(new f.ui.window.Event("change")); await settleTimeline();
     const contextCall = f.hostCalls.find(call => call.channel === "timeline:prepare" && call.input.contextOnly);
     assert(contextCall?.data, "a body-free context is captured independently of thread limits");
+    assert.match(f.node("timeline-case-scope").textContent, /Search in: owner@example.org/);
     await assert.rejects(f.service.invoke(1, "timeline:generate", { manifestToken: contextCall.data.manifestToken,
       optionsDigest: contextCall.data.optionsDigest, acceptPartial: true, reviewed: true }), { code: "timeline-input" });
     await assert.rejects(f.service.invoke(1, "timeline:download", { manifestToken: contextCall.data.manifestToken }), { code: "timeline-input" });

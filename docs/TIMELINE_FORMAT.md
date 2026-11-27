@@ -17,9 +17,11 @@ provider-copy deduplication. Refine broad queries and search variants separately
 Neither successful search nor the selected messages establish exhaustive coverage.
 Undownloaded mail, other accounts, calls and attachment contents remain outside scope.
 
+Thread mode displays the account from the opened message. Case mode shows the
+same account beside its local search field; it does not require an account choice.
 Case mode uses exactly the checked messages, without automatic thread expansion.
-Choose **Review selected mail**, inspect the selected/included/omitted counts and AI
-destination, accept any omissions and affirm the separate review checkbox. Only
+Choose **Review selected mail**, inspect the account, selected/included/omitted
+counts and AI destination, accept any omissions and affirm the separate review checkbox. Only
 **Generate** transmits data. Changing selection, roles, focus or running another
 search clears case review. The host requires an owner-bound existing account proof,
 explicit phases, the current account only and a reviewed frozen source manifest.
