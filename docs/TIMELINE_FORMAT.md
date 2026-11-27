@@ -205,11 +205,13 @@ to an earlier complete body in the same thread and request instead of repeating 
 Matching removes only one quote prefix per line and permits a final newline; the
 matching body must be at least 128 UTF-8 bytes. No fuzzy, semantic or boilerplate
 matching is used. Referenced content is directly present, never only a prior AI
-summary or another reference. Edited, ambiguous, unmarked, short, split or
-cross-request quotes remain literal in the ordinary path. For an oversized capture,
+summary or another reference. Edited, ambiguous, unmarked and short quotes remain literal. Across batches,
 a local prepass may leave an exact marked repeat out of a later message when a
-strictly earlier, unchanged complete body in the same selected thread contains
-all that evidence. The later AI request indicates an omission without a dangling
+strictly earlier complete body in the same selected thread contains that
+evidence. For selections that already fit, Morrow compares the actual serialized
+input plans before Generate. It uses the smaller plan only if there are no extra
+requests and it saves a request or at least 1,024 input bytes. A selection that
+otherwise hits a planning budget can also use the compact plan if it fits. The later AI request indicates an omission without a dangling
 cross-request token. Quote-only replies keep their body if nothing but whitespace
 would remain. One event per original message is still
 required, and case date checks use the unchanged original body. A reference proves

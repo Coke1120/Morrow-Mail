@@ -2078,6 +2078,44 @@ test("oversized thread sends exact repeated quotations only in the earlier compl
   assert.equal(renderer.calls.length, 0, "opening and reviewing the sheet sends nothing");
 });
 
+test("preflight packs ordinary and over-budget plain reply chains without losing unique mail evidence", async context => {
+  const original = Array.from({ length: 300 }, (_, i) => `Original evidence line ${i}: $125 due 14 November.`).join("\n");
+  const quote = original.split("\n").map(line => `> ${line}`).join("\n");
+  const rows = [row("base", { text_body: original }), ...Array.from({ length: 24 }, (_, i) => row(`reply-${String(i).padStart(2, "0")}`, {
+    text_body: `新內容 ${i}：同意保留 HK$88，20 November 再確認。\n${quote}`,
+    date_iso: "2026-11-02T10:00:00Z",
+  }))];
+  const fixture = integratedTimeline(context, { rows }, { id: "base" });
+  for (const count of [10, rows.length]) {
+    const selected = rows.slice(0, count);
+    const selection = { expandThreads: false, messages: selected.map(value => ({ accountId: value.account_id, messageId: value.id })) };
+    const snapshot = freezeSources(fixture.dependencies, selection);
+    assert.ok(snapshot.bodyBytes < LIMITS.sourceBytes);
+    const prepared = await fixture.service.invoke(1, "timeline:prepare", { selection, options });
+    assert.equal(prepared.budget, undefined);
+    assert.equal(prepared.processing.omittedRepeatBlocks, count - 1);
+    if (count === rows.length) assert.throws(() => preparePlan(snapshot.sources), error => error.budget?.kind === "chunk-count");
+    else {
+      const baseline = preparePlan(snapshot.sources);
+      assert.ok(prepared.chunks < baseline.chunks.length);
+      assert.ok(prepared.estimatedInputBytes < baseline.estimatedInputBytes / 3);
+    }
+    assert.equal(fixture.calls.length, 0);
+  }
+  await fixture.ui.mounted.open(fixture.ui.email);
+  const prepared = fixture.hostCalls.find(call => call.channel === "timeline:prepare").data;
+  assert.match(fixture.node("timeline-processing-counts").textContent, /24 exact repeated quote blocks/);
+  assert.match(fixture.node("timeline-processing-counts").textContent, /repeated body bytes stay local/);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  const payloads = fixture.calls.flatMap(call => JSON.parse(call.messages[1].content));
+  const providerBody = payloads.map(part => part.text).join("");
+  assert.equal(providerBody.split("Original evidence line 42:").length, 2);
+  for (let i = 0; i < 24; i++) assert.ok(providerBody.includes(`新內容 ${i}：同意保留 HK$88，20 November 再確認。`));
+  assert.equal(fixture.calls.reduce((sum, call) => sum + Buffer.byteLength(JSON.stringify(call.messages)), 0), prepared.estimatedInputBytes);
+  assert.equal([...fixture.artifacts.values()][0].document.events.length, rows.length);
+});
+
 test("oversized quote fallback preserves edits, ambiguous matches, and quote-only messages", () => {
   const { reduceRepeatedQuotes } = require("../host/timeline/quotes");
   const body = "Distinct fictional terms and evidence. ".repeat(8);
@@ -2257,7 +2295,7 @@ test("HTML history also recovers a body-driven batch budget below the source byt
   const selection = { expandThreads: false, messages: rows.slice(0, 12).map(value => ({ accountId: value.account_id, messageId: value.id })) };
   const ordinary = await fixture.prepare(2, selection);
   assert.equal(ordinary.budget, undefined);
-  assert.equal(ordinary.processing.omittedRepeatBlocks, 0);
+  assert.equal(ordinary.processing.omittedRepeatBlocks, selection.messages.length - 1);
   const focusedOptions = { ...options, keywords: "項".repeat(900),
     contactEmails: Array.from({ length: 30 }, (_, i) => "contact" + i + "@example.invalid") };
   const focused = await fixture.service.invoke(2, "timeline:prepare", { selection, options: focusedOptions });
