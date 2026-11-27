@@ -3991,6 +3991,13 @@ function submitConfirm() {
     $("confirm-name").focus();
     return;
   }
+  const invalidName = confirmCopy?.validateName?.(name);
+  if (invalidName) {
+    $("confirm-validation").textContent = invalidName;
+    $("confirm-validation").hidden = false;
+    $("confirm-name").focus();
+    return;
+  }
   finishConfirm({ ok: true, name: name });
 }
 
@@ -10612,6 +10619,18 @@ function renderBody(pane, email, refresh) {
   }
   pane.appendChild(body);
   paint();
+  if (pane.id === "reader" && typeof window !== "undefined" && window.morrowReaderChecklist && api?.invoke && readerChecklistEligible(email)) {
+    window.morrowReaderChecklist?.mount(pane, body,
+      { accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch }, {
+        invoke: params => api.invoke("reader:privateChecklist", params),
+        current: () => !pendingOpenId && sameReaderLocalTimeSource(state.email, email),
+      });
+  }
+}
+
+function readerChecklistEligible(email) {
+  return email?.bodyComplete === true && !email.bodyWarning && !email.isDraft && !email.outbox
+    && !isLocalMail(email) && Number.isSafeInteger(email.bodyEpoch) && !!(email.htmlBody || email.textBody?.trim());
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -11156,11 +11175,11 @@ function cancelAttachmentTask(task) {
   });
 }
 
-function startAttachmentTask(channel, email, files, label, accountId) {
+function startAttachmentTask(channel, email, files, label, accountId, rename) {
   const zip = channel === "mail:downloadAttachmentsZip", draft = channel === "mail:prepareDraft", forward = channel === "mail:prepareForward";
   const prepare = draft || forward;
   const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
-  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids, accountId]);
+  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids, accountId, ...(rename ? [rename.stem] : [])]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
   const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? (forward ? "Forward attachments" : "Draft attachments") : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
@@ -11173,6 +11192,8 @@ function startAttachmentTask(channel, email, files, label, accountId) {
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
     ...(accountId ? { accountId } : {}),
     ...(draft ? { draftRevision: email.draftRevision } : forward ? { accountId: email.accountId, attachmentIds: ids } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
+  if (rename) Object.assign(params, { renameStem: rename.stem, folderId: rename.folderId, bodyEpoch: rename.bodyEpoch,
+    attachmentId: String(files[0].id), filename: files[0].filename || "attachment" });
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
   });
@@ -11570,6 +11591,37 @@ const attachmentDisclosures = new WeakMap();
 let attachmentDisclosureId = 0;
 let readerAttachmentSaveList;
 
+async function saveAttachmentAs(email, file, isCurrent) {
+  const policy = window.morrowAttachmentFilename;
+  const identity = bodyIdentity(email);
+  if (!policy || !identity || !email.folderId || !isCurrent()) {
+    throw new Error("This attachment changed. Reopen the message before saving it.");
+  }
+  const original = file.filename || "attachment";
+  const { stem, suffix } = policy.parts(original);
+  const visibleName = original.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "�");
+  const answer = await askConfirm({
+    title: "Save attachment under a different name",
+    body: "Original filename: " + visibleName + "\nOnly the saved copy will use the new name. Existing files are kept.",
+    needsName: true, name: stem, fieldLabel: suffix ? "New name (without " + suffix + ")" : "New name",
+    confirm: "Choose destination…",
+    validateName: name => policy.proposed(name, original) ? "" : "Enter a valid name without a path or the original extension.",
+  });
+  if (!answer.ok) return;
+  await confirmSettled();
+  if (!isCurrent() || bodyIdentity(email)?.bodyEpoch !== identity.bodyEpoch) {
+    throw new Error("This attachment changed. Reopen the message before saving it.");
+  }
+  try {
+    await startAttachmentTask("mail:downloadAttachment", email, [file], "Save as", email.accountId,
+      { stem: answer.name, folderId: email.folderId, bodyEpoch: identity.bodyEpoch }).promise;
+  } catch (error) {
+    if (error?.message !== "cancelled") throw error;
+    return;
+  }
+  showStatus("Saved attachment copy.");
+}
+
 function renderAttachments(pane, email) {
   const key = JSON.stringify([email.accountId || "", email.id || ""]);
   let disclosure = attachmentDisclosures.get(pane);
@@ -11678,6 +11730,11 @@ function renderAttachments(pane, email) {
       actions.className = "attachment-actions";
       if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, preview));
       actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(save)));
+      if (pane === $("reader") && window.morrowAttachmentFilename) {
+        actions.appendChild(attachmentGhost("Save as…", "Save " + actionLabel + " under a different name",
+          () => attachmentAction(() => saveAttachmentAs(email, file, () => item.isConnected && pane.contains(item)
+            && state.email?.id === email.id && state.email?.accountId === email.accountId))));
+      }
       actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       if (pane === $("reader") && readerAttachmentSaveList) {
         actions.appendChild(attachmentGhost("Add to save list", "Add " + actionLabel + " to save list",
@@ -14139,6 +14196,13 @@ function appendReaderBodyActions(menu, email, body) {
   // Menu focus can change the selection. Save it while the body still owns it.
   const selection = window.morrowReplySelection;
   const text = selection?.read(body);
+  if (window.morrowReaderChecklist && readerChecklistEligible(email)) {
+    appendMenuAction(menu, "Add selection to private checklist", () => {
+      if (!currentMessage()) return showStatus("Reopen the message, then select the text again.", true);
+      if (!text || text.trim().length > 512) return showStatus("Select visible message text of 1–512 characters.", true);
+      return window.morrowReaderChecklist.add($("reader"), text);
+    });
+  }
   if (window.morrowReaderLocalTime) {
     const time = appendMenuAction(menu, "Show local time", () => guard(() => {
       const current = currentMessage();
@@ -14154,6 +14218,19 @@ function appendReaderBodyActions(menu, email, body) {
       if (!text || !current) return showStatus("Select text in this message and try again.", true);
       return openReaderCompose("reply", current, text);
     }));
+  }
+  if (!isReaderWindow() && !isLocalMail(email) && window.morrowReaderCalendarSelection) {
+    const connection = contextAccountProof(email.accountId);
+    const event = appendMenuAction(menu, "Prepare calendar event…", () => guard(() => {
+      const current = currentMessage();
+      if (!current || !text || text.length > window.morrowReaderCalendarSelection.MAX_TEXT
+          || !connection || contextAccountProof(email.accountId) !== connection) {
+        return showStatus("Select up to 512 characters of appointment text in this message and try again.", true);
+      }
+      openCalendarEditorFromSelection(current, text, () => !!currentMessage()
+        && contextAccountProof(email.accountId) === connection);
+    }));
+    event.setAttribute("aria-haspopup", "dialog");
   }
   const unavailable = "That local message link is unavailable.";
   appendMenuAction(menu, "Copy local link to this message", () => guard(async () => {
@@ -14741,7 +14818,7 @@ function readerContextTarget(event) {
 function onReaderContext(event) {
   if (!state.email || state.email.outbox) return;
   const target = readerContextTarget(event);
-  if (target?.closest?.(".sender-address, input, textarea, select, a")) return;
+  if (target?.closest?.(".sender-address, .reader-checklist, input, textarea, select, a")) return;
   const body = $("reader").querySelector(".body");
   const clickedBody = body?.contains(target) ? body : null;
   event.preventDefault();
@@ -19259,6 +19336,7 @@ async function openCompose(seed) {
     kind: fields.kind || "new",
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
+    attachmentReviewUnverified: !!(fields.draftId || fields.recoveredSnapshot || fields.botDraft || fields.partialReceipt || fields.htmlBody),
   };
   state.composeQuote = quoteStateFromSeed(fields);
   state.composeAttachments = composeAttachmentList(fields.attachments);
@@ -20027,6 +20105,42 @@ function paintComposePreviewLinks(body) {
   if (focused) review.firstElementChild.focus({ preventScroll: true });
 }
 
+function composeAttachmentReviewText() {
+  // Some loaded drafts already contain history without reliable quote markers.
+  if (state.composeMeta?.attachmentReviewUnverified) return "";
+  const editor = $("compose-editor");
+  if (composeEditorLive() && editor.innerHTML.length > 96000) return "";
+  if (!composeEditorLive() || blankComposeHtml(editor.innerHTML)) {
+    return splitComposeSignature($("compose-body").value, state.signatureText).message;
+  }
+  const copy = editor.cloneNode(true);
+  const ignored = "[data-compose-reply-quote], [data-compose-signature], blockquote, [type=cite], .gmail_quote, .yahoo_quoted, [hidden], [aria-hidden=true]";
+  for (const node of copy.querySelectorAll(ignored + ", [style]")) {
+    if (node.matches(ignored) || node.style.display === "none" || node.style.visibility === "hidden" || node.style.opacity === "0") {
+      node.replaceWith(document.createElement("br"));
+    }
+  }
+  try { return plainFromComposeHtml(sanitizeComposeHtml(copy.innerHTML)); }
+  catch { return ""; }
+}
+
+function paintComposeAttachmentReview(findings = []) {
+  const section = $("compose-preview-attachment-review");
+  const list = $("compose-preview-attachment-review-items");
+  if (!section || !list) return;
+  list.replaceChildren();
+  for (const finding of findings) {
+    const item = document.createElement("li");
+    const name = document.createElement("strong");
+    name.textContent = finding.filename;
+    const context = document.createElement("span");
+    context.textContent = finding.line;
+    item.append(name, context);
+    list.appendChild(item);
+  }
+  section.hidden = !findings.length;
+}
+
 function paintPreview(draft) {
   const schedule = draft && draft.kind === "schedule";
   const payload = draft.payload || draft;
@@ -20056,6 +20170,7 @@ function paintPreview(draft) {
     fileRow.hidden = !files.length;
     fileText.textContent = previewFilesText(files);
   }
+  paintComposeAttachmentReview(draft.attachmentReview);
   const body = $("compose-preview-body");
   body.replaceChildren();
   const content = appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
@@ -20070,12 +20185,13 @@ function openComposePreview(when) {
   const quote = state.composeQuote;
   if (quote && quote.inEditor) fields.body = plainFromComposeHtml(readComposeEditorHtml());
   const draft = previewDraft(fields, quote && !quote.inEditor && quote.text, when, state.composeAttachments);
-  previewDraftState = { ...draft, payload: JSON.parse(JSON.stringify(composePayload(composeAccount()))),
-    session: state.composeSession, snapshot: composeSnapshot() };
+  const payload = JSON.parse(JSON.stringify(composePayload(composeAccount())));
+  const attachmentReview = window.morrowComposeAttachmentReview?.missing(composeAttachmentReviewText(), payload.attachments) || [];
+  previewDraftState = { ...draft, payload, attachmentReview, session: state.composeSession, snapshot: composeSnapshot() };
   paintPreview(previewDraftState);
   openDialog("compose-preview");
-  const confirm = $("compose-preview-confirm");
-  if (confirm && typeof confirm.focus === "function") confirm.focus();
+  const focus = attachmentReview.length ? $("compose-preview-attachment-review") : $("compose-preview-confirm");
+  if (focus && typeof focus.focus === "function") focus.focus();
   return true;
 }
 
@@ -20107,6 +20223,7 @@ async function confirmComposePreview() {
   const draft = previewDraftState;
   if (!draft) return false;
   previewDraftState = null;
+  paintComposeAttachmentReview();
   window.morrowComposeBccRoster?.reset();
   await closeDialog("compose-preview");
   if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending || composeFilesPending()) {
@@ -20120,6 +20237,7 @@ async function confirmComposePreview() {
 
 function cancelComposePreview() {
   previewDraftState = null;
+  paintComposeAttachmentReview();
   resetComposePreviewLinks();
   window.morrowComposeBccRoster?.reset();
   closeDialog("compose-preview");
@@ -20455,6 +20573,8 @@ function shortcutCatalog(platform) {
     { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
     { group: "Compose", keys: chord("Enter"), action: "Send" },
     { group: "Compose", keys: chord("S"), action: "Save draft" },
+    { group: "Compose", keys: chord("F"), action: "Find text in the message body" },
+    { group: "Compose", keys: chord("H"), action: "Find and replace text in the message body" },
     { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Clears a message selection only on the Mail page when no overlay or text input owns Escape." },
     { group: "Window", keys: chord(","), action: "Settings" },
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
@@ -28071,6 +28191,8 @@ function checkedCalendarEvents(events) {
 let calendarDetailKey = "";
 let calendarEditingId = "";
 let calendarEditingIdentity = null;
+let calendarReaderDraft = null;
+const calendarSourceConnections = new WeakMap();
 let calendarTimedSnapshot = null;
 let calendarCreateAttempt = null;
 const calendarAuthFailures = new Set();
@@ -28539,6 +28661,64 @@ function syncAllDayInputs() {
   }
 }
 
+function readerCalendarDestination(accountId) {
+  const account = calendarAccount();
+  const payload = state.calendarPayload;
+  const connection = contextAccountProof(accountId);
+  if (!account || account.id !== accountId || payload?.accountId !== accountId
+      || payload.api !== true || calendarAuthFailures.has(accountId)
+      || !connection || calendarSourceConnections.get(payload) !== connection) return null;
+  const view = calendarView(payload);
+  return view.showForm ? { account, calendars: view.calendars } : null;
+}
+
+function clearCalendarReaderDraft() {
+  calendarReaderDraft = null;
+  const context = $("calendar-reader-source");
+  if (context) {
+    context.hidden = true;
+    $("calendar-reader-mailbox").textContent = "";
+    $("calendar-reader-excerpt").textContent = "";
+    $("calendar-reader-timing").textContent = "";
+  }
+}
+
+function openCalendarEditorFromSelection(email, text, current) {
+  const destination = readerCalendarDestination(email.accountId);
+  if (!destination) {
+    return showStatus("Open Calendar for this message’s mailbox and load its calendars, then return to Mail and try again.", true);
+  }
+  if (!current() || calendarWritePending || $("calendar-event-dialog")?.open) return;
+  fillCalendarPick(destination.calendars);
+  openCalendarEditor(null);
+  calendarReaderDraft = { accountId: email.accountId, current };
+  const parsed = window.morrowReaderCalendarSelection.parse(text);
+  let start = "", end = "";
+  if (parsed) {
+    const localStart = toDateTimeLocal(parsed.start);
+    const localEnd = toDateTimeLocal(parsed.end);
+    // datetime-local cannot represent which side of a clock change was chosen.
+    // Prove that the normal editor will submit the same explicit instants.
+    const roundTrip = calendarDraft({ accountId: email.accountId, calendarId: destination.calendars[0].id,
+      start: localStart, end: localEnd }, true);
+    if (!roundTrip.error && roundTrip.start === parsed.start && roundTrip.end === parsed.end) {
+      start = localStart;
+      end = localEnd;
+    }
+    $("calendar-event-title").value = parsed.title;
+    $("calendar-location").value = parsed.location;
+  }
+  $("calendar-start").value = start;
+  $("calendar-end").value = end;
+  $("calendar-reader-mailbox").textContent = destination.account.email || email.accountId;
+  $("calendar-reader-excerpt").textContent = text;
+  $("calendar-reader-timing").textContent = start && end
+    ? `Review the start and end in this device’s local time (${Intl.DateTimeFormat().resolvedOptions().timeZone}). The original date and offset are shown above.`
+    : "No unambiguous start and end could be prefilled. Enter and verify both times yourself.";
+  $("calendar-reader-source").hidden = false;
+  $("calendar-reader-source").focus();
+}
+
 function openCalendarEditor(event, dayStamp) {
   const account = calendarAccount();
   if (event?.id && state.calendarPayload?.accountId && state.calendarPayload.accountId !== account?.id) {
@@ -28546,6 +28726,7 @@ function openCalendarEditor(event, dayStamp) {
     return;
   }
   calendarEditorGeneration += 1;
+  clearCalendarReaderDraft();
   calendarTimedSnapshot = null;
   calendarCreateAttempt = null;
   const dialogTitle = $("calendar-dialog-title");
@@ -28845,10 +29026,16 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
         if (calendarPending.get(key) === pending) calendarPending.delete(key);
       });
       calendarPending.set(key, pending);
+      calendarSourceConnections.set(pending, contextAccountProof(account.id));
     }
-    const payload = await calendarPending.get(key);
+    const pending = calendarPending.get(key);
+    const payload = await pending;
     if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
-    if (payload?.api) calendarAuthFailures.delete(account.id);
+    if (payload?.api) {
+      calendarAuthFailures.delete(account.id);
+      const proof = calendarSourceConnections.get(pending);
+      if (proof && contextAccountProof(account.id) === proof) calendarSourceConnections.set(payload, proof);
+    }
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
@@ -28932,6 +29119,16 @@ async function submitCalendarEvent(event) {
   const editing = calendarEditingId;
   const identity = calendarEditingIdentity;
   const generation = calendarEditorGeneration;
+  if (calendarReaderDraft) {
+    const { accountId, current } = calendarReaderDraft;
+    const destination = readerCalendarDestination(accountId);
+    if (!current() || !destination || account?.id !== accountId) {
+      throw new Error("The source message or calendar mailbox changed. Cancel and prepare the event again.");
+    }
+    if (!destination.calendars.some(row => row.id === $("calendar-pick")?.value)) {
+      throw new Error("Choose a calendar from the source mailbox.");
+    }
+  }
   if (editing && (!identity || identity.id !== editing || identity.accountId !== account?.id)) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
@@ -29017,6 +29214,7 @@ async function submitCalendarEvent(event) {
   }
   calendarEditingId = "";
   calendarEditingIdentity = null;
+  clearCalendarReaderDraft();
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
   await loadCalendar({ fresh: true });
@@ -30603,6 +30801,23 @@ function wire() {
   });
   wireRecipientSuggest();
   wireComposeFormat();
+  if (isComposeWindow()) window.morrowComposeTranslation?.mount({
+    editor: $("compose-editor"), invoke: params => api.invoke("compose:translateSelection", params), sync: syncComposePlainFromEditor,
+    notify: message => setComposeStatus(message, true),
+    owner: () => {
+      const account = composeAccount(), meta = state.composeMeta;
+      if (!$("compose").open || !$("compose-editor").isContentEditable || !account || !meta || meta.attachmentReviewUnverified
+          || state.composeInitializing || state.composePending || state.composeQueued || state.draftWrite?.pending || state.composeIdentityError) return "";
+      return JSON.stringify([state.composeSession, state.draftId, state.draftRevision, state.composeInputVersions, account.id,
+        account.bodyEpoch, meta.fromAddress, $("compose-to").value, $("compose-cc").value, $("compose-bcc").value, $("compose-subject").value]);
+    },
+  });
+  window.morrowComposeFind?.mount({
+    dialog: $("compose"), editor: $("compose-editor"),
+    available: () => topOpenDialog()?.id === "compose" && !state.composeInitializing
+      && !state.composePending && !state.draftWrite?.pending && $("compose-editor").isContentEditable,
+    sync: syncComposePlainFromEditor,
+  });
   wireComposeCalendarSlots();
   wireComposeInboxPicker();
   $("scheduled-more")?.addEventListener("click", () => guard(() => loadScheduled({ more: true })));
@@ -30755,12 +30970,14 @@ function wire() {
   $("calendar-cancel").addEventListener("click", () => {
     calendarEditingId = "";
     calendarEditingIdentity = null;
+    clearCalendarReaderDraft();
     closeDialog("calendar-event-dialog");
   });
   $("calendar-event-dialog").addEventListener("close", () => {
     if ($("calendar-event-dialog").open) return; // ignore a queued close from a previous editor
     calendarEditingId = "";
     calendarEditingIdentity = null;
+    clearCalendarReaderDraft();
     calendarEditorGeneration += 1;
   });
   $("calendar-account").addEventListener("change", () => {
@@ -31333,6 +31550,7 @@ function wire() {
   $("compose-preview").addEventListener("close", (event) => {
     if (event.currentTarget.open) return;
     previewDraftState = null;
+    paintComposeAttachmentReview();
     resetComposePreviewLinks();
     window.morrowComposeBccRoster?.reset();
   });

@@ -42,3 +42,14 @@ The Features tab and preview help are exercised against the rendered catalog.
 Headless Chromium checks cover blocked external requests, keyboard scrolling,
 light/dark themes and narrow widths. Native Electron, real providers, attachment
 files and recipient-client rendering require separate validation.
+
+Compose attachment review is advisory and local. It flags only supported,
+explicit filenames in standalone present-tense attachment declarations in
+the authored draft. It compares frozen attachment names as shown in Files
+using case-sensitive, Unicode-normalized equality, never reads attachment
+bytes, and makes no AI, provider, or IPC calls. It omits marked quotes and
+signatures, stops at recognizable plain-text history boundaries, and skips
+imported or resumed drafts when authored text cannot be reliably separated
+from old body text. No warning is not a guarantee. The review never alters
+the body, attachments, send authorization or scheduling. Findings are cleared
+when the preview closes.

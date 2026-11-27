@@ -85,6 +85,32 @@ async function run() {
     assert.equal(await page.evaluate(() => JSON.stringify(confirmed[0])), frozen);
     checks.push("native Cancel and Confirm retain change detection and frozen payload");
     await page.evaluate(() => {
+      writeComposeBody("", '<p>Attached: revised.pdf.</p><blockquote>Attached: old.pdf.</blockquote>');
+      state.composeQuote = null;
+      openComposePreview(null);
+    });
+    const attachmentReview = page.getByRole("region", { name: "Check for missing attachments" });
+    assert.equal(await attachmentReview.evaluate(node => document.activeElement === node), true);
+    assert.match(await attachmentReview.innerText(), /revised.pdf/);
+    assert.doesNotMatch(await attachmentReview.innerText(), /old.pdf/);
+    assert.equal(await page.locator("#compose-preview-confirm").isEnabled(), true);
+    await page.setViewportSize({ width: 320, height: 620 });
+    assert.equal(await attachmentReview.evaluate(node => node.scrollWidth <= node.clientWidth), true);
+    await page.locator("#compose-preview-cancel").click();
+    assert.equal(await attachmentReview.count(), 0);
+    assert.equal(await page.evaluate(() => confirmed.length), 1);
+    await page.setViewportSize({ width: 1400, height: 960 });
+    checks.push("local attachment advisory focuses the finding, excludes quotes and keeps confirmation available");
+    if (process.argv.includes("--attachment-review-only")) {
+      await page.evaluate(() => { showFeatures(); });
+      assert.match(await page.locator("#features-catalog").innerText(), /Check for missing attachments before sending/);
+      assert.deepEqual(await page.evaluate(() => ipcCalls), []);
+      assert.deepEqual(external, []);
+      assert.deepEqual(errors, []);
+      console.log("send-preview-attachment-review-browser-ok");
+      return;
+    }
+    await page.evaluate(() => {
       writeComposeBody("First line\nLiteral <b>text</b> & symbols"); state.composeQuote = null; openComposePreview(null);
     });
     assert.equal(await page.locator("#compose-preview-body .body").innerText(), "First line\nLiteral <b>text</b> & symbols");
@@ -126,6 +152,7 @@ async function run() {
     assert.equal(await page.getByRole("tab", {name:"Features",exact:true}).getAttribute("aria-selected"), "true");
     assert.match(await page.locator("#features-catalog").innerText(), /Preview Send and scheduled previews show safe HTML/);
     assert.match(await page.locator("#features-catalog").innerText(), /Attachment downloads are unavailable in Outbox/);
+    assert.match(await page.locator("#features-catalog").innerText(), /Check for missing attachments before sending/);
     await page.screenshot({path:path.join(output,"features.png")});
     checks.push("actual Features tab describes implemented behavior");
     await page.waitForTimeout(100);

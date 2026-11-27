@@ -64,3 +64,15 @@ before writing. Confirmation consumes the reviewed folder and filenames once.
 Exclusive file creation preserves existing files that appear after review.
 The results identify each saved file, unavailable source, and late collision.
 Cancelling skips remaining work. Files already written stay in the destination.
+
+Single-file **Save as…** in the message Reader is a distinct manual path. It
+reviews the original filename and edits the basename without changing the
+extension, then opens the existing system save dialog. The proposed name
+is not a destination path. The main-frame Reader, account connection, message,
+folder, and exact same-named attachment part are checked using the existing
+attachment source capture. The actual native picker result must still have a
+portable basename with the original extension, and the transfer retains the
+existing cancellation and source checks. The output uses an exclusive create,
+so an existing file is never replaced, even if the name is taken during the
+operation. Canceling before the picker or within it does not read bytes. Source
+names and metadata, plain Save/Open, ZIP, batch saving and Compose are unchanged.

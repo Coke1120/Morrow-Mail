@@ -1,0 +1,6 @@
+[
+  "reader-private-checklist",
+  "Private message checklist",
+  "Mail",
+  "In the Reader, select visible text in a downloaded message from a connected mailbox. Right-click the body or press Shift+F10, then choose Add selection to private checklist. Check, uncheck or remove items beside the original message. The selected excerpt stays usable even if the body display changes; no text is highlighted in the message itself. Up to 32 selections of 512 characters are kept on this device, for this message in this account. Local Folders, drafts, the Compose reference pane, and Preview Send do not show these marks. Nothing is written to the message, sent to the mailbox or submitted to AI."
+]
