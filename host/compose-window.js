@@ -1,5 +1,6 @@
 // Compose BrowserWindows. Helpers stay free of Electron so plain Node checks can load them.
-const CHANNELS = ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"];
+const TRANSLATE_SELECTION = "compose:translateSelection";
+const CHANNELS = ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle", TRANSLATE_SELECTION];
 const MAX_SEED_CHARS = 8000000;
 const resumedDraftOwners = new WeakMap();
 
@@ -124,6 +125,14 @@ function createComposeHost(options) {
     });
     require("./compose-editing-menu").installComposeEditingMenu(win, { Menu, htmlFile: opts.htmlFile });
     const contents = win.webContents;
+    if (process.platform === "darwin") {
+      // The native app Hide command uses Cmd+H. Leave its menu item and
+      // every other window untouched; pass only this chord to Compose.
+      contents.on("before-input-event", (_event, input) => {
+        contents.setIgnoreMenuShortcuts(input.type === "keyDown" && input.meta
+          && !input.control && !input.alt && !input.shift && String(input.key).toLowerCase() === "h");
+      });
+    }
     const id = contents.id;
     const record = { win, seed: clean, allowClose: false, closeRequested: false };
     records.set(id, record);
@@ -143,6 +152,10 @@ function createComposeHost(options) {
       win.close();
     };
     contents.once("destroyed", clearResumedDraftOwner);
+    contents.once("destroyed", () => opts.selectionTranslation?.dispose(contents));
+    contents.on("did-start-navigation", (_event, _url, _sameDocument, mainFrame) => {
+      if (mainFrame !== false) opts.selectionTranslation?.dispose(contents);
+    });
     win.on("closed", () => {
       clearResumedDraftOwner();
       records.delete(id);
@@ -199,6 +212,18 @@ function createComposeHost(options) {
       const record = records.get(event.sender.id);
       if (!record) return null;
       return JSON.parse(JSON.stringify(record.seed));
+    });
+    ipcMain.handle(TRANSLATE_SELECTION, (event, params) => {
+      const sender = event.sender, frame = event.senderFrame, record = records.get(sender.id);
+      const ownsFrame = () => record?.win.webContents === sender && !record.win.isDestroyed()
+        && frame && frame === sender.mainFrame && !frame.detached && frame.url === sender.getURL()
+        && require("./compose-editing-menu").composePage(frame.url, opts.htmlFile);
+      if (!opts.selectionTranslation || !ownsFrame()) return { ok: false, message: "Open a first-party Compose window to translate a selection." };
+      return opts.selectionTranslation.answer(sender, params, async (token, phase) => {
+        if (!ownsFrame()) return false;
+        const current = await frame.executeJavaScript(`window.morrowComposeTranslation?.current(${JSON.stringify(token)}, ${JSON.stringify(phase)}) === true`);
+        return current === true && ownsFrame();
+      });
     });
     ipcMain.handle("compose:setTitle", (event, text) => {
       const record = records.get(event.sender.id);

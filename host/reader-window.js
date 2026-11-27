@@ -324,15 +324,27 @@ function createReaderHost(options) {
     return { success: false, error: { code: "message-link-unavailable", message: LINK_UNAVAILABLE } };
   }
 
-  function copyLocalLink(event, params) {
+  function privateReaderSource(event, params) {
     const record = records.get(event.sender.id);
     const detached = record && event.senderFrame === record.win.webContents.mainFrame && receiptSource(record.win);
     const current = !record && opts.isShellFrame?.(event) && shellOpen?.sender === event.sender &&
       shellOpen.frame === event.senderFrame ? shellOpen.email : null;
     const source = detached || (current && { accountId: current.accountId, messageId: current.id, bodyEpoch: current.bodyEpoch });
-    if (!source || source.messageId !== params?.messageId || source.accountId !== params?.accountId ||
-        source.bodyEpoch !== params?.bodyEpoch) return { ok: false, message: LINK_UNAVAILABLE };
-    return opts.copyLocalLink?.(source) || { ok: false, message: LINK_UNAVAILABLE };
+    return source && source.messageId === params?.messageId && source.accountId === params?.accountId &&
+      source.bodyEpoch === params?.bodyEpoch ? source : null;
+  }
+
+  function copyLocalLink(event, params) {
+    const source = privateReaderSource(event, params);
+    return (source && opts.copyLocalLink?.(source)) || { ok: false, message: LINK_UNAVAILABLE };
+  }
+
+  function privateChecklist(event, params) {
+    const source = privateReaderSource(event, params);
+    const unavailable = "Reopen the original message to use its private checklist.";
+    if (!source || !opts.privateChecklist) return { ok: false, message: unavailable };
+    try { return { ok: true, items: opts.privateChecklist(source, params) }; }
+    catch { return { ok: false, message: "The private checklist could not be read or saved. Remove an item if the checklist is full." }; }
   }
 
   function receiptDocumentCurrent(record, document) {
@@ -477,7 +489,7 @@ function createReaderHost(options) {
     return { open: open, records: records };
   }
 
-  return { open, register, records, receiptRecord, receiptSource, observeOpen, readLink, copyLocalLink, clearShellLocalLink };
+  return { open, register, records, receiptRecord, receiptSource, observeOpen, readLink, copyLocalLink, clearShellLocalLink, privateChecklist };
 }
 
 module.exports = {

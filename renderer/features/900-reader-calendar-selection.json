@@ -1,0 +1,6 @@
+{
+  "id": "reader-calendar-selection",
+  "title": "Prepare a calendar event from selected mail",
+  "category": "Calendar",
+  "blurb": "In the main Mail reading pane, select appointment text and right-click Prepare calendar event… (or open the context menu with Shift+F10). First load Calendar for that same mailbox. A complete date, start and end, and explicit UTC offset can prefill the editable Add event form; unclear times stay blank. The excerpt is shown locally for review, not saved in the event. Choose the calendar and review the device-local dates and times before adding the event. No AI, guests, or calendar requests are used to prepare it. Cancel does not save. Separate Reader windows are not supported."
+}

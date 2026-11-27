@@ -3027,6 +3027,16 @@ button.agenda-item {
 .calendar-detail-line .is-empty { color: var(--muted); }
 
 #calendar-event-dialog { width: min(480px, calc(100vw - 24px)); }
+#calendar-reader-source {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}
+#calendar-reader-excerpt { margin: 6px 0; }
+#calendar-reader-timing { margin: 0 0 4px; }
+
 
 #calendar-event-dialog #calendar-create input:not([type="checkbox"]),
 #calendar-event-dialog #calendar-create select,
@@ -5013,6 +5023,18 @@ dialog h2 {
 #compose-preview-body > .body { padding: 0; }
 #compose-preview-body .preview-remote-note { margin: 0 0 8px; }
 
+#compose-preview-attachment-review {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+#compose-preview-attachment-review h3 { margin: 0 0 4px; }
+#compose-preview-attachment-review-items { margin: 6px 0 0; padding-inline-start: 22px; }
+#compose-preview-attachment-review-items li + li { margin-top: 4px; }
+#compose-preview-attachment-review-items span { display: block; color: var(--muted); }
+
 #compose-preview-links,
 #compose-preview-bcc-roster {
   margin-top: 8px;
@@ -6649,3 +6671,31 @@ html[data-window="translate"] #reader .translate-column h2 {
 .agent-decision-status { font-weight: 650; }
 .agent-decision-card .row { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-batch-receipts ul { max-height: 15rem; overflow: auto; padding-inline-start: 23px; }
+
+/* Compose body find/replace is local to the editable draft. */
+#compose-find-panel { margin-top: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.compose-find-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.compose-find-row[hidden] { display: none; }
+.compose-find-row label { min-width: 82px; }
+#compose .compose-find-row input { flex: 1 1 140px; width: auto; min-width: 100px; }
+#compose-find-status { margin: 0; }
+::highlight(morrow-compose-find) { background-color: Mark; color: MarkText; }
+
+/* Private Reader marks are outside the email body and all outgoing renderers. */
+.reader-checklist { padding: 10px 12px; margin: 12px 0; border: 1px solid var(--line); border-radius: 8px; }
+.reader-checklist h3 { margin: 0 0 5px; font-size: 14px; }
+.reader-checklist ul { margin: 0; padding: 0; list-style: none; }
+.reader-checklist li { display: flex; align-items: start; gap: 8px; margin-bottom: 4px; }
+.reader-checklist label { flex: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.reader-checklist-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.reader-checklist .hint { margin: 4px 0 0; }
+
+#compose-translation { width: min(830px, calc(100vw - 24px)); }
+.compose-translation-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 10px 0; }
+.compose-translation-columns label { display: block; margin: 0 0 5px; }
+#compose-translation :is(select, textarea) { width: 100%; }
+#compose-translation-source { max-height: 220px; overflow: auto; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#compose-translation-output { padding: 8px; }
+#compose-translation mark { background-color: Mark; color: MarkText; }
+#compose-translation-destination { overflow-wrap: anywhere; }
+@media (max-width: 560px) { .compose-translation-columns { grid-template-columns: minmax(0, 1fr); } }

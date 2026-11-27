@@ -7,6 +7,13 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "1.0.2": [
+      "Timeline shows which account it uses and avoids sending exact repeated reply history again when that saves input or requests.",
+      "In Compose, find and replace draft text, or right-click selected text you wrote to review and edit a translation before applying it.",
+      "From the reader, create a private checklist or open an editable calendar event draft. Nothing is sent or saved to the calendar automatically.",
+      "Save a received attachment under a name you choose. Preview Send points out named attachments that are missing, and PDF previews use a roomier A4-style window.",
+      "In the reader, use right-click to quote selected text, copy a local message link, or check a selected time in your local timezone.",
+    ],
     "1.0.1": [
       "On Windows, the main window can no longer be resized down to just its title bar through normal window controls.",
     ],

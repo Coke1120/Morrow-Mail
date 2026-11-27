@@ -26,7 +26,7 @@ function captureTarget(sequence, keyboard, x, y) {
   const value = { sequence, node, context, text: node.isContentEditable ? node.innerHTML : node.value };
   globalThis[key] = value;
   value.timer = setTimeout(() => { if (globalThis[key] === value) delete globalThis[key]; }, 60000);
-  return true;
+  return node.id === "compose-editor" && window.morrowComposeTranslation?.capture(sequence) ? "translation" : true;
 }
 function targetCurrent(sequence) {
   const key = Symbol.for('morrow.compose.editing-target'), value = globalThis[key], node = value?.node;
@@ -58,7 +58,7 @@ function installComposeEditingMenu(win, { Menu, htmlFile }) {
       const run = work => async () => {
         try {
           if (!alive() || !await contents.executeJavaScript(`(${targetCurrent})(${owner})`) || !alive()) return;
-          work(); serial++;
+          await work(); serial++;
         } catch { /* A closed or changed editor cannot receive a stale correction. */ }
       };
       const items = [];
@@ -67,6 +67,11 @@ function installComposeEditingMenu(win, { Menu, htmlFile }) {
         if (words.length) for (const word of words) items.push({ label: word.replace(/&/g, '&&'), click: run(() => contents.replaceMisspelling(word)) });
         else items.push({ label: 'No spelling suggestions', enabled: false });
         items.push({ type: 'separator' });
+      }
+      if (captured === "translation") {
+        items.push({ label: "Translate selection…", click: run(() =>
+          contents.executeJavaScript(`window.morrowComposeTranslation?.open(${owner})`)) });
+        items.push({ type: "separator" });
       }
       const editing = [
         ['Undo', 'undo', 'canUndo', 'CmdOrCtrl+Z'], ['Redo', 'redo', 'canRedo', 'CmdOrCtrl+Shift+Z'],
