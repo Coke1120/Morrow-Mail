@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 const { renderer } = require("./check-ux-workflows");
+const attachmentReview = require("../renderer/compose-attachment-review");
 const index = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8");
 const bccRosterScript = fs.readFileSync(require.resolve("../renderer/compose-bcc-roster.js"), "utf8");
 const raster = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lvkAAAAASUVORK5CYII=";
@@ -17,6 +18,7 @@ function fixture(t) {
     dialog.close = () => { dialog.open = false; };
   }
   dom.window.morrow = { invoke() { throw new Error("Real IPC forbidden"); }, on() { return () => {}; } };
+  dom.window.morrowComposeAttachmentReview = attachmentReview;
   dom.window.morrowFeaturesCatalog = require("../renderer/features-catalog");
   const ui = renderer({ window: dom.window, document });
   ui.run(`
@@ -491,4 +493,72 @@ test("Features and preview help disclose formatting, remote blocking and attachm
   assert.ok(scripts.indexOf("./compose-bcc-roster.js") < scripts.indexOf("./app.js"));
   assert.match(f.get("compose-preview-links").textContent, /highlight its location in the message without opening it/);
   assert.match(f.get("compose-preview").textContent, /Remote images stay blocked/);
+});
+
+test("attachment check is exact, bounded and conservative about declarations", () => {
+  const names = (text, files = []) => attachmentReview.missing(text, files.map(filename => ({ filename }))).map(row => row.filename);
+  assert.deepEqual(names('Attached are "July report.pdf", invoice.csv, and “Café notes.txt”.\n支出明細.xlsx is attached.\nAttached: invoice.csv.',
+    ["Café notes.txt", "支出明細.xlsx", "Invoice.csv"]), ["July report.pdf", "invoice.csv"]);
+  assert.deepEqual(names("Attached: Invoice.csv.", ["invoice.csv"]), ["Invoice.csv"]);
+  assert.deepEqual(names("I’ve attached July.pdf.\nPlease find attached data.csv\nnotes.txt is attached."), ["July.pdf", "data.csv", "notes.txt"]);
+  assert.deepEqual(names(String.raw`I will attach future.pdf.
+Attached is maybe.pdf if approved.
+Attached are data.csv and the photos I will send later.
+Attached is the invoice.
+Attached: old report.pdf
+Please attach requested.pdf.
+Please find attached https://example.test/linked.pdf.
+Attached: /path/document.pdf.
+Attached: document.pdf!
+old.pdf is not attached.
+On Tuesday, Ada wrote:
+Attached: previous.pdf`), []);
+  assert.deepEqual(names("> quoted\nAttached: also-quoted.pdf."), []);
+  assert.deepEqual(names("Attached: ignored.pdf\n" + "x".repeat(32001)), []);
+  assert.deepEqual(names(Array.from({length: 15}, (_, i) => `Attached: example-${i}.zip`).join("\n")).length, 8);
+});
+
+test("attachment warning uses the frozen authored body and remains advisory through confirmation", async t => {
+  const f = fixture(t);
+  f.run("wire()");
+  f.get("compose-editor").innerHTML = '<p>Attached are <strong>Handoff-final.csv</strong> and guide.pdf.</p>' +
+    '<div data-compose-reply-quote><p>Attached: original.pdf.</p></div><blockquote>Attached: pasted.pdf.</blockquote>' +
+    '<div data-compose-signature>Attached: signature.pdf.</div><p hidden>Attached: invisible.pdf.</p><p style="visibility:hidden">Attached: invisible2.pdf.</p>' +
+    '<p>I will attach photos.zip next week.</p>';
+  f.get("compose-body").value = "Attached: stale.pdf.";
+  f.run(`state.composeAttachments = [{id:'f',storageUrl:'local:f', filename:'guide.pdf',size:12}];
+    state.composeQuote = {text:'Attached: history.pdf.'}`);
+  assert.equal(f.run("openComposePreview(null)"), true);
+  const section = f.get("compose-preview-attachment-review");
+  assert.equal(section.hidden, false);
+  assert.equal(section.textContent.includes("Attached are Handoff-final.csv and guide.pdf."), true);
+  const list = f.get("compose-preview-attachment-review-items");
+  assert.deepEqual([...list.querySelectorAll("strong")].map(node => node.textContent), ["Handoff-final.csv"]);
+  assert.match(f.get("compose-preview-files").textContent, /guide.pdf/);
+  const payload = f.run("JSON.stringify(previewDraftState.payload)");
+  f.run("paintPreview(previewDraftState)");
+  assert.deepEqual([...list.querySelectorAll("strong")].map(node => node.textContent), ["Handoff-final.csv"]);
+  assert.equal(f.get("compose-preview-confirm").disabled, false);
+  assert.equal(await f.run("confirmComposePreview()"), true);
+  assert.equal(f.run("JSON.stringify(confirmed[0].payload)"), payload);
+  assert.equal(section.hidden, true);
+  assert.equal(list.children.length, 0);
+  assert.equal(f.run("calls.length"), 0);
+  f.get("compose-editor").innerHTML = '<p>Attached: next.pdf</p>';
+  const scheduled = f.run("openComposePreview(new Date(Date.now() + 24*3600*1000))");
+  assert.equal(scheduled, true);
+  assert.equal(f.get("compose-preview-title").textContent, "Preview scheduled send");
+  assert.match(list.textContent, /next.pdf/);
+  f.get("compose-editor").innerHTML = '<p>Attached: edited.pdf</p>';
+  f.run("paintPreview(previewDraftState)");
+  assert.match(list.textContent, /next.pdf/);
+  assert.doesNotMatch(list.textContent, /edited.pdf/);
+  assert.equal(await f.run("confirmComposePreview()"), false);
+  f.run("openComposePreview(null)");
+  assert.match(list.textContent, /edited.pdf/);
+  f.run("cancelComposePreview()");
+  assert.equal(section.hidden, true);
+  f.run("state.composeMeta.attachmentReviewUnverified = true; openComposePreview(null)");
+  assert.equal(section.hidden, true);
+  assert.equal(f.run("confirmed.length"), 1);
 });

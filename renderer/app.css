@@ -5013,6 +5013,18 @@ dialog h2 {
 #compose-preview-body > .body { padding: 0; }
 #compose-preview-body .preview-remote-note { margin: 0 0 8px; }
 
+#compose-preview-attachment-review {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+#compose-preview-attachment-review h3 { margin: 0 0 4px; }
+#compose-preview-attachment-review-items { margin: 6px 0 0; padding-inline-start: 22px; }
+#compose-preview-attachment-review-items li + li { margin-top: 4px; }
+#compose-preview-attachment-review-items span { display: block; color: var(--muted); }
+
 #compose-preview-links,
 #compose-preview-bcc-roster {
   margin-top: 8px;

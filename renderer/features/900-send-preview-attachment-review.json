@@ -1,0 +1,6 @@
+{
+  "id": "send-preview-attachment-review",
+  "title": "Check for missing attachments before sending",
+  "category": "Mail",
+  "blurb": "Preview Send and scheduled send previews flag explicit filenames promised as attached but missing from Files. The local check recognizes standalone English declarations such as “Attached: report.pdf” or “Please find attached copies.pdf”. It skips ambiguous, conditional or later promises, marked quotes and signatures, and saved or imported drafts with uncertain authorship. It does not inspect file contents, use AI, change the draft, or block confirmation. No warning does not mean the files are correct. Cancel to edit or confirm to continue."
+}

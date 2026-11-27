@@ -2138,6 +2138,11 @@
           <div class="preview-row"><dt>Subject</dt><dd id="compose-preview-subject"></dd></div>
           <div class="preview-row" id="compose-preview-files-row" hidden><dt>Files</dt><dd id="compose-preview-files"></dd></div>
         </dl>
+        <section id="compose-preview-attachment-review" aria-labelledby="compose-preview-attachment-review-title" tabindex="-1" hidden>
+          <h3 id="compose-preview-attachment-review-title">Check for missing attachments</h3>
+          <p class="hint">These exact filenames are mentioned as attached but are not in Files. Cancel to edit or continue if the file list is intentional.</p>
+          <ul id="compose-preview-attachment-review-items"></ul>
+        </section>
         <div id="compose-preview-body" role="region" aria-label="Message preview" tabindex="0"></div>
         <details id="compose-preview-links" hidden>
           <summary>Review links <span id="compose-preview-link-count"></span></summary>
@@ -2218,6 +2223,7 @@
     <script src="./reply-selection.js"></script>
     <script src="./reader-local-time.js"></script>
     <script src="./compose-bcc-roster.js"></script>
+    <script src="./compose-attachment-review.js"></script>
     <script src="./sent-followup.js"></script>
     <script src="./app.js"></script>
   </body>
