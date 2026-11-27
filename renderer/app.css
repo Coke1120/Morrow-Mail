@@ -5115,6 +5115,12 @@ dialog h2 {
   max-height: calc(100vh - 32px);
 }
 
+/* A4 portrait at CSS reference scale, plus the toolbar, padding and scrollbar. */
+#attachment-preview:has(#attachment-preview-stage.is-pdf) {
+  width: min(calc(210mm + 84px), calc(100vw - 24px));
+  height: min(calc(297mm + 136px), calc(100vh - 32px));
+}
+
 #attachment-preview .dialog-body {
   display: flex;
   flex-direction: column;
