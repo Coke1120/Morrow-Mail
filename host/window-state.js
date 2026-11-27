@@ -2,6 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
 
+const MIN_WIDTH = 640;
+const MIN_HEIGHT = 480;
+
 const ZOOM_MIN = -8;
 const ZOOM_MAX = 9;
 
@@ -47,8 +50,8 @@ function sanitize(parsed) {
   out.zoomLevel = clampZoom(parsed.zoomLevel);
   out.maximized = parsed.maximized === true;
   out.fullscreen = parsed.fullscreen === true;
-  out.width = dimension(parsed.width, 640, 16000);
-  out.height = dimension(parsed.height, 480, 16000);
+  out.width = dimension(parsed.width, MIN_WIDTH, 16000);
+  out.height = dimension(parsed.height, MIN_HEIGHT, 16000);
   out.x = coordinate(parsed.x);
   out.y = coordinate(parsed.y);
   return out;
@@ -116,7 +119,15 @@ function place(saved, displays, fallback) {
   };
 }
 
+// Keep Windows native resize guards consistent with restored dimensions, while
+// honoring a smaller work area already fitted by place().
+function shellMinimumSize(bounds, platform) {
+  if (platform !== "win32") return {};
+  return { minWidth: Math.min(MIN_WIDTH, bounds.width), minHeight: Math.min(MIN_HEIGHT, bounds.height) };
+}
+
 module.exports = {
+  shellMinimumSize,
   clampZoom,
   read,
   update,

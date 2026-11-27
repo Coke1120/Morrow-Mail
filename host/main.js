@@ -669,6 +669,7 @@ async function createWindow(preloadFile, mode) {
   });
   const winOpts = {
     ...placed.bounds,
+    ...windowState.shellMinimumSize(placed.bounds, process.platform),
     title: "Morrow Mail",
     icon: APP_ICON,
     backgroundColor: external ? "#193c34" : "#e7f0e4",
