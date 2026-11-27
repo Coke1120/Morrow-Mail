@@ -4053,6 +4053,15 @@ button.message.unread .from { font-weight: 700; }
   min-width: 0;
 }
 
+.mail-attachment-prefix {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  color: var(--ink-mid);
+}
+
+.mail-attachment-prefix > svg { width: 14px; height: 14px; }
+
 button.message .subject {
   flex: 1 1 auto;
   min-width: 0;
@@ -4423,6 +4432,14 @@ button.attachment-name:hover { text-decoration: underline; }
 }
 
 .reader-actions .icon-btn svg { display: block; flex: none; }
+
+.reader-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+}
 
 .reader-menus {
   display: flex;
@@ -6058,20 +6075,25 @@ textarea { min-height: 140px; resize: vertical; }
 .signature-head #signature-empty { margin: 0; font-size: 13px; flex: 1 1 auto; }
 
 #scheduled-dialog #scheduled { max-height: none; overflow: visible; padding-left: 0; }
-.sidebar-mail-actions { display: flex; gap: 6px; margin: 4px 8px; }
+/* Keep labels with their controls: wrap whole buttons before wrapping text. */
+.sidebar-mail-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 8px; }
 .sidebar-mail-actions > button.ghost {
-  flex: 1 1 0;
+  flex: 1 0 max-content;
   min-width: 0;
+  max-width: 100%;
+  justify-content: center;
   min-height: 36px;
   height: auto;
   padding: 6px;
   font-size: 12px;
   white-space: normal;
+  overflow-wrap: anywhere;
   color: #fff;
   border-color: rgba(255,255,255,.3);
   background: transparent;
 }
 .sidebar-mail-actions > button.ghost svg { flex: 0 0 auto; }
+.sidebar-mail-action-label { min-width: 0; }
 .sidebar-mail-actions > button.ghost:hover { background: rgba(255,255,255,.12); }
 .sidebar-mail-actions > button:focus-visible { outline-color: #b9d5ad; }
 #mail-ooo-dialog .mail-ooo { margin: 12px 0 0; color: var(--ink); }

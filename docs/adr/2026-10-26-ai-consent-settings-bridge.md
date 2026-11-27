@@ -35,3 +35,23 @@ unknown-channel rejection. It is part of `scripts/check-boot-path.js`. Existing
 HTML-parser DOM fixtures run in CI; a dependency-free DOM supports local VM
 checks. No provider inference, OAuth grant or real configuration/consent write is
 part of these tests.
+
+## Settings simplification (#665)
+
+The consent form described above is historical. Settings → AI and AI Setup
+now show a saved connection and one Automatic processing preference. Explicit
+actions use the saved ready connection without a separate acknowledgement.
+Each host operation takes a stamp for that connection. Timeline and Case bind
+the stamp to the reviewed source and require Generate. Mail, account and
+source checks stay at their existing entry points.
+
+Automatic processing starts off. Choosing Run background AI binds the
+existing automatic activities to the current saved provider, endpoint, key
+or ChatGPT registration, and model. Verified legacy background choices for
+the same connection still apply if both the core and background scope
+versions match. Historic manual grants and disabled, damaged or mismatched
+records grant no automatic access. A changed connection or turning automatic
+processing off invalidates in-flight requests. The app never enables
+background processing when saving or signing in. The two first-party
+preloads retain the allowed status, grant and revoke channels. Grant accepts
+the current saved-connection stamp and the automatic-processing choice.

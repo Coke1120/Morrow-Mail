@@ -506,9 +506,10 @@ async function manageLocalFolder(action, folder) {
   showStatus(action === "delete" ? "Empty local folder deleted." : "Local folder saved.");
 }
 
-function openLocalMessageMenu(messages, x, y, origin, selection) {
+function openLocalMessageMenu(messages, x, y, origin, selection, readerBody) {
   messages = messages.map(row => ({ ...row }));
   const menu = ensureOrganizeMenu(); menu.replaceChildren(); menu.setAttribute("aria-label", "Local messages");
+  if (readerBody) appendReaderBodyActions(menu, messages[0], readerBody);
   appendMenuAction(menu, "Move to folder…", () => openLocalTransfer(messages, "move"));
   appendMenuAction(menu, "Move / Copy to other mailbox…", () => openLocalTransfer(messages, "copy"));
   appendMenuAction(menu, "Labels…", null, "Local Folders uses folders, not Gmail labels.");
@@ -4576,6 +4577,7 @@ function outboxEmails(rows) {
     draftRevision: row.draftRevision,
     fromAddress: row.fromAddress,
     fromDisplayName: row.fromDisplayName,
+    hasAttachments: row.hasAttachments,
     attachments: row.attachments,
     sourceMessageId: row.sourceMessageId, kind: row.kind,
     inReplyTo: row.inReplyTo,
@@ -8727,6 +8729,17 @@ function mailReplyForwardCell(email) {
   return cell;
 }
 
+function mailAttachmentPrefix() {
+  const prefix = document.createElement("span");
+  prefix.className = "mail-attachment-prefix";
+  prefix.title = "Has attachments";
+  const label = document.createElement("span");
+  label.className = "sr";
+  label.textContent = "Has attachments.";
+  prefix.append(attachmentIcon("paperclip"), label);
+  return prefix;
+}
+
 // Only the mail-list Date column uses relative calendar-day labels. Readers,
 // Time, Outbox and stored/sort timestamps keep their existing formats.
 function mailListDateText(date, now = new Date()) {
@@ -8852,7 +8865,9 @@ function messageRow(email) {
   recipient.className = "recipient";
   recipient.textContent = mailRecipientText(email) || "(no recipient)";
   recipient.title = recipient.textContent;
-  subjectLine.append(mailReplyForwardCell(email), subject);
+  subjectLine.append(mailReplyForwardCell(email));
+  if (email.hasAttachments === true) subjectLine.append(mailAttachmentPrefix());
+  subjectLine.append(subject);
   const snippet = document.createElement("span");
   snippet.className = "snippet";
   const mailbox = state.accounts.find((row) => row.id === email.accountId);
@@ -9248,15 +9263,22 @@ function renderList() {
       if (!cached || cached.stamp !== stamp) {
         const row = messageRow(email);
         if (cached) cached.row.replaceWith(row);
-        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, selected: selected.has(email.id), current: readerCurrentId() === email.id };
+        cached = { row, stamp, replied: email.replied, forwarded: email.forwarded, hasAttachments: email.hasAttachments === true,
+          selected: selected.has(email.id), current: readerCurrentId() === email.id };
         messageRows.set(key, cached);
       }
       const row = cached.row;
-      // Provider flag refreshes must not replace a focused message or its actions.
+      // Metadata refreshes must not replace a focused message or its actions.
       if (cached.replied !== email.replied || cached.forwarded !== email.forwarded) {
         const previous = row.querySelector('[data-mail-column="subject"] .mail-reply-forward');
         if (previous) previous.replaceWith(mailReplyForwardCell(email));
         cached.replied = email.replied; cached.forwarded = email.forwarded;
+      }
+      const hasAttachments = email.hasAttachments === true;
+      if (cached.hasAttachments !== hasAttachments) {
+        if (hasAttachments) row.querySelector(".subject").before(mailAttachmentPrefix());
+        else row.querySelector(".mail-attachment-prefix")?.remove();
+        cached.hasAttachments = hasAttachments;
       }
       row.mailMessage = email;
       const isSelected = selected.has(email.id);
@@ -9397,23 +9419,17 @@ function readerButton(action, label, run, iconNode) {
   return button;
 }
 
-function localMessageLinkButton(email) {
-  const button = readerButton("copy-local-message-link", "Copy local link to this message", async () => {
-    if (readerCurrentId() !== email.id || state.email?.accountId !== email.accountId || state.email?.bodyEpoch !== email.bodyEpoch) {
-      throw new Error("That local message link is unavailable.");
-    }
-    const result = await api.invoke("reader:copyLocalMessageLink", {
-      accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch,
-    });
-    if (result?.ok !== true) throw new Error(result?.message || "That local message link is unavailable.");
-    showStatus("Local link copied. It opens in this Morrow profile.");
-  }, strokeIcon(["M10 13a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-2 2", "M14 11a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l2-2"]));
+function localMessageLinkUnavailable(email) {
   const account = state.accounts.find(item => item.id === email.accountId);
   const folder = foldersOf(account).find(item => item.id === email.folderId);
   const role = canonicalFolderRole(folder?.wellKnownName);
-  button.disabled = !email.bodyComplete || !!email.bodyWarning || !!account?.needsReauth || email.folderId === "local-folder:trash" ||
+  return !email.bodyComplete || !!email.bodyWarning || !!account?.needsReauth || email.folderId === "local-folder:trash" ||
     ["deleteditems", "junkemail", "drafts"].includes(role);
-  return button;
+}
+
+function openInNewWindowButton(email) {
+  return readerButton("open-in-new-window", "Open in new window", () => openSenderReader(email),
+    strokeIcon(["M13 5h6v6", "M19 5l-9 9", "M19 13v6H5V5h6"]));
 }
 
 let sentFollowups;
@@ -9424,9 +9440,9 @@ function renderActions(pane, email) {
     bar.append(readerButton("star", email.isStarred ? "Unstar" : "Star", () => toggleStar(email), starIcon(!!email.isStarred)),
       readerButton("move", "Move locally", () => openLocalTransfer([email], "move")),
       readerButton("copy-local", "Copy locally", () => openLocalTransfer([email], "copy"), strokeIcon(["M9 9h12v12H9z", "M5 15H3V3h12v2"])),
-      readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])),
-      localMessageLinkButton(email),
-      readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
+      readerButton("export-local", "Save EML", () => exportLocalMessage(email), strokeIcon(["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"])));
+    if (!isReaderWindow()) bar.appendChild(openInNewWindowButton(email));
+    bar.appendChild(readerButton("trash", readerDeleteLabel(), () => deleteFromReader(email)));
     pane.appendChild(bar);
     const note = document.createElement("p"); note.className = "hint local-reader-note";
     note.textContent = "Stored on this computer · Available offline. Reply and AI actions are unavailable for local copies. Use Move / Copy to other mailbox to make a verified Copy in a supported connected destination. Connected Move is unavailable for Local Folders sources.";
@@ -9479,6 +9495,9 @@ function renderActions(pane, email) {
   const summary = readerButton("summary", "Summary", () => { requestMessageSummary(email); },
     strokeIcon(["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"]));
   summary.setAttribute("aria-controls", "message-summary");
+  const summaryActions = document.createElement("div");
+  summaryActions.className = "reader-summary-actions";
+  summaryActions.appendChild(summary);
   const timeline = readerButton("timeline", "Timeline", () => timelineView?.open(email),
     strokeIcon(["M4 3v18", "M8 5h12", "M8 12h9", "M8 19h12"]));
   timeline.setAttribute("aria-haspopup", "dialog");
@@ -9511,8 +9530,8 @@ function renderActions(pane, email) {
   besideStar.className = "reader-star-group";
   besideStar.append(star);
   renderTranslate(besideStar, email);
-  bar.append(reply, replyAll, suggest, forward, summary, timeline);
-  if (!email.isDraft) bar.appendChild(localMessageLinkButton(email));
+  bar.append(reply, replyAll, suggest, forward, summaryActions, timeline);
+  if (!email.isDraft && !isReaderWindow()) bar.appendChild(openInNewWindowButton(email));
   bar.append(besideStar, archive, trash, menus);
   if (email.dsnRedraftAvailable) {
     const review = readerButton("dsn-redraft", "Review delivery report", () => openDsnRedraft(email),
@@ -9674,7 +9693,7 @@ function messageSummaryError(view, error) {
   if (messageSummary !== view || !summaryMatches(state.email, view)) return;
   view.error = error instanceof Error ? error.message : String(error);
   view.settings = ["ai-unconfigured", "ai-consent-required"].includes(error.code)
-    || /AI Setup|AI data permission|API key|ChatGPT/i.test(view.error);
+    || /AI Setup|AI connection|API key|ChatGPT/i.test(view.error);
 }
 
 function finishMessageSummary(view) {
@@ -9800,7 +9819,7 @@ function renderMessageSummary(pane, email) {
   context.textContent = [email.subject || "(no subject)", email.from, mailbox?.email].filter(Boolean).join(" · ");
   const scope = document.createElement("p");
   scope.className = "hint";
-  scope.textContent = "Check important details against the message. Uses your saved AI connection and AI data permission. Only this message's downloaded text and quoted history are included. Attachment files, linked pages and other messages are excluded. English summaries follow ASD-STE100-inspired plain-language principles; formal compliance is not verified. Cancellation cannot recall data already sent.";
+  scope.textContent = "Check important details against the message. Uses your saved AI connection. Only this message's downloaded text and quoted history are included. Attachment files, linked pages and other messages are excluded. English summaries follow ASD-STE100-inspired plain-language principles; formal compliance is not verified. Cancellation cannot recall data already sent.";
   const coverage = document.createElement("p");
   coverage.className = "hint"; coverage.dataset.role = "summary-coverage";
   const limits = document.createElement("p");
@@ -9910,12 +9929,12 @@ function organizeButton(email) {
   button.appendChild(text);
   button.addEventListener("click", () => {
     const rect = button.getBoundingClientRect();
-    openOrganizeMenu(email, rect.left, rect.bottom + 4, button, true);
+    openOrganizeMenu(email, rect.left, rect.bottom + 4, button, { reader: true });
   });
   button.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    openOrganizeMenu(email, event.clientX, event.clientY, button, true);
+    openOrganizeMenu(email, event.clientX, event.clientY, button, { reader: true });
   });
   return button;
 }
@@ -10487,7 +10506,9 @@ let readerLocalTimeSource = null;
 function sameReaderLocalTimeSource(email, source) {
   return email && source && !email.isDraft && !email.outbox && !email.bodyError
     && email.id === source.id && email.accountId === source.accountId
-    && email.htmlBody === source.htmlBody && email.textBody === source.textBody;
+    && email.bodyEpoch === source.bodyEpoch
+    && email.htmlBody === source.htmlBody && email.textBody === source.textBody
+    && !!bodyIdentity(email);
 }
 
 function syncReaderLocalTime(email) {
@@ -10537,7 +10558,7 @@ function openReaderLocalTime(email, text) {
     if (readerLocalTimeSource !== email) return;
     readerLocalTimeSource = null;
     if (sameReaderLocalTimeSource(mailShortcutTarget(), email) && !topOpenDialog()) {
-      $("reader").querySelector("[data-action='local-time']")?.focus({ preventScroll: true });
+      $("reader").querySelector(".body")?.focus({ preventScroll: true });
     }
   });
   convert(text);
@@ -10548,6 +10569,7 @@ function openReaderLocalTime(email, text) {
 }
 
 function renderBody(pane, email, refresh) {
+  const controls = (pane.id === "reader" && pane.querySelector(".reader-summary-actions")) || pane;
   if (email?.bodyWarning || email?.encodingWarning) {
     const warning = document.createElement("p");
     warning.className = "hint"; warning.setAttribute("role", "status"); warning.textContent = [email.bodyWarning, email.encodingWarning].filter(Boolean).join(" ");
@@ -10561,17 +10583,22 @@ function renderBody(pane, email, refresh) {
     // Older corrupted bodies can contain no replacement characters and carry no
     // warning. Older Inbox and Sent caches may lack delivery-failure review evidence.
     // Keep reloading explicit without a download on ordinary open.
-    pane.appendChild(bodyRetryButton(email, refresh, "Reload message"));
+    controls.appendChild(bodyRetryButton(email, refresh, "Reload message"));
   }
   const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
   const key = JSON.stringify([email?.accountId, email?.id]);
   let choice = plainBodyViews.get(pane);
   if (!choice || choice.key !== key) { choice = { key, plain: false }; plainBodyViews.set(pane, choice); }
   const body = document.createElement("div");
-  let wrapper;
   const paint = () => {
     body.replaceChildren();
-    wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    const wrapper = appendMessageBody(body, choice.plain ? { ...email, htmlBody: null } : email, remoteVisible(state.prefs.images, allowed));
+    if (pane.id === "reader" && !email.isDraft) {
+      wrapper.tabIndex = 0;
+      wrapper.setAttribute("role", "region");
+      wrapper.setAttribute("aria-label", "Message body");
+      wrapper.setAttribute("aria-keyshortcuts", "Shift+F10");
+    }
     if (pane.id === "reader" && !choice.plain && email?.htmlBody && typeof window !== "undefined") {
       window.morrowReaderTableColumns?.mount(wrapper, email.htmlBody, parkMailStyleAttributes);
     }
@@ -10581,42 +10608,10 @@ function renderBody(pane, email, refresh) {
     toggle.type = "button"; toggle.className = "ghost"; toggle.dataset.action = "plain-body";
     const label = () => { toggle.textContent = choice.plain ? "Show HTML version" : "Show plain-text version"; toggle.setAttribute("aria-pressed", String(choice.plain)); };
     toggle.addEventListener("click", () => { choice.plain = !choice.plain; label(); paint(); });
-    label(); pane.appendChild(toggle);
+    label(); controls.appendChild(toggle);
   }
   pane.appendChild(body);
   paint();
-
-  const selection = typeof window !== "undefined" && window.morrowReplySelection;
-  const actions = pane.id === "reader" && !email.isDraft && pane.querySelector(".reader-actions");
-  if (!actions || !selection) return;
-  if (window.morrowReaderLocalTime) {
-    const time = readerButton("local-time", "Show local time", () => {
-      const current = mailShortcutTarget();
-      const text = time.isConnected && sameReaderLocalTimeSource(current, email) && selection.read(wrapper);
-      if (!text) return showStatus("Select a date and time in this message and try again.", true);
-      if (text.length > 256) return showStatus("Select one date and time, up to 256 characters.", true);
-      openReaderLocalTime(current, text);
-    }, strokeIcon(["M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20z", "M12 6v6l4 2"]));
-    time.setAttribute("aria-haspopup", "dialog");
-    time.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
-    actions.insertBefore(time, actions.querySelector(".reader-menus"));
-  }
-  const reply = actions.querySelector("[data-action='reply']");
-  if (!reply) return;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost";
-  button.dataset.action = "reply-selection";
-  button.textContent = "Reply quoting selection";
-  // A pointer click must leave the selected range intact until the action reads it.
-  button.addEventListener("mousedown", event => { if (event.button === 0) event.preventDefault(); });
-  button.addEventListener("click", () => guard(() => {
-    const excerpt = button.isConnected && state.email === email && mailShortcutTarget()?.id === email.id
-      && selection.read(wrapper);
-    if (!excerpt) return showStatus("Select text in this message and try again.", true);
-    return openReaderCompose("reply", email, excerpt);
-  }));
-  reply.after(button);
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -14135,9 +14130,46 @@ async function contextRemoval(messages, kind, current) {
   queueBulkRemoval(kind === "trash" ? "Move to Trash" : "Archive", contextOwnedCalls(calls, messages), messages, kind);
 }
 
-function openOrganizeMenu(email, x, y, origin, reader = false) {
+function appendReaderBodyActions(menu, email, body) {
+  if (email.isDraft) return;
+  const currentMessage = () => {
+    const current = mailShortcutTarget();
+    return body.isConnected && sameReaderLocalTimeSource(current, email) ? current : null;
+  };
+  // Menu focus can change the selection. Save it while the body still owns it.
+  const selection = window.morrowReplySelection;
+  const text = selection?.read(body);
+  if (window.morrowReaderLocalTime) {
+    const time = appendMenuAction(menu, "Show local time", () => guard(() => {
+      const current = currentMessage();
+      if (!text || !current) return showStatus("Select a date and time in this message and try again.", true);
+      if (text.length > 256) return showStatus("Select one date and time, up to 256 characters.", true);
+      openReaderLocalTime(current, text);
+    }));
+    time.setAttribute("aria-haspopup", "dialog");
+  }
+  if (selection && !isLocalMail(email)) {
+    appendMenuAction(menu, "Reply quoting selection", () => guard(() => {
+      const current = currentMessage();
+      if (!text || !current) return showStatus("Select text in this message and try again.", true);
+      return openReaderCompose("reply", current, text);
+    }));
+  }
+  const unavailable = "That local message link is unavailable.";
+  appendMenuAction(menu, "Copy local link to this message", () => guard(async () => {
+    const current = currentMessage();
+    if (!current || localMessageLinkUnavailable(current)) throw new Error(unavailable);
+    const result = await api.invoke("reader:copyLocalMessageLink", {
+      accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch,
+    });
+    if (result?.ok !== true) throw new Error(result?.message || unavailable);
+    showStatus("Local link copied. It opens in this Morrow profile.");
+  }), localMessageLinkUnavailable(email) ? unavailable : "");
+}
+
+function openOrganizeMenu(email, x, y, origin, { reader = false, body = null } = {}) {
   if (!email) return;
-  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y, origin); return; }
+  if (isLocalMail(email)) { openLocalMessageMenu([email], x, y, origin, undefined, body); return; }
   const context = contextMessages([email]);
   email = context.rows[0];
   const account = state.accounts.find((item) => item.id === email.accountId);
@@ -14147,6 +14179,7 @@ function openOrganizeMenu(email, x, y, origin, reader = false) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Message actions");
   menu.replaceChildren();
+  if (body) appendReaderBodyActions(menu, email, body);
   appendMenuAction(menu, "Move to folder…", context.run(openContextMove), model.move.length ? "" : "No writable folder destinations are available. Refresh this mailbox first.");
   appendMenuAction(menu, "Move / Copy to other mailbox…", context.run(rows => openLocalTransfer(rows, "copy")), email.isDraft ? "Save and close the draft before transferring it." : "");
   appendMenuAction(menu, "Labels…", context.run(openContextLabels), provider === "gmail" && model.add.length ? "" : provider === "gmail" ? "Refresh Gmail labels or authorize the existing Gmail label capability first." : "This mailbox uses folders. Labels are available for Gmail accounts.");
@@ -14708,10 +14741,18 @@ function readerContextTarget(event) {
 function onReaderContext(event) {
   if (!state.email || state.email.outbox) return;
   const target = readerContextTarget(event);
-  if (target && target.closest && target.closest(".sender-address")) return;
-  if (target && target.closest && target.closest("input, textarea, select, a")) return;
+  if (target?.closest?.(".sender-address, input, textarea, select, a")) return;
+  const body = $("reader").querySelector(".body");
+  const clickedBody = body?.contains(target) ? body : null;
   event.preventDefault();
-  openOrganizeMenu(state.email, event.clientX, event.clientY, undefined, true);
+  openOrganizeMenu(state.email, event.clientX, event.clientY, clickedBody || undefined, { reader: true, body: clickedBody });
+}
+
+function onReaderContextKey(event) {
+  if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+  if (event.target !== $("reader").querySelector(".body")) return;
+  const rect = event.target.getBoundingClientRect();
+  onReaderContext({ target: event.target, clientX: rect.left + 16, clientY: rect.top + 16, preventDefault: () => event.preventDefault() });
 }
 
 function onMessagePointerDown(event) {
@@ -14996,6 +15037,7 @@ function wireOrganize() {
   $("messages").addEventListener("contextmenu", onListContext);
   $("messages").addEventListener("keydown", onListContextKey);
   $("reader").addEventListener("contextmenu", onReaderContext);
+  $("reader").addEventListener("keydown", onReaderContextKey);
   $("messages").addEventListener("pointerdown", onMessagePointerDown, true);
   $("messages").addEventListener("dragstart", onMessageDragStart);
   $("messages").addEventListener("dragend", onMessageDragEnd);
@@ -21615,7 +21657,7 @@ function prefRows() {
     ["pref-sync-horizon", "morrow:configGetSyncHorizonDays", "morrow:configSetSyncHorizonDays", "days"],
     ["pref-compact-list", "morrow:configGetCompactMessageList", "morrow:configSetCompactMessageList", "bool"],
     ["pref-snooze", "morrow:configGetSnoozeEffective", "morrow:configSetSnoozeEffective", "bool"],
-    ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool"],
+    ["pref-ai-reply", "morrow:configGetAiWriteAutoOpenOnReply", "morrow:configSetAiWriteAutoOpenOnReply", "bool-select"],
     ["pref-agent-read-done", "morrow:configGetMarkReadCompletesAgentTodos", "morrow:configSetMarkReadCompletesAgentTodos", "bool"],
     ["pref-folder-chips", "morrow:configGetShowFolderChips", "morrow:configSetShowFolderChips", "bool"],
     ["pref-gmail-folders", "morrow:configGetSidebarGmailFoldersExpanded", "morrow:configSetSidebarGmailFoldersExpanded", "bool"],
@@ -21625,6 +21667,7 @@ function prefRows() {
 
 function readPref(kind, control) {
   if (kind === "bool") return control.checked === true;
+  if (kind === "bool-select") return control.value === "true";
   if (kind === "seconds" || kind === "days") {
     const raw = String(control.value).trim();
     if (!/^-?\d+$/.test(raw)) return raw;
@@ -21638,7 +21681,7 @@ function applyPref(kind, control, value) {
     control.checked = value === true;
     return;
   }
-  control.value = value == null ? "" : String(value);
+  control.value = kind === "bool-select" ? String(value === true) : value == null ? "" : String(value);
 }
 
 function syncAccentPicker(value) {
@@ -21748,10 +21791,10 @@ async function loadBrainSettings() {
   if (version !== brainSettingsVersion || !$("settings").open) return;
   $("pref-brain-refresh").value = status.cadence;
   $("brain-refresh-permission").textContent = status.cadence === "manual"
-    ? "Manual only keeps automatic refresh off. Explicit AI actions still need AI data permission in Settings → AI."
+    ? "Manual only keeps automatic refresh off. Refresh and Rebuild are available on request."
     : status.backgroundAllowed
-    ? "Background AI permission is allowed for the saved connection. Changing frequency never grants permission."
-    : "Automatic refresh is paused until background AI data permission is allowed in Settings → AI. Changing frequency never grants permission.";
+    ? "Automatic processing is on for the saved connection."
+    : "Automatic refresh is paused. To enable it, choose Run background AI in Settings → AI.";
   $("brain-refresh-last").textContent = status.lastSuccessAt
     ? "Last successful refresh: " + formatBrainTime(status.lastSuccessAt) : "No successful profile refresh yet.";
   $("brain-refresh-next").textContent = status.running
@@ -22164,8 +22207,6 @@ function mountChatgptSettings() {
     chatgptSettings = window.morrowChatgptSettings.mount({
       container, consentContainer: $("ai-data-settings") || container, compact: true,
       invoke: (channel, input) => api.invoke(channel, input), onChange: paintAiDirty,
-      onSave: saveAiSettings,
-      onReviewConnection: () => $("ai-base").focus(),
       onContext: () => { aiOperation++; setAiStatus("", false); },
       onMode: (chatgpt) => {
         for (const id of ["ai-api-base-field", "ai-api-model-field", "ai-api-key-field"]) if ($(id)) $(id).hidden = chatgpt;
@@ -22393,11 +22434,9 @@ async function testAiConnection() {
   const view = aiViewRevision;
   const input = aiSettingsDraft();
   const context = chatgptSettings?.context?.();
-  // Test what the form shows, including unsaved edits. A blank key still falls
-  // back to the saved key on the host, matching Save and Fetch models.
-  setAiStatus(aiDirty() ? "Testing the unsaved values in this form…" : "Contacting the model…", false);
+  setAiStatus("Checking the saved connection…", false);
   try {
-    const result = await api.invoke("host:aiTest", input);
+    const result = await api.invoke("host:aiTest", { ...input, ...(input.authMode === "chatgpt" ? { accountId: chatgptSettings.accountId() } : {}) });
     if (!aiRequestCurrent(operation, view, input, context)) {
       if (operation === aiOperation && view === aiViewRevision) setAiStatus("Settings changed. Test the current settings again.", false);
       return;
@@ -29258,7 +29297,7 @@ function botProactiveForm(grant) {
   for (const input of [url, fields.platform, clear, allow]) input.addEventListener("input", showAuthentication);
   showAuthentication();
   const review = document.createElement("p"); review.className = "hint";
-  review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from Settings → AI data permission.";
+  review.textContent = "Tick this permission after reviewing the fields above, then Save. Saving with it unticked turns proactive notify off. This permission is separate from automatic processing in Settings → AI.";
   form.append(review);
   for (const input of [...Object.values(fields), ...accountInputs]) {
     if (input !== allow) input.addEventListener("input", () => { allow.checked = false; showAuthentication(); });

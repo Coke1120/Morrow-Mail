@@ -35,6 +35,7 @@ ipcMain.handle('fixture:invoke', async (_event, channel, payload) => {
   if (channel === 'nativeAgent:learning:list') return ok({ patterns: [], suppressed: [] });
   if (channel === 'mail:listFromCache' || channel === 'mail:listFromNetwork') return ok({ emails: [] });
   if (channel === 'mail:listSnoozed') return ok({ records: [] });
+  if (channel === 'mail:sentFollowups' && payload.action === 'list') return ok(Array.from({length: 12}, () => ({state: 'overdue'})));
   if (channel === 'mail:listProviderFolders') return ok(providerGranted ? { api: true, folders: providerFolders } : { api: false, reason: 'scope_missing', folders: [] });
   if (channel === 'mail:grantOrganize') { providerGranted = true; return ok({ granted: true }); }
   if (channel === 'mail:oauthStatus') return ok({ google: true, accounts: accounts.map(row => ({ id: row.id, calendar: true })) });
@@ -84,6 +85,44 @@ app.whenReady().then(async () => {
   await waitCalls('app:getVersion', 1);
   assert.equal(startupWaiters.length, 1, 'startup is held at the version barrier');
   assert.equal(count('host:updateGetState'), 0, 'startup must not advance past the barrier');
+  await waitFor(`document.querySelector('[aria-controls="sent-followups-dialog"]')?.textContent === 'Follow-ups (12)'`);
+  const previousFolderWidth = await run(`document.documentElement.style.getPropertyValue('--folders')`);
+  await run(`renderScheduled(Array.from({length: 12}, () => ({status: 'unknown'})))`);
+  let narrowRows;
+  for (const width of [140, 220, 430]) {
+    const layout = await run(`(() => {
+      document.documentElement.style.setProperty('--folders', '${width}px');
+      const group = document.querySelector('.sidebar-mail-actions');
+      const buttons = Array.from(group.querySelectorAll('button'));
+      const fits = ({left,right,top,bottom}, parent) =>
+        left >= parent.left - 1 && right <= parent.right + 1 &&
+        top >= parent.top - 1 && bottom <= parent.bottom + 1;
+      return { labels: buttons.map(button => button.textContent.trim()),
+        visible: buttons.every(button => {
+          const box = button.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(button);
+          return box.width > 0 && box.height >= 36 &&
+            fits(box, group.getBoundingClientRect()) &&
+            Array.from(range.getClientRects()).every(rect => fits(rect, box)) &&
+            document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button') === button;
+        }),
+        rows: new Set(buttons.map(button => button.getBoundingClientRect().top)).size };
+    })()`);
+    assert.deepEqual(layout.labels, ['Scheduled (12 need review)', 'Out of Office', 'Follow-ups (12)']);
+    assert.equal(layout.visible, true, 'sidebar action content must fit at ' + width + 'px');
+    if (width === 140) {
+      narrowRows = layout.rows;
+      assert.ok(narrowRows > 1, 'narrow sidebar must wrap whole action buttons');
+    }
+    if (width === 430) assert.ok(layout.rows < narrowRows, 'wider sidebar should fit more actions on a row');
+  }
+  await run(`document.documentElement.style.setProperty('--folders', ${JSON.stringify(previousFolderWidth)});renderScheduled([]);`);
+  if (process.argv.includes('--sidebar-actions-only')) {
+    console.log('SIDEBAR_MAIL_ACTIONS_CHECK_OK');
+    app.exit(0);
+    return;
+  }
   await run(`state.accounts=${JSON.stringify(accounts)};state.accountId='box-0';state.folderId='Inbox';
     globalThis.productionRefreshMailVacation=refreshMailVacation;refreshMailVacation=()=>{};loadShellPrefs=async()=>{};refreshAiSetupState=async()=>{};
     renderAccounts();showStatus('');`);

@@ -4,19 +4,24 @@ Release coverage: v0.2.39 includes consent #302 and Gmail migration #305; see [v
 
 ## Before using AI
 
-Settings → AI and Morrow Mail → AI Setup share **AI data permission**. Save the provider/endpoint and model. In Settings, open **Manage permissions**; AI Setup shows the permission choices directly. Review the saved destination, account (for ChatGPT), locality, data categories, purposes and background disclosure. Tick the initially empty explicit-action checkbox and choose **Allow selected AI data use**. Under **Optional access** in Settings, separate checkboxes allow eligible Timeline, Case and background uses. They start off without a saved grant. Saving a key, choosing a model, fetching a model catalog or ChatGPT sign-in grants no AI data permission.
+Save a provider, authentication method and model in Settings → AI or AI Setup.
+A manual request uses the saved ready connection when you start the action.
+Timeline and Case show the selected mail and destination before you choose
+Generate. Test connection sends a fixed greeting prompt. Fetch models uses
+the selected credentials to read the model catalog.
 
-Connection controls and Save appear before permission review. Allow explains a missing saved API key, ChatGPT connection, plan permission or model beside the button. Unsaved edits, saves and fresh permission reads also block Allow. **Save & review connection** saves the form without approving data use, clears earlier checkbox choices and reloads the saved destination; review it and make a fresh choice. **Review connection** returns to the connection controls, or retries a failed permission read. A failed save keeps edits available. Closing and reopening Settings preserves unsaved connection edits while refreshing saved permission and clearing earlier checkbox choices. A pending read from a closed session cannot block the new review or replace its result. Initial Setup reads cannot replace the baseline from a newer successful save. An `Unsupported channel` error in older builds calls for updating Morrow Mail and reopening Settings; the three exact Settings consent channels were restored in v0.3.2.
+Automatic processing defaults to **Only when requested**. Choose **Run
+background AI** to enable automatic Brain refresh, Agent-open triage,
+reply-compose suggestions and scheduled skills for the current connection.
+An unchanged, verified background choice from an earlier version is
+preserved. Saving an endpoint, model, key or ChatGPT account change turns it
+off for that connection.
 
-The Settings tab shows a short permission status until you open the review. The review shows destination/provider/model, data categories, explicit purposes, locality, provider retention/training terms and revocation limits before you approve. Optional choices show their own scope when opened. Native accordions hold the full disclosure and secondary connection details. Version 2 adds explicit selected-mail timeline extraction (reviewed text, subjects and attachment names), without Brain, Agent notes or conversation history. Earlier grants require fresh review. Timelines never join background permission. Both choices remain opt-in; existing grants are never inferred from checkbox state.
-
-Allow is available only after permission status has loaded for a ready saved connection and the explicit-action checkbox is checked. API mode needs a saved key and model; ChatGPT mode needs a connected, plan-enabled account and selected model. If Allow stays unavailable, the status names the missing saved API key, model, ChatGPT connection, or plan step. Background permission is optional. Review saved connection refreshes the disclosure, and Cancel / revoke clears both permissions. These controls use the same host validation from Settings and AI Setup.
-
-Existing configurations, environment-provided keys and legacy ChatGPT background preferences start blocked without this version of the disclosure. Cached mail, local search, ordinary mail/calendar operations and local Brain edits remain available. A blocked AI action explains how to review permission; it does not open sign-in, switch providers or send the prompt. Test connection also requires permission for the saved destination/model; it sends a fixed greeting prompt, without mailbox context. Fetch models is an explicit metadata read that sends credentials, without mail/calendar context.
-
-The permission covers the saved endpoint, authentication mode, model and ChatGPT registration or API credential. Changing these retires the permission, including switching back to an earlier provider. A material change to data categories or purpose must increment `VERSION` in `host/ai-consent.js`; an earlier version cannot authorize the new disclosure. Unsaved tests cannot use a different unapproved configuration. Settings save/test/sign-in result ownership from PR #296 remains in place.
-
-**Cancel / revoke AI data permission** clears both permissions and aborts in-flight AI requests. Deferred operations retain the consent context they started with; reapproving later does not revive them. A failed persistence write still disables AI in the running process and reports the error. Cancellation/revocation cannot recall data already delivered to a provider. Use that provider's account controls for its retained data. API/custom endpoint settings and ChatGPT credentials remain available for reconnection; this control is not a mailbox-account removal or credential deletion action.
+Each request is bound to the provider, model and account at its start.
+Changing the connection or turning automatic processing off cancels pending
+work. If writing the off preference fails, the running process still stops
+background work and reports the error. Cancellation stops later calls.
+Provider account settings govern data that already reached the provider.
 
 ## Actual outbound paths
 
@@ -24,7 +29,7 @@ All production AI prompt sends in this repository call `host/openai-client.js` (
 
 | Feature and source | Context actually sent | Trigger |
 | --- | --- | --- |
-| Message summary (`host/message-summary.js`) | Selected cached sender, subject and date; reviewed downloaded body text including quoted history. The local coverage check sends no message text. Longer or incomplete messages require an explicit full-downloaded-text or excerpt choice. Full runs accept up to 128,000 source UTF-8 bytes subject to 31-request/serialized-input budgets, split without breaking Unicode and consolidate all reviewed parts. Incomplete downloads and excerpt omissions stay labelled. No attachment files, linked pages, other messages, Brain or Agent history are included. | Explicit Summary in either reader; explicit coverage choice when needed. Uses existing manual AI data permission. Cancel aborts pending requests; two-minute per-request and ten-minute multi-request deadlines. |
+| Message summary (`host/message-summary.js`) | Selected cached sender, subject and date; reviewed downloaded body text including quoted history. The local coverage check sends no message text. Longer or incomplete messages require an explicit full-downloaded-text or excerpt choice. Full runs accept up to 128,000 source UTF-8 bytes subject to 31-request/serialized-input budgets, split without breaking Unicode and consolidate all reviewed parts. Incomplete downloads and excerpt omissions stay labelled. No attachment files, linked pages, other messages, Brain or Agent history are included. | Explicit Summary in either reader; explicit coverage choice when needed. Cancel aborts pending requests; two-minute per-request and ten-minute multi-request deadlines. |
 | Translation (`host/translate.js`) | Text nodes from the visible message, including quoted history; node ids; target language. Long text is split into batches. | Explicit Translate; Cancel aborts pending batches. |
 | AI Write (`host/draft-write.js`) | Instructions, selected text, draft content (which may include a signature), cursor context, subject, recent supplied writing history; source sender/subject/snippet or reply source text; Brain writing rules. | Explicit writing action. |
 | Reply suggestions (`host/draft-write.js`) | Sender, subject and snippet/text body supplied by the reader/composition. | Explicit Suggest, or separately classified background suggestions when reply composition opens. |

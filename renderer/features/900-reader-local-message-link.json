@@ -2,5 +2,5 @@
   "id": "reader-local-message-link",
   "title": "Copy a local link to a message",
   "category": "Mail",
-  "blurb": "Open an available, fully downloaded message and choose Copy local link to this message in the Reader. Paste the link into a note or calendar event. The link opens the original message in the same Morrow profile on this computer while it is still available. Links keep the subject, sender and body private. Drafts and messages in Trash or Junk are unavailable."
+  "blurb": "Choose Open in new window in the reading pane to view the same message in a separate Reader. To save a reference to an available, fully downloaded message, right-click its body and choose Copy local link to this message. Paste it into a note or calendar event. The link opens the original message in the same Morrow profile on this computer while it is still available. Links keep the subject, sender and body private. Drafts and messages in Trash or Junk are unavailable."
 }

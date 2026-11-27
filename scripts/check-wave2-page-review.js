@@ -243,11 +243,11 @@ test("Compose P2: production scheduled-to-draft conversion rolls back both sides
       scheduledById: () => queued, accountById: () => ({ id: "a", email: "alice@alpha.test" }),
       folderByWellKnown: () => ({ path: "Drafts" }), newMessageId: () => "recovery",
     };
-    database.scheduledToDraft = productionFunctions("host/mail/db.js", ["scheduledToDraft"], {
+    Object.assign(database, productionFunctions("host/mail/db.js", ["scheduledToDraft", "hasOutgoingFileAttachments"], {
       transaction, scheduledById: () => queued,
       insertMessageRecord: (record) => { draft = record; if (failure === "insert") throw new Error("Synthetic insert failure"); },
       run: () => { if (failure === "delete") throw new Error("Synthetic delete failure"); queued = null; },
-    }).scheduledToDraft;
+    }));
     const engine = productionFunctions("host/mail/engine.js", ["editScheduled", "recoverScheduledDraft"], {
       db: database, scheduledDelivering: new Set(),
       fail: (code, message) => ({ success: false, error: { code, message } }), ok: (data) => ({ success: true, data }),
