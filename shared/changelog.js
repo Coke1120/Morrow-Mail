@@ -7,6 +7,9 @@
   else root.morrowChangelog = api;
 })(typeof window === "object" ? window : globalThis, function () {
   const NOTES = {
+    "1.0.1": [
+      "On Windows, the main window can no longer be resized down to just its title bar through normal window controls.",
+    ],
     "1.0.0": [
       "Copy a local link from the message reader to reopen the original email later in the same Morrow profile.",
       "Add two available times from your checked calendars to a reply. Quote a selected passage or check a selected timestamp in your local time.",
