@@ -4316,10 +4316,10 @@ assert.strictEqual(shortcuts.shortcutPlatform("Linux x86_64"), "other");
 assert.strictEqual(shortcuts.shortcutPlatform("Win32"), "other");
 const macKeys = shortcuts.shortcutCatalog("MacIntel").map((row) => row.keys);
 const winKeys = shortcuts.shortcutCatalog("Win32").map((row) => row.keys);
-for (const key of ["⌘N", "R", "A", "F", "⌘Enter", "⌘S", "⌘F or /", "⌘,", "Delete or Backspace", "Esc"]) {
+for (const key of ["⌘N", "R", "A", "F", "⌘Enter", "⌘S", "⌘F", "⌘H", "⌘F or /", "⌘,", "Delete or Backspace", "Esc"]) {
   assert.ok(macKeys.includes(key), key);
 }
-for (const key of ["Ctrl+N", "Ctrl+Enter", "Ctrl+S", "Ctrl+F or /", "Ctrl+,", "Ctrl+0", "Ctrl++ or Ctrl+−"]) {
+for (const key of ["Ctrl+N", "Ctrl+Enter", "Ctrl+S", "Ctrl+F", "Ctrl+H", "Ctrl+F or /", "Ctrl+,", "Ctrl+0", "Ctrl++ or Ctrl+−"]) {
   assert.ok(winKeys.includes(key), key);
 }
 assert.ok(!macKeys.some((key) => key === "⌘R" || key === "Ctrl+R" || (key.includes("Shift") && key !== "Shift-click")));
@@ -4328,7 +4328,12 @@ assert.ok(macKeys.includes("Shift-click") && winKeys.includes("Shift-click"));
 assert.match(shortcuts.shortcutNote("MacIntel"), /⌘R stays View/);
 assert.match(shortcuts.shortcutNote("Win32"), /Ctrl\+R stays View/);
 assert.match(shortcuts.shortcutNote("Linux x86_64"), /Zoom stays on the View menu/);
-assert.strictEqual(shortcuts.shortcutCatalog("Win32").length, 16);
+assert.strictEqual(shortcuts.shortcutCatalog("Win32").length, 18);
+for (const [platform, find, replace] of [["MacIntel", "⌘F", "⌘H"], ["Win32", "Ctrl+F", "Ctrl+H"]]) {
+  const compose = shortcuts.shortcutCatalog(platform).filter(row => row.group === "Compose");
+  assert.ok(compose.some(row => row.keys === find && /Find text in the message body/.test(row.action)));
+  assert.ok(compose.some(row => row.keys === replace && /Find and replace text in the message body/.test(row.action)));
+}
 const cli = loadFunctions(appJs, ["cliNote", "cliCatalog"]);
 assert.match(cli.cliNote(), /checkout of this repo/);
 assert.match(cli.cliNote(), /no morrow command/);
