@@ -1,6 +1,6 @@
 // Compose opens in its own window. The mail shell stays usable.
-// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing | --draft-window-labels]
-const { app, BrowserWindow, ipcMain, screen } = require("electron");
+// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing | --draft-window-labels | --find-replace]
+const { app, BrowserWindow, ipcMain, screen, Menu } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -416,6 +416,105 @@ async function checkEditing(host) {
   console.log("compose-editing-ok: paste Undo/Redo and quote, font size steps, preset/default text color Undo/Redo, saved/reopened draft, simulated Outbox");
 }
 
+async function checkFindReplace(host, shell) {
+  if (process.platform === "darwin") {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: "Morrow Mail", submenu: [{ role: "hide" }] }]));
+  }
+  const { id } = host.open({ title: "Find fixture", kind: "new", accountId: account.id,
+    to: "fixture@example.invalid", subject: "Case-01 in subject",
+    body: "Case-01, Case-01", bodyHtml: "<p>Case-01, Case-01</p>" });
+  const win = host.records.get(id).win;
+  const ready = '!state.composeInitializing && $("compose").open';
+  await waitFor(win, ready, "find compose ready");
+  const run = js => win.webContents.executeJavaScript(js, true);
+  const send = (target, keyCode, modifier = true) => {
+    const modifiers = modifier ? [process.platform === "darwin" ? "meta" : "control"] : [];
+    target.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    target.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+  };
+  win.focus();
+  await run(`(() => {
+    $("compose-editor").innerHTML =
+      '<p><b>Client Case-<i>01</i></b> plus <i>case-01 end</i></p>' +
+      '<p>Case-0<br>1</p>' +
+      '<div data-compose-signature="1"><b>Case-01 signature</b></div>' +
+      '<blockquote data-compose-reply-quote="1"><i>Case-01 quote</i></blockquote>';
+    syncComposePlainFromEditor();
+    $("compose-editor").focus();
+  })()`);
+  send(win, "F");
+  await waitFor(win, `!$("compose-find-panel").hidden && document.activeElement === $("compose-find-query")`, "native Find shortcut");
+  assert.equal(await run(`$("compose-find-replace-row").hidden`), true);
+  const search = value => run(`(() => {
+    $("compose-find-query").value = ${JSON.stringify(value)};
+    $("compose-find-query").dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await search("absent");
+  assert.match(await run(`$("compose-find-status").textContent`), /No matches/);
+  await search("CASE-01");
+  assert.equal(await run(`$("compose-find-status").textContent`), "1 of 2");
+  await run(`$("compose-find-next").click()`);
+  assert.equal(await run(`$("compose-find-status").textContent`), "2 of 2");
+  await run(`$("compose-find-previous").click()`);
+  send(win, "H");
+  await waitFor(win, `!$("compose-find-replace-row").hidden`, "native Replace shortcut with active app menu");
+  const before = await run(`$("compose-editor").innerHTML`);
+  await run(`$("compose-find-replacement").value = "$& <Ref>"; $("compose-find-replace-all").click()`);
+  const editor = await run(`$("compose-editor").innerHTML`);
+  assert.match(editor, /<b>Client \$&amp; &lt;Ref&gt;/);
+  assert.match(editor, /<i>\$&amp; &lt;Ref&gt; end<\/i>/);
+  assert.match(editor, /<b>Case-01 signature<\/b>/);
+  assert.match(editor, /data-compose-reply-quote="1"><i>Case-01 quote<\/i>/);
+  assert.match(editor, /Case-0<br>1/);
+  assert.equal(await run(`$("compose-subject").value`), "Case-01 in subject");
+  win.webContents.undo();
+  await waitFor(win, `$("compose-editor").innerHTML === ${JSON.stringify(before)}`, "Undo restores both replacements in one step");
+  win.webContents.redo();
+  await waitFor(win, `$("compose-editor").innerHTML === ${JSON.stringify(editor)}`, "Redo restores both replacements");
+  await search("$& <Ref>");
+  await run(`$("compose-find-replacement").value = "$& <Ref> updated"; $("compose-find-replace-next").click()`);
+  assert.equal(await run(`$("compose-find-status").textContent`), "Replaced 1. 2 of 2",
+    "Replace Next advances past its own newly inserted match");
+  win.webContents.undo();
+  await waitFor(win, `$("compose-editor").innerHTML === ${JSON.stringify(editor)}`, "Undo single replacement");
+  await search("$& <Ref>");
+  await run(`$("compose-find-replacement").value = ""; $("compose-find-replace-next").click()`);
+  assert.equal(await run(`$("compose-editor").textContent.split("$& <Ref>").length - 1`), 1);
+  assert.match(await run(`$("compose-find-status").textContent`), /Replaced 1/);
+  send(win, "Escape", false);
+  await waitFor(win, `$("compose-find-panel").hidden && $("compose").open`, "Escape closes only Find");
+  await run(`$("compose-save").click()`);
+  await waitFor(win, `$("compose-status").textContent.includes("Draft saved.")`, "replacement draft saved");
+  assert.match(savedDraft.htmlBody, /\$&amp; &lt;Ref&gt;/);
+  await run(`resumeDraft({ id: "draft-1", accountId: "acct-ada" })`);
+  const reopened = [...host.records.values()].find(record => record.win !== win)?.win;
+  assert.ok(reopened);
+  await waitFor(reopened, ready, "replacement draft reopened");
+  const reopenedBody = await reopened.webContents.executeJavaScript(`composePayload(composeAccount()).body`);
+  assert.match(reopenedBody, /\$&amp; &lt;Ref&gt;/);
+  assert.equal(await reopened.webContents.executeJavaScript(`$("compose-find-panel").hidden && $("compose-find-query").value === ""`), true);
+  await reopened.webContents.executeJavaScript(`(() => {
+    $("compose-editor").innerHTML = "<p>Only text</p>";
+    $("compose-find-open").click();
+    $("compose-find-query").value = "Only text";
+    $("compose-find-query").dispatchEvent(new Event("input", { bubbles: true }));
+    $("compose-find-replace-all").click();
+  })()`);
+  assert.equal(await reopened.webContents.executeJavaScript(`$("compose-editor").textContent`), "");
+  reopened.webContents.undo();
+  await waitFor(reopened, `$("compose-editor").innerHTML === "<p>Only text</p>"`, "Undo removal of the entire body");
+
+  shell.focus();
+  send(shell, "F");
+  await sleep(100);
+  assert.equal(await shell.webContents.executeJavaScript(`$("compose-find-panel").hidden`), true);
+  await shell.webContents.executeJavaScript(`paintShortcuts(); paintFeatureCatalog()`);
+  assert.match(await shell.webContents.executeJavaScript(`$("shortcuts-list").textContent`), /Find and replace text in the message body/);
+  assert.match(await shell.webContents.executeJavaScript(`$("features-catalog").textContent`), /Find and replace in Compose/);
+  assert.equal(sentChannels.some(channel => channel === "mail:send" || channel === "mail:scheduleSend"), false);
+  console.log("compose-find-replace-ok:", process.platform, "keyboard entry, scope, formatting, one-step undo/redo, save/reopen and rendered help");
+}
+
 app.disableHardwareAcceleration();
 app.setPath("userData", fs.mkdtempSync(path.join(process.env.MORROW_SMOKE_TMP || os.tmpdir(), "morrow-compose-window-")));
 
@@ -471,6 +570,11 @@ app.whenReady().then(async () => {
   const shellRole = await shellWin.webContents.executeJavaScript(`document.documentElement.dataset.window || ""`, true);
   assert.equal(shellRole, "");
 
+  if (process.argv.includes("--find-replace")) {
+    await checkFindReplace(host, shellWin);
+    app.exit(0);
+    return;
+  }
   if (process.argv.includes("--draft-window-labels")) {
     await checkDraftWindowLabels(host, shellWin);
     console.log("draft-window-labels-ok");

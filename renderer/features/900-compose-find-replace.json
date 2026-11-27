@@ -1,0 +1,6 @@
+{
+  "id": "compose-find-replace",
+  "title": "Find and replace in Compose",
+  "category": "Compose",
+  "blurb": "Use the Find and replace toolbar button in Compose, Command+F or Command+H on macOS, or Ctrl+F or Ctrl+H on Windows/Linux. Search ignores case, treats symbols literally and stays in the editable message text, excluding the signature, quoted history, subject and recipients. Use Previous or Next to move between matches; Replace Next changes the highlighted match and advances, and Replace All changes the current matches in one undoable edit. A blank replacement removes matched text. For more than 2,000 matches, narrow the search or replace one at a time. Searches and replacements are local; Save draft persists changes normally."
+}

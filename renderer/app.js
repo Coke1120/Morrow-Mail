@@ -20496,6 +20496,8 @@ function shortcutCatalog(platform) {
     { group: "Mail", keys: chord("F") + " or /", action: "Focus mail search" },
     { group: "Compose", keys: chord("Enter"), action: "Send" },
     { group: "Compose", keys: chord("S"), action: "Save draft" },
+    { group: "Compose", keys: chord("F"), action: "Find text in the message body" },
+    { group: "Compose", keys: chord("H"), action: "Find and replace text in the message body" },
     { group: "Window", keys: "Esc", action: "Close the compose window or dismiss an overlay. Clears a message selection only on the Mail page when no overlay or text input owns Escape." },
     { group: "Window", keys: chord(","), action: "Settings" },
     { group: "List", keys: "↑ or ↓", action: "Move through the message list" },
@@ -30644,6 +30646,12 @@ function wire() {
   });
   wireRecipientSuggest();
   wireComposeFormat();
+  window.morrowComposeFind?.mount({
+    dialog: $("compose"), editor: $("compose-editor"),
+    available: () => topOpenDialog()?.id === "compose" && !state.composeInitializing
+      && !state.composePending && !state.draftWrite?.pending && $("compose-editor").isContentEditable,
+    sync: syncComposePlainFromEditor,
+  });
   wireComposeCalendarSlots();
   wireComposeInboxPicker();
   $("scheduled-more")?.addEventListener("click", () => guard(() => loadScheduled({ more: true })));

@@ -6661,3 +6661,12 @@ html[data-window="translate"] #reader .translate-column h2 {
 .agent-decision-status { font-weight: 650; }
 .agent-decision-card .row { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-batch-receipts ul { max-height: 15rem; overflow: auto; padding-inline-start: 23px; }
+
+/* Compose body find/replace is local to the editable draft. */
+#compose-find-panel { margin-top: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.compose-find-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.compose-find-row[hidden] { display: none; }
+.compose-find-row label { min-width: 82px; }
+#compose .compose-find-row input { flex: 1 1 140px; width: auto; min-width: 100px; }
+#compose-find-status { margin: 0; }
+::highlight(morrow-compose-find) { background-color: Mark; color: MarkText; }
