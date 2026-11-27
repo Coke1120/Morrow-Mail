@@ -1070,6 +1070,10 @@ app.whenReady().then(async () => {
     composeWindows.createComposeHost({
       getParent: () => shellWindow,
       resolveResumedDraftOwner,
+      selectionTranslation: require("./compose-translation").createComposeTranslation({
+        status: () => require("./ai-consent").getConsent().status(),
+        complete: (messages, options) => updateGate.run(() => complete(messages, options)),
+      }),
       preloadFile: () => shellSession && shellSession.preloadFile,
       mode: () => shellSession && shellSession.mode,
       htmlFile: FIRST_PARTY_HTML,

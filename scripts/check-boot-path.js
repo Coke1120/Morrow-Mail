@@ -613,7 +613,7 @@ assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includ
 assert.strictEqual(pkg.name, "morrow-mail");
 assert.strictEqual(pkg.version, "1.0.0");
 const composeHost = require("../host/compose-window");
-assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
+assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle", "compose:translateSelection"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
 assert.strictEqual(composeHost.composeWindowTitle({}), "New message — Morrow Mail");
 assert.strictEqual(composeHost.composeWindowTitle({ title: "x".repeat(200) }).slice(0, 180), "x".repeat(180));

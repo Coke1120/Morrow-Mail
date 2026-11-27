@@ -81,6 +81,7 @@ function startup(run) {
   run("check-reader-local-time.js");
   run("check-reader-calendar-selection.js");
   run("check-local-message-link.js");
+  run("check-compose-translation.js");
   run("check-reader-private-checklist.js");
   run("check-ui-editor-feedback.js", 15_000);
   run("check-calendar-keyboard-followup.js", 15_000);

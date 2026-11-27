@@ -6689,3 +6689,13 @@ html[data-window="translate"] #reader .translate-column h2 {
 .reader-checklist label { flex: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .reader-checklist-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
 .reader-checklist .hint { margin: 4px 0 0; }
+
+#compose-translation { width: min(830px, calc(100vw - 24px)); }
+.compose-translation-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 10px 0; }
+.compose-translation-columns label { display: block; margin: 0 0 5px; }
+#compose-translation :is(select, textarea) { width: 100%; }
+#compose-translation-source { max-height: 220px; overflow: auto; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#compose-translation-output { padding: 8px; }
+#compose-translation mark { background-color: Mark; color: MarkText; }
+#compose-translation-destination { overflow-wrap: anywhere; }
+@media (max-width: 560px) { .compose-translation-columns { grid-template-columns: minmax(0, 1fr); } }
