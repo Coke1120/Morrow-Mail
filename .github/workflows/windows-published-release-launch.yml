@@ -57,7 +57,6 @@ jobs:
             }
           }
           $env:MORROW_BOOT_EXIT = '1'
-          $env:MORROW_MAIL_DIR = Join-Path $root 'mail.sqlite'
           $app = Start-Process -FilePath $exe -PassThru
           $deadline = (Get-Date).AddSeconds(100)
           do {
