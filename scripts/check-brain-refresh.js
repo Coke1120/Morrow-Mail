@@ -154,12 +154,12 @@ test("manual only suppresses timer and page-open work, including an already queu
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0].background, false);
 });
 
-test("automatic admission preserves manual/background consent, account consent and queued destination binding", async t => {
+test("automatic admission remains separate from manual actions and keeps the queued destination binding", async t => {
   for (const mode of ["api_key", "chatgpt"]) {
     const f = fixture(t, { mode, granted: false });
     f.answer("emailBrain:refresh", { source: "open" }); await f.settle(); assert.equal(f.calls.length, 0);
     assert.match(f.events.at(-1).payload.error, /Background AI is off/);
-    f.permission.grant({ token: f.permission.status().token, manual: true, background: false });
+    assert.equal(f.permission.status().background, false);
     f.answer("emailBrain:refresh", { source: "open" }); await f.settle(); assert.equal(f.calls.length, 0);
     f.answer("emailBrain:refresh", { source: "manual" }); await f.settle(); assert.equal(f.calls.length, 1);
     f.advance(2 * DAY);
@@ -230,7 +230,7 @@ test("actual Settings tab and preload round-trip cadence without granting permis
   for (let i = 0; i < 8; i++) await tick();
   assert.equal(f.settings.answer("morrow:configGetBrainRefreshCadence", []), "weekly");
   assert.match(get("brain-refresh-setting-status").textContent, /saved/);
-  assert.equal(f.permission.status().manual, false); assert.equal(f.calls.length, 0);
+  assert.equal(f.permission.status().background, false); assert.equal(f.calls.length, 0);
   assert.ok(dispatches.includes("emailBrain:getRefreshStatus"));
   await assert.rejects(exposed.morrow.invoke("morrow:configSetBrainRefreshAnything", "daily"), /Unsupported channel/);
   await assert.rejects(exposed.morrow.invoke("morrow:configSetBrainRefreshCadence", "hourly"), /daily, weekly, or manual/);

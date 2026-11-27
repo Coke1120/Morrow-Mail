@@ -12,7 +12,7 @@ const { buildRequest, preparePlan, planChunks, splitText, mergeParts, extract, L
 const { freezeSources, assertSources, dedupeRows, fingerprint } = require("../host/timeline/sources");
 const { CHANNELS, createService, trustedSender, publicError } = require("../host/timeline/service");
 const exporters = require("../host/timeline/export");
-const { createConsent, VERSION } = require("../host/ai-consent");
+const { createConsent } = require("../host/ai-consent");
 
 const read = filename => fs.readFileSync(path.join(__dirname, "..", filename), "utf8");
 const copy = value => JSON.parse(JSON.stringify(value));
@@ -58,8 +58,6 @@ function memory(context, overrides = {}) {
   let epoch = 0, now = 1000000, closed = false;
   const configuration = { authMode: "api_key", baseUrl: "https://ai.example.org/v1", model: "synthetic-model", apiKey: "synthetic-not-a-secret" };
   const consent = createConsent({ directory: () => directory, config: () => configuration });
-  const approve = () => consent.grant({ token: consent.status().token, manual: true, background: false });
-  if (!overrides.noPermission) approve();
   const namespace = uuid();
   const db = {
     transaction: work => work(), timelineMessage: id => rows.get(id),
@@ -85,7 +83,7 @@ function memory(context, overrides = {}) {
   const service = createService(dependencies);
   const selection = { messages: [{ accountId: "mailbox-1", messageId: [...rows.keys()][0] }], expandThreads: true };
   const prepare = (owner = 1, selected = selection) => service.invoke(owner, "timeline:prepare", { selection: selected, options }, () => {}, () => closed);
-  return { directory, db, rows, accounts, dependencies, service, selection, prepare, consent, approve, calls, downloads, artifacts, savedJobs,
+  return { directory, db, rows, accounts, dependencies, service, selection, prepare, consent, calls, downloads, artifacts, savedJobs,
     changeAccount: () => epoch++, expire: () => { now += 300001; }, close: () => { closed = true; service.close(1); } };
 }
 async function generation(fixture, prepared, owner = 1) {
@@ -318,42 +316,22 @@ test("host rejects unbounded or malformed focus before any AI request", async co
   }
   assert.equal(fixture.calls.length, 0);
 });
-test("a valid saved v2 grant cannot transmit sender/date evidence before renewed manual consent", async context => {
-  const fixture = memory(context, { noPermission: true });
-  const filename = path.join(fixture.directory, "ai-consent.json");
-  const cfg = fixture.dependencies.config();
+test("a verified v2 background choice survives and Timeline data only leaves on Generate", async context => {
+  const f = memory(context);
+  const filename = path.join(f.directory, "ai-consent.json");
+  const cfg = f.dependencies.config();
   const legacy = { id: uuid(), version: 2, manual: true, background: true,
     fingerprint: crypto.createHash("sha256").update(JSON.stringify([2, cfg.authMode,
       require("../host/ai-config").completionsUrl(cfg.baseUrl), cfg.model, "", cfg.apiKey])).digest("hex") };
   fs.writeFileSync(filename, JSON.stringify(legacy));
-  assert.equal(legacy.version, 2);
-  assert.equal(VERSION, 4);
-  const review = fixture.consent.status();
-  assert.equal(review.manual, true); assert.equal(review.background, true);
-  assert.equal(review.scopes.timeline, false); assert.equal(review.scopes.case, false);
-  for (const text of [review.disclosure, review.dataSummary, review.purposes]) {
-    assert.match(text, /sender names and addresses, mail timestamps and date provenance/);
-    assert.match(text, /optional keywords and contact emails/);
-    assert.doesNotMatch(text, /attachment names only/);
-  }
-  const prepared = await fixture.prepare();
-  assert.equal(prepared.allowed, false);
-  const input = { manifestToken: prepared.manifestToken, optionsDigest: prepared.optionsDigest, acceptPartial: true };
-  await assert.rejects(fixture.service.invoke(1, "timeline:generate", input), { code: "ai-consent-required" });
-  assert.equal(fixture.calls.length, 0); assert.equal(fixture.savedJobs.size, 0);
-  assert.deepEqual(JSON.parse(fs.readFileSync(filename)), legacy, "review does not rewrite or approve old permission");
-  assert.throws(() => fixture.consent.grant({ token: review.token, manual: false, background: false }), { code: "ai-consent-required" });
-  fixture.consent.grant({ token: review.token, manual: true, background: false });
-  assert.equal(fixture.consent.status().manual, true); assert.equal(fixture.consent.status().background, false);
-  assert.equal(JSON.parse(fs.readFileSync(filename)).version, 4);
-  assert.equal(fixture.calls.length, 0, "Allow is permission, not a Generate action");
-  await assert.rejects(fixture.service.invoke(1, "timeline:generate", input), { code: "ai-consent-required" });
-  const renewed = await fixture.prepare();
-  assert.equal(renewed.allowed, true);
-  assert.equal(fixture.calls.length, 0, "preparation remains local");
-  const running = await generation(fixture, renewed);
+  assert.equal(f.consent.status().background, true);
+  const prepared = await f.prepare();
+  assert.equal(prepared.allowed, true);
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filename)), legacy);
+  const running = await generation(f, prepared);
   assert.equal((await running.terminal).phase, "completed");
-  const [sent] = JSON.parse(fixture.calls[0].messages[1].content);
+  const [sent] = JSON.parse(f.calls[0].messages[1].content);
   assert.equal(sent.from.address, "ada@example.org");
   assert.equal(sent.mail_timestamp, "2026-11-01T10:00:00.000Z");
   assert.equal(sent.date_source, "header");
@@ -403,7 +381,7 @@ test("revocation followed by reapproval cannot revive an in-flight extraction", 
   let resolve;
   const fixture = memory(context, { complete: messages => new Promise(done => { resolve = () => done(modelResponse(messages)); }) });
   const running = await generation(fixture, await fixture.prepare()); await pause();
-  fixture.consent.revoke(); fixture.approve(); resolve();
+  fixture.consent.revoke(); resolve();
   assert.equal((await running.terminal).phase, "cancelled");
   assert.equal(fixture.artifacts.size, 0);
 });
@@ -604,12 +582,12 @@ test("saved API adapter forwards the output cap, usage and finish reason without
     return new Response(JSON.stringify({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }], usage: { prompt_tokens: 7, completion_tokens: 4 } }));
   };
   context.after(() => { permission.getConsent = originalPermission; global.fetch = originalFetch; });
-  const result = await transport.completeDetailed([{ role: "user", content: "Synthetic text" }], { config: fixture.dependencies.config(), max_tokens: 123 });
+  const result = await transport.completeDetailed([{ role: "user", content: "Synthetic text" }], { consentStamp: fixture.consent.stamp(), config: fixture.dependencies.config(), max_tokens: 123 });
   assert.equal(JSON.parse(requests[0].body).max_tokens, 123);
   assert.equal(requests[0].redirect, "error");
   assert.equal(result.finishReason, "stop");
   assert.deepEqual(result.usage, { inputTokens: 7, outputTokens: 4 });
-  assert.equal(await transport.complete([{ role: "user", content: "Synthetic text" }], { config: fixture.dependencies.config() }), "{}");
+  assert.equal(await transport.complete([{ role: "user", content: "Synthetic text" }], { consentStamp: fixture.consent.stamp(), config: fixture.dependencies.config() }), "{}");
 });
 test("saved API adapter enforces a response byte bound before JSON parsing", async context => {
   const fixture = memory(context);
@@ -618,7 +596,7 @@ test("saved API adapter enforces a response byte bound before JSON parsing", asy
   permission.getConsent = () => fixture.consent;
   global.fetch = async () => new Response("x".repeat(40000));
   context.after(() => { permission.getConsent = originalPermission; global.fetch = originalFetch; });
-  await assert.rejects(transport.completeDetailed([{ role: "user", content: "Synthetic" }], { config: fixture.dependencies.config(), maxOutputBytes: 16 }), /output limit/);
+  await assert.rejects(transport.completeDetailed([{ role: "user", content: "Synthetic" }], { consentStamp: fixture.consent.stamp(), config: fixture.dependencies.config(), maxOutputBytes: 16 }), /output limit/);
 });
 function responsesFixture(text = "{}") {
   const requests = [], controller = new AbortController();
@@ -708,7 +686,9 @@ test("reader toolbar is the only Timeline entry and captures the opened message,
   const button = fixture.document.querySelector('[data-action="timeline"]');
   assert.equal(fixture.document.querySelectorAll('[data-action="timeline"]').length, 1);
   assert.equal(button.textContent, "Timeline");
-  assert.equal(button.previousElementSibling.dataset.action, "summary");
+  const summaryGroup = button.previousElementSibling;
+  assert.ok(summaryGroup.matches(".reader-summary-actions"));
+  assert.equal(summaryGroup.firstElementChild.dataset.action, "summary");
   assert.equal(button.getAttribute("aria-haspopup"), "dialog");
   for (const id of ["message-tab", "timeline-tab", "timeline-panel", "timeline-from-selection", "timeline-from-reader", "timeline-from-search", "timeline-review"]) assert.equal(fixture.document.getElementById(id), null);
   button.click(); await pause();
@@ -1385,11 +1365,12 @@ test("failed and blocked runs retain owner, source and renewed-consent guards fo
     const running = await generation(fixture, prepared); await running.terminal;
     if (change === "account") fixture.changeAccount();
     if (change === "body") fixture.rows.get("mail-1").text_body = "Changed synthetic evidence";
-    if (change === "permission") { fixture.consent.revoke(); fixture.approve(); }
+    if (change === "permission") { fixture.consent.revoke(); }
     const input = { selection: fixture.selection, options, manifestToken: prepared.manifestToken };
     if (change === "permission") {
       await assert.rejects(fixture.service.invoke(1, "timeline:generate", { manifestToken: prepared.manifestToken, optionsDigest: prepared.optionsDigest, acceptPartial: true }), { code: "timeline-manifest" });
-      const next = await fixture.service.invoke(1, "timeline:prepare", input);
+      await assert.rejects(fixture.service.invoke(1, "timeline:prepare", input), { code: "ai-consent-required" });
+      const next = await fixture.prepare();
       assert.notEqual(next.optionsDigest, prepared.optionsDigest);
     } else await assert.rejects(fixture.service.invoke(change === "owner" ? 2 : 1, "timeline:prepare", input), { code: change === "owner" ? "timeline-manifest" : "timeline-source-changed" });
     assert.equal(fixture.calls.length, 1);
@@ -1717,23 +1698,20 @@ test("case reduction admits every semantic item and retains citation mail-date a
   assert.ok(report.current_status.length > 0);
 });
 
-test("verified v3 consent keeps unchanged Thread Timeline/background uses while Case needs incremental approval", async context => {
-  const f = memory(context, { noPermission: true });
+test("a legacy v3 record cannot replace the per-action Case review", async context => {
+  const f = memory(context);
   const cfg = f.dependencies.config();
   fs.writeFileSync(path.join(f.directory, "ai-consent.json"), JSON.stringify({ id: uuid(), version: 3, manual: true, background: true,
     fingerprint: crypto.createHash("sha256").update(JSON.stringify([3, cfg.authMode,
       require("../host/ai-config").completionsUrl(cfg.baseUrl), cfg.model, "", cfg.apiKey])).digest("hex") }));
-  const status = f.consent.status();
-  assert.equal(status.version, 4); assert.equal(status.manual, true); assert.equal(status.background, true);
-  assert.equal(status.scopes.timeline, true); assert.equal(status.scopes.case, false);
-  const thread = await f.prepare(); assert.equal(thread.allowed, true);
-  const reviewedCase = await casePreparation(f); assert.equal(reviewedCase.allowed, false);
-  await assert.rejects(caseGeneration(f, reviewedCase), { code: "ai-consent-required" });
+  assert.equal(f.consent.status().background, true);
+  assert.equal((await f.prepare()).allowed, true);
+  const reviewedCase = await casePreparation(f);
+  assert.equal(reviewedCase.allowed, true);
+  await assert.rejects(f.service.invoke(1, "timeline:generate", {
+    manifestToken: reviewedCase.manifestToken, optionsDigest: reviewedCase.optionsDigest, acceptPartial: true,
+  }), { code: "timeline-input" });
   assert.equal(f.calls.length, 0);
-  assert.match(status.disclosure, /cross-thread case synthesis/);
-  assert.match(status.dataSummary, /Main\/Background selections/);
-  f.consent.grant({ token: status.token, manual: true, background: false });
-  assert.equal(f.consent.status().manual, true); assert.equal(f.consent.status().background, false);
 });
 
 test("Case sheet close cancels synthesis and rejects a late completion", async context => {
@@ -1854,20 +1832,23 @@ test("body-free Case contexts reject broadened input and retain owner/source/acc
   assert.equal(f.calls.length, 0); assert.equal(f.downloads.length, 0);
 });
 
-test('ordinary AI permission cannot admit Thread Timeline or Case without their reviewed scope', async t => {
+test("ready connections can run a reviewed Timeline with automatic processing off", async t => {
   const f = memory(t);
-  const grant = scopes => f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes });
-  grant(['core']);
-  const prepared = await f.prepare(); assert.equal(prepared.allowed, false);
-  await assert.rejects(generation(f, prepared), { code: 'ai-consent-required' });
-  assert.equal(f.calls.length, 0); assert.equal(f.artifacts.size, 0);
-  grant(['core', 'timeline']);
-  const thread = await f.prepare(); assert.equal(thread.allowed, true);
-  const done = await generation(f, thread); assert.equal((await done.terminal).phase, 'completed');
-  assert.equal(f.calls[0].request.consentScope, 'timeline');
-  const selectedCase = await casePreparation(f); assert.equal(selectedCase.allowed, false);
-  await assert.rejects(caseGeneration(f, selectedCase), { code: 'ai-consent-required' });
-  assert.equal(f.calls.length, 1); assert.equal(f.artifacts.size, 1);
+  assert.equal(f.consent.status().background, false);
+  const prepared = await f.prepare();
+  assert.equal(prepared.allowed, true);
+  assert.equal(f.calls.length, 0);
+  f.dependencies.config().model = "different-model";
+  await assert.rejects(f.service.invoke(1, "timeline:prepare", {
+    manifestToken: prepared.manifestToken, selection: f.selection, options,
+  }), { code: "ai-consent-required" });
+  assert.equal(f.calls.length, 0);
+  const refreshed = await f.prepare();
+  const done = await generation(f, refreshed);
+  assert.equal((await done.terminal).phase, "completed");
+  assert.equal(f.calls[0].request.consentScope, "timeline");
+  assert.equal(f.calls[0].request.consentStamp, f.consent.stamp());
+  assert.equal(f.artifacts.size, 1);
 });
 
 test("model JSON accepts only one whole-response fence while artifact parsing stays strict", () => {

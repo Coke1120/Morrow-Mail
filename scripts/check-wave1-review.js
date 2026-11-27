@@ -705,7 +705,7 @@ test("Features: actual catalog render and tab switching keep recovery, privacy a
   ui.context.window.morrowFeaturesCatalog = catalog;
   ui.run("paintFeatureCatalog()");
   const rendered = ui.nodes.get("features-catalog").textContent;
-  for (const claim of [/uncertain.*Scheduled delivery review/i, /accumulate completed changes across batches/, /retired session cannot revive/, /terminal refusals/, /ai\.json.*not OS encryption/, /Disable and Revoke/, /selected skill ID/, /newer typing/]) assert.match(rendered, claim);
+  for (const claim of [/uncertain.*Scheduled delivery review/i, /accumulate completed changes across batches/, /retired session cannot revive/, /terminal refusals/, /API keys are stored in plaintext in ai\.json with restricted file permissions\. ChatGPT credentials use OS-encrypted storage\./, /Disable and Revoke/, /selected skill ID/, /newer typing/]) assert.match(rendered, claim);
   assert.match(rendered, /Undo reopens Compose.*Agent todo.*confirmed send/);
   assert.match(rendered, /Outlook description edits.*surrounding whitespace.*provider revision/);
   for (const claim of [/On Windows and macOS/, /guarded per-request grant snapshots/, /Durable acknowledgement, journal recovery and fsync are unchanged/, /only for changed headers/, /Next loads more/, /source-limited message is not downloaded automatically again/, /Skills load on the Tools tab/, /in-flight reads are allowed to settle/]) assert.match(rendered, claim);

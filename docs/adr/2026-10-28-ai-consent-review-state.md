@@ -13,3 +13,11 @@ The first implementation's Astra review reproduced two lifecycle failures. Setup
 Regression evidence: three new lifecycle tests failed on the integrated compact UI before these fixes. They run the actual native Setup controller and Settings AI fold loader/close cleanup with the production preloads, host handlers, validation and memory-only persistence. They cover save during initial load, newer unsaved edits, repeated dirty reopen (key, endpoint, model and authentication), Save & review, old account/permission replies, and Cancel / revoke defeating a pending Allow. Existing ownership tests cover save failures, sign-in cancellation and late replies. JSDOM checks disclosure placement and accessible descriptions without loading resources or contacting providers. Validation commands are the focused consent/Settings/Setup/ChatGPT suites and `CI=1 npm run check`; these are synthetic DOM/VM checks, not native window validation.
 
 Chromium navigation to `file:///workspace/Morrow-Mail/renderer/index.html` returned `net::ERR_BLOCKED_BY_ADMINISTRATOR`. No alternate browser route, runtime or policy bypass was attempted. Screenshots and native rendered QA remain unavailable. No actual user settings, keys, mailbox data, model requests or consent records were used.
+
+## Superseded UI
+
+[#665](https://github.com/Coke1120/Morrow-Mail/issues/665) replaces the permission review form with a single
+Automatic processing preference. The
+[updated bridge ADR](2026-10-26-ai-consent-settings-bridge.md#settings-simplification-665)
+describes the new explicit-action and background boundaries. Connection
+baselines, form ownership and stale-reply handling still apply.

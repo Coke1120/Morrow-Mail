@@ -478,9 +478,8 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
     const consent = consentModule.createConsent({ directory: () => directory, config: config.loadConfig,
       account: () => ({ activeId: "synthetic-account", connected: true, planEnabled: true }), background() {} });
     consentModule.getConsent = () => consent;
-    const allow = () => consent.grant({ token: consent.status().token, manual: true, background: false });
+    const operation = require("../host/ai-context").operation;
     config.saveConfig({ baseUrl: "https://synthetic-api.invalid/custom/v1", model: "existing-model", apiKey: "synthetic-api-key" });
-    allow();
     assert.equal(config.loadConfig().authMode, "api_key");
     const calls = [];
     global.fetch = async (url, input) => {
@@ -493,12 +492,11 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
       if (payload.stream) return new Response("data: [DONE]\n\n");
       return json({ choices: [{ message: { content: "Existing API response" } }] });
     };
-    assert.equal(await client.complete([{ role: "user", content: "Synthetic" }], { temperature: 0.2, max_tokens: 25 }), "Existing API response");
+    assert.equal(await operation(() => client.complete([{ role: "user", content: "Synthetic" }], { temperature: 0.2, max_tokens: 25 })), "Existing API response");
     assert.equal(JSON.parse(calls[0].input.body).max_tokens, 25);
     assert.deepEqual(await client.listModels(), { ok: true, models: ["existing-model"] });
     const original = config.loadConfig();
     config.saveConfig({ authMode: "chatgpt", chatgptModel: "synthetic-sol", apiKey: "" });
-    allow();
     assert.equal(config.loadConfig().apiKey, original.apiKey);
     assert.equal(config.loadConfig().baseUrl, original.baseUrl);
     assert.equal(config.loadConfig().model, original.model);
@@ -510,13 +508,12 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
       listModels: async () => ({ ok: true, models: ["synthetic-sol"] }),
     });
     const apiCalls = calls.length;
-    await assert.rejects(client.complete([{ role: "user", content: "Synthetic" }]), /quota failure/);
-    await assert.rejects(client.stream([{ role: "user", content: "Synthetic" }], () => {}), /stream failure/);
+    await assert.rejects(operation(() => client.complete([{ role: "user", content: "Synthetic" }])), /quota failure/);
+    await assert.rejects(operation(() => client.stream([{ role: "user", content: "Synthetic" }], () => {})), /stream failure/);
     assert.equal(oauthCalls, 2);
     assert.equal(calls.length, apiCalls, "ChatGPT errors must never fall back to API billing");
     assert.deepEqual(await client.listModels(), { ok: true, models: ["synthetic-sol"] });
     config.saveConfig({ authMode: "api_key" });
-    allow();
     assert.equal(config.loadConfig().apiKey, "synthetic-api-key");
     assert.equal(config.loadConfig().chatgptModel, "synthetic-sol");
     // A mode edit cancels the old request and forbids its completion retry.
@@ -526,7 +523,7 @@ test("existing API key/custom endpoint behavior and separate ChatGPT settings su
       return apiFetch(url, input);
     };
     let output = "";
-    await assert.rejects(client.stream([{ role: "user", content: "Synthetic" }], piece => { output += piece; }), /cancelled/);
+    await assert.rejects(operation(() => client.stream([{ role: "user", content: "Synthetic" }], piece => { output += piece; })), /cancelled/);
     assert.equal(output, "");
     assert.equal(oauthCalls, 2);
     assert.throws(() => config.saveConfig({ authMode: "unknown" }), /Choose API key or ChatGPT/);
@@ -600,7 +597,7 @@ test("host background classification survives async work and cannot be removed b
     consent.grant({ token: consent.status().token, manual: true, background: true });
     let options;
     responses.getResponses = () => ({ complete: async (_messages, input) => { options = input; return "Synthetic"; } });
-    await context.background(() => require("../host/openai-client").complete([{ role: "user", content: "Synthetic" }], { background: false }));
+    await context.background(() => context.operation(() => require("../host/openai-client").complete([{ role: "user", content: "Synthetic" }], { background: false })));
     assert.equal(options.background, true, "caller options cannot downgrade a classified background run");
   } finally {
     responses.getResponses = previousResponses;

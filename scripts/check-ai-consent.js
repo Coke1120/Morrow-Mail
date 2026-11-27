@@ -11,6 +11,8 @@ const { createConsent, VERSION } = consentModule;
 const config = require("../host/ai-config");
 const client = require("../host/openai-client");
 const context = require("../host/ai-context");
+const manualComplete = (...args) => context.operation(() => client.complete(...args));
+const manualStream = (...args) => context.operation(() => client.stream(...args));
 const responses = require("../host/chatgpt-responses");
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -42,7 +44,7 @@ function fixture(t) {
     fs.rmSync(directory, { recursive: true, force: true });
   });
   return { directory, consent, calls, adapterCalls, account: () => account, setAccount: value => { account = { ...account, ...value }; },
-    allow: (background = false) => consent.grant({ token: consent.status().token, manual: true, background }) };
+    allow: () => consent.grant({ token: consent.status().token, background: true }) };
 }
 
 test("an unready saved target names the missing step and still refuses grant", () => {
@@ -54,89 +56,91 @@ test("an unready saved target names the missing step and still refuses grant", (
   });
   const status = consent.status();
   assert.equal(status.ready, false);
-  assert.equal(status.manual, false);
-  assert.match(status.blocker, /Save an API key and a model, then review this connection again/);
+  assert.equal(status.background, false);
+  assert.match(status.blocker, /Save an API key and a model.*Settings/);
   assert.doesNotMatch(status.blocker, /synthetic/);
-  assert.throws(() => consent.grant({ token: status.token, manual: true, background: false }), /permission changed/);
-  assert.equal(consent.status().manual, false);
+  assert.throws(() => consent.grant({ token: status.token, background: true }), /connection changed/);
 });
 
-test("existing API/ChatGPT/background settings, corrupt files and old disclosures never grandfather permission", async t => {
+test("old, corrupt and account-only records never enable automatic processing", async t => {
   const f = fixture(t);
-  assert.equal(f.consent.status().manual, false);
-  for (const input of [undefined, { manual: false, background: true }, { token: f.consent.status().token, manual: true }]) assert.throws(() => f.consent.grant(input));
-  await assert.rejects(client.complete([{ role: "user", content: "Synthetic mail" }]), /AI data use is off/);
-  await assert.rejects(client.stream([], () => {}), /AI data use is off/);
+  assert.equal(f.consent.status().background, false);
+  for (const input of [undefined, { background: true }, { token: f.consent.status().token, background: false }]) {
+    assert.throws(() => f.consent.grant(input));
+  }
+  await assert.rejects(client.complete([]), /start the action again/);
+  await assert.rejects(client.stream([], () => {}), /start the action again/);
   config.saveConfig({ authMode: "chatgpt", chatgptModel: "fixture-chat" });
-  await assert.rejects(client.complete([]), /AI data use is off/);
   assert.equal(f.account().backgroundConsent, true, "legacy account opt-in is insufficient");
   for (const raw of ["damaged", JSON.stringify({ version: VERSION - 1, manual: true, background: true })]) {
     fs.writeFileSync(path.join(f.directory, "ai-consent.json"), raw);
-    assert.equal(f.consent.status().manual, false);
-    await assert.rejects(client.complete([]), /AI data use is off/);
+    assert.equal(f.consent.status().background, false);
+    await assert.rejects(manualComplete([], { background: true }), /Background AI is off/);
   }
   assert.equal(f.calls.length + f.adapterCalls.length, 0);
 });
 
-test("manual permission, separate background permission and local/remote disclosure", async t => {
+test("manual operations need a saved connection and a stamp; automatic work needs its own setting", async t => {
   const f = fixture(t);
-  f.allow();
-  assert.equal(await client.complete([{ role: "user", content: "Synthetic" }]), "Synthetic answer");
+  assert.equal(await manualComplete([{ role: "user", content: "Synthetic" }]), "Synthetic answer");
   assert.equal(f.calls[0].input.redirect, "error");
-  for (const run of [() => client.complete([], { background: true }), () => context.background(() => client.complete([], { background: false })), () => context.background(() => client.stream([], () => {}))]) await assert.rejects(run(), /Background AI is off/);
+  for (const run of [() => manualComplete([], { background: true }),
+    () => context.background(() => manualComplete([], { background: false })),
+    () => context.background(() => manualStream([], () => {}))]) await assert.rejects(run(), /Background AI is off/);
   assert.equal(f.calls.length, 1);
-  f.allow(true);
-  await context.background(() => client.complete([]));
+  f.allow();
+  await context.background(() => manualComplete([]));
   assert.equal(f.calls.length, 2);
   const status = f.consent.status();
-  assert.match(status.disclosure, /calendar|event titles/);
-  assert.match(status.backgroundDisclosure, /reply composition opens/);
-  assert.match(status.providerTerms, /not a guarantee/);
   assert.ok(!JSON.stringify(status).includes("synthetic-key"));
   assert.equal(status.local, false);
   config.saveConfig({ baseUrl: "http://127.0.0.1:12345/v1" });
   assert.equal(f.consent.status().local, true);
-  assert.match(f.consent.status().locality, /may forward/);
-  assert.equal(f.consent.status().manual, false);
+  assert.equal(f.consent.status().background, false);
 });
 
-test("provider, path, model, key, mode and account changes require fresh consent and reject stale approval", async t => {
+test("provider, path, model, key, mode or account changes retire credentials for queued work", async t => {
   const f = fixture(t);
-  for (const edit of [{ baseUrl: "https://synthetic.invalid/new/v1" }, { model: "different-model" }, { apiKey: "different-key" }, { authMode: "chatgpt", chatgptModel: "fixture-chat" }]) {
-    f.allow(true);
-    const stale = f.consent.status().token;
+  for (const edit of [{ baseUrl: "https://synthetic.invalid/new/v1" }, { model: "different-model" },
+    { apiKey: "different-key" }, { authMode: "chatgpt", chatgptModel: "fixture-chat" }]) {
+    f.allow();
+    const stale = f.consent.stamp();
     config.saveConfig(edit);
-    assert.equal(f.consent.status().manual, false);
-    assert.throws(() => f.consent.grant({ token: stale, manual: true, background: false }), /changed/);
-    await assert.rejects(client.complete([]), /AI data use is off/);
+    assert.equal(f.consent.status().background, false);
+    assert.throws(() => f.consent.grant({ token: stale, background: true }), /changed/);
+    await assert.rejects(client.complete([], { consentStamp: stale }), /start the action again/);
   }
-  f.allow(true);
-  assert.equal(await client.complete([]), "Synthetic ChatGPT answer");
+  assert.equal(await manualComplete([]), "Synthetic ChatGPT answer");
   assert.equal(f.adapterCalls.length, 1);
-  const lease = f.consent.acquire(config.loadConfig());
+  f.allow();
+  const stale = f.consent.stamp();
+  const lease = f.consent.acquire(config.loadConfig(), { stamp: stale });
+  f.setAccount({ pending: true });
+  await assert.rejects(manualComplete([]), /finish connecting ChatGPT/i);
+  f.setAccount({ pending: false, connectionRevision: 1 });
+  await assert.rejects(client.complete([], { consentStamp: stale }), /start the action again/);
   f.setAccount({ activeId: "different-account" });
   assert.throws(lease.check, /cancelled/);
-  await assert.rejects(client.complete([]), /AI data use is off/);
+  await assert.rejects(client.complete([], { consentStamp: stale }), /start the action again/);
   lease.release();
   config.saveConfig({ authMode: "api_key" });
-  assert.equal(f.consent.status().manual, false, "switching back cannot resurrect an older grant");
+  assert.equal(f.consent.status().background, false, "switching back cannot resurrect an older grant");
   const saved = config.loadConfig();
   assert.throws(() => config.saveConfig({ baseUrl: "file:///synthetic" }));
-  assert.deepEqual(config.loadConfig(), saved, "invalid destination cannot poison settings");
+  assert.deepEqual(config.loadConfig(), saved);
 });
 
 test("revoke aborts concurrent API requests and ignores providers that deliver after abort", async t => {
   const f = fixture(t); f.allow(true);
   const wait = deferred(), signals = [];
   global.fetch = async (_url, input) => { signals.push(input.signal); await wait.promise; return json({ choices: [{ message: { content: "Late synthetic answer" } }] }); };
-  const pending = [client.complete([]), client.complete([])];
+  const pending = [manualComplete([]), manualComplete([])];
   f.consent.revoke();
   assert.ok(signals.every(signal => signal.aborted));
   wait.resolve();
   for (const result of pending) await assert.rejects(result, /cancelled/);
   const stop = new AbortController(); stop.abort();
-  f.allow();
-  await assert.rejects(client.complete([], { signal: stop.signal }), /cancelled/);
+  await assert.rejects(manualComplete([], { signal: stop.signal }), /cancelled/);
   assert.equal(signals.length, 2, "pre-cancelled actions never reach fetch");
 });
 
@@ -145,7 +149,7 @@ test("queued actions cannot resume after revoke/regrant and changed streams cann
   const queued = deferred();
   const old = context.operation(async () => { await queued.promise; return client.complete([]); });
   f.consent.revoke(); f.allow(); queued.resolve();
-  await assert.rejects(old, /permission changed|permission.*changed/);
+  await assert.rejects(old, /start the action again/);
   assert.equal(f.calls.length, 0);
   let sends = 0, chunks = "";
   global.fetch = async () => {
@@ -153,7 +157,7 @@ test("queued actions cannot resume after revoke/regrant and changed streams cann
     config.saveConfig({ model: "new-fixture-model" });
     return new Response("data: [DONE]\n\n");
   };
-  await assert.rejects(client.stream([], chunk => { chunks += chunk; }), /cancelled/);
+  await assert.rejects(manualStream([], chunk => { chunks += chunk; }), /cancelled/);
   assert.equal(sends, 1);
   assert.equal(chunks, "");
   assert.equal(f.adapterCalls.length, 0, "no provider or paid fallback");
@@ -169,22 +173,22 @@ test("actual host test and account-change IPC enforce permission independently o
     updateGate: { run: work => work() }, require: name => {
       if (name === "./ai-consent") return consentModule;
       if (name === "./chatgpt-auth") return { getAuth: () => auth };
+      if (name === "./ai-context") return context;
       throw new Error(`Unexpected dependency ${name}`);
     } });
   const run = (name, input) => handlers.get(name)({}, input);
-  assert.equal((await run("host:aiTest", {})).ok, false);
-  assert.equal(f.calls.length, 0);
-  f.allow();
   assert.equal((await run("host:aiTest", {})).ok, true);
   assert.match(f.calls[0].input.body, /Say hello/);
   assert.equal((await run("host:aiTest", { model: "unapproved-model" })).ok, false);
   assert.equal(f.calls.length, 1);
   config.saveConfig({ authMode: "chatgpt", chatgptModel: "fixture-chat" }); f.allow();
-  const lease = f.consent.acquire(config.loadConfig());
+  assert.equal((await run("host:aiTest", { accountId: "another-account" })).ok, false);
+  assert.equal(f.adapterCalls.length, 0);
+  const lease = f.consent.acquire(config.loadConfig(), { stamp: f.consent.stamp() });
   run("host:chatgptSelect", "synthetic-account");
-  assert.equal(f.consent.status().manual, true); assert.equal(lease.signal.aborted, false);
+  assert.equal(f.consent.status().background, true); assert.equal(lease.signal.aborted, false);
   run("host:chatgptSelect", "another-account");
-  assert.equal(f.consent.status().manual, false); assert.equal(lease.signal.aborted, true); lease.release();
+  assert.equal(f.consent.status().background, false); assert.equal(lease.signal.aborted, true); lease.release();
 });
 
 function loadSynthetic(name, replacements) {
@@ -197,6 +201,7 @@ function loadSynthetic(name, replacements) {
 
 test("actual Brain, Agent, custom/catalog skill, draft, suggestion and translation entrypoints all fail closed", async t => {
   const f = fixture(t), events = [];
+  fs.writeFileSync(path.join(f.directory, "ai.json"), JSON.stringify({ ...config.loadConfig(), apiKey: "" }));
   const mail = { id: "fixture-message", accountId: "fixture-account", from: "fixture@example.invalid", subject: "Fixture", snippet: "Synthetic context", date: "2026-10-25", folderPath: "INBOX" };
   const db = { hasAccounts: () => true, recentInbox: () => [mail], recentInWellKnown: () => [mail], messageById: () => null };
   const electron = { BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false, webContents: { send: (channel, payload) => events.push({ channel, payload }) } }] } };
@@ -228,10 +233,12 @@ test("actual Brain, Agent, custom/catalog skill, draft, suggestion and translati
   brain.answer("emailBrain:rebuild", []);
   await tick(); await tick();
   for (const row of events.filter(row => row.payload?.error || row.payload?.type === "error")) messages.push(row.payload.error || row.payload.message);
-  assert.ok(messages.length >= 14, "each real entrypoint returned its normal error surface");
-  for (const message of messages) assert.match(String(message), /AI data use is off|Background AI is off/, String(message));
+  assert.ok(messages.length >= 10, "each real entrypoint returned its normal error surface");
+  for (const message of messages.filter(Boolean)) {
+    assert.match(String(message), /Add an API key|Save an API key|Background AI is off/i, String(message));
+  }
   assert.equal(f.calls.length + f.adapterCalls.length, 0);
-  f.allow();
+  config.saveConfig({ apiKey: "synthetic-key" });
   const automatic = await draft.answer("aiDraftWrite:replySuggestions", [{ source: "compose-open", email: mail }]);
   assert.match(automatic.error.message, /Background AI is off/);
   assert.equal(f.calls.length, 0);
@@ -244,53 +251,35 @@ function legacyGrant(f, version, extra = {}) {
   fs.writeFileSync(path.join(f.directory, 'ai-consent.json'), JSON.stringify(record)); return record;
 }
 
-test('verified historical disclosures preserve only unchanged uses across a restart without rewriting the grant', t => {
-  const f = fixture(t); f.allow();
-  for (const version of [1, 2, 3, 4]) {
-    legacyGrant(f, version);
-    const original = fs.readFileSync(path.join(f.directory, 'ai-consent.json'), 'utf8');
-    const restarted = createConsent({ directory: () => f.directory, config: config.loadConfig });
-    for (const consent of [f.consent, restarted]) {
-      const value = consent.status();
-      assert.equal(value.manual, true); assert.equal(value.background, true);
-      assert.equal(value.scopes.timeline, version >= 3); assert.equal(value.scopes.case, version >= 4);
-      consent.acquire(config.loadConfig(), { background: true }).release();
-      for (const scope of ['timeline', 'case']) {
-        if (value.scopes[scope]) consent.acquire(config.loadConfig(), { scope }).release();
-        else assert.throws(() => consent.acquire(config.loadConfig(), { scope }), /separately allow/);
-      }
-    }
-    assert.equal(fs.readFileSync(path.join(f.directory, 'ai-consent.json'), 'utf8'), original);
-  }
-  for (const extra of [{ fingerprint: 'wrong-destination' }, { manual: false }, { version: 99 }, { format: 'unknown' }]) {
-    legacyGrant(f, 4, extra); assert.equal(f.consent.status().manual, false);
-  }
-});
-
-test('scoped disclosure upgrades keep unchanged manual/background uses and request only the expanded scope', t => {
-  const f = fixture(t); f.allow(true);
-  const { SCOPES } = consentModule;
-  for (const key of ['case', 'timeline', 'background', 'core']) {
-    const upgraded = createConsent({ directory: () => f.directory, config: config.loadConfig, scopeVersions: { ...SCOPES, [key]: 2 } });
-    const status = upgraded.status();
-    assert.equal(status.manual, key !== 'core');
-    assert.equal(status.background, !['core', 'background'].includes(key));
-    assert.equal(status.scopes.timeline, !['core', 'timeline'].includes(key));
-    assert.equal(status.scopes.case, !['core', 'timeline', 'case'].includes(key));
-    if (key !== 'core') upgraded.acquire(config.loadConfig()).release();
-    assert.throws(() => upgraded.acquire(config.loadConfig(), key === 'background' ? { background: true } : { scope: key === 'core' ? 'core' : key }), /off|separately allow/);
-  }
-});
-
-test('Timeline adapters require their specific permission even when ordinary explicit AI is allowed', async t => {
+test("verified legacy automatic processing survives restart for the same connection", t => {
   const f = fixture(t);
-  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core'] });
-  for (const consentScope of ['timeline', 'case', 'unknown']) await assert.rejects(client.complete([{ role: 'user', content: 'Fictional mail' }], { consentScope }), /separately allow/);
-  assert.equal(f.calls.length, 0);
-  f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core', 'timeline'] });
-  await client.complete([], { consentScope: 'timeline' }); assert.equal(f.calls.length, 1);
-  await assert.rejects(client.complete([], { consentScope: 'case' }), /separately allow/);
-  await assert.rejects(context.background(() => client.complete([], { consentScope: 'timeline' })), /Background AI is off|separately allow/);
-  assert.equal(f.calls.length, 1);
-  assert.throws(() => f.consent.grant({ token: f.consent.status().token, manual: true, background: false, scopes: ['core', 'case'] }), /Review the selected/);
+  const filename = path.join(f.directory, "ai-consent.json");
+  const restart = options => createConsent({ directory: () => f.directory, config: config.loadConfig, ...options });
+  for (const version of [1, 2, 3, 4]) {
+    const record = legacyGrant(f, version);
+    const consent = restart();
+    assert.equal(consent.status().background, true);
+    consent.acquire(config.loadConfig(), { stamp: consent.stamp(), background: true }).release();
+    assert.deepEqual(JSON.parse(fs.readFileSync(filename)), record);
+  }
+  for (const extra of [{ fingerprint: "wrong-destination" }, { manual: false }, { version: 99 }, { format: "unknown" }]) {
+    legacyGrant(f, 4, extra);
+    assert.equal(restart().status().background, false);
+  }
+  f.allow();
+  for (const key of ["case", "timeline", "background", "core"]) {
+    const consent = restart({ scopeVersions: { ...consentModule.SCOPES, [key]: 2 } });
+    assert.equal(consent.status().background, !["core", "background"].includes(key));
+  }
+});
+
+test("Timeline and Case never run through automatic processing", async t => {
+  const f = fixture(t);
+  for (const consentScope of ["timeline", "case"]) await manualComplete([], { consentScope });
+  await assert.rejects(manualComplete([], { consentScope: "unknown" }), /started manually/);
+  f.allow();
+  for (const consentScope of ["timeline", "case"]) {
+    await assert.rejects(manualComplete([], { consentScope, background: true }), /started manually/);
+  }
+  assert.equal(f.calls.length, 2);
 });

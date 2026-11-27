@@ -49,27 +49,24 @@ const root = path.join(__dirname, '..'), output = process.env.MORROW_UI_OUTPUT |
       window.fixtureComponent = window.morrowChatgptSettings.mount({ container: document.querySelector('#ai-account-settings'), consentContainer: document.querySelector('#ai-data-settings'), compact: true, invoke: morrow.invoke });
       await fixtureComponent.load({ authMode: 'api_key' });
     });
-    assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);
-    assert.equal(await page.locator('#ai-consent-timeline').isChecked(), true);
-    assert.equal(await page.locator('#ai-consent-case').isChecked(), false);
-    assert.match(await page.locator('#ai-consent-status').textContent(), /Saved permission:.*Case needs approval/);
+    const automatic = page.locator('#ai-automatic-processing');
+    assert.equal(await automatic.inputValue(), 'manual');
+    assert.equal(await page.locator('#settings-ai input[type=checkbox]').count(), 0);
     await page.evaluate(async () => { fixtureComponent.dispose(); await fixtureComponent.resume(); });
-    assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);
+    assert.equal(await automatic.inputValue(), 'manual');
     assert.equal(calls.filter(x => x === 'host:aiConsentGrant').length, 0);
-    const review = page.locator('#ai-consent-edit > summary'), optional = page.locator('#ai-consent-optional > summary');
-    await review.click(); await optional.click();
-    await page.locator('#ai-consent-case').check(); assert.equal(consent.status().scopes.case, false);
-    await page.locator('#ai-consent-allow').click();
-    await page.waitForFunction(() => document.querySelector('#ai-consent-status').textContent.includes('Case allowed'));
-    assert.equal(consent.status().scopes.case, true); assert.equal(consent.status().background, false);
+    await automatic.selectOption('automatic');
+    await page.waitForFunction(() => !document.querySelector('#ai-automatic-processing').disabled);
+    assert.equal(consent.status().background, true);
     for (const width of [1100, 390]) for (const theme of ['light', 'dark']) {
       await page.setViewportSize({ width, height: 900 }); await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
-      await page.locator('#ai-consent-status').scrollIntoViewIfNeeded();
-      assert.equal(await page.locator('#ai-consent-manual').isChecked(), true);
-      await page.screenshot({ path: path.join(output, `saved-${theme}-${width}.png`) });
+      await automatic.scrollIntoViewIfNeeded();
+      assert.equal(await automatic.inputValue(), 'automatic');
+      await page.screenshot({ path: path.join(output, `background-${theme}-${width}.png`) });
     }
-    await page.locator('#ai-consent-revoke').click(); await page.waitForFunction(() => !document.querySelector('#ai-consent-manual').checked);
-    assert.equal(consent.status().manual, false); assert.equal(consent.status().scopes.case, false);
+    await automatic.selectOption('manual');
+    await page.waitForFunction(() => !document.querySelector('#ai-automatic-processing').disabled);
+    assert.equal(consent.status().background, false);
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
     console.log(JSON.stringify({ ok: true, widths: [1100, 390], themes: ['light', 'dark'], hostCalls: calls.length, modelCalls: 0, screenshots: output }));
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); fs.rmSync(directory, { recursive: true, force: true }); }

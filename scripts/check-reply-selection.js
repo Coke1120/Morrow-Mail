@@ -97,3 +97,42 @@ test("creates a plain-text quote with line breaks and no links or images", t => 
   assert.equal(quote.innerHTML, "<pre><span>18 mm &lt;trim&gt;  &amp; 中文\n\nhttps://example.invalid/label</span></pre>");
   assert.equal(quote.querySelector("pre").textContent, "18 mm <trim>  & 中文\n\nhttps://example.invalid/label");
 });
+
+test("the reader menu uses its own selected passage and rejects missing or replaced sources", async t => {
+  const { document, body, selection } = fixture(t, "<p>Before excerpt after.</p>");
+  const ui = renderer({ window: document.defaultView, document });
+  ui.run(`
+    state.view = "mail";
+    state.accounts = [{ id: "acct", email: "me@example.invalid", bodyEpoch: 1 }];
+    state.email = { id: "one", accountId: "acct", bodyEpoch: 1, textBody: "Before excerpt after." };
+    globalThis.replySeeds = [];
+    globalThis.feedback = [];
+    presentCompose = async seed => replySeeds.push(seed);
+    showStatus = message => feedback.push(message);
+  `);
+  ui.context.body = body;
+  const text = body.querySelector("p").firstChild;
+  function openItem(select) {
+    if (select) selection.setBaseAndExtent(text, 7, text, 14);
+    else selection.removeAllRanges();
+    ui.context.menu = document.createElement("div");
+    ui.run("appendReaderBodyActions(menu, { ...state.email }, body)");
+    return [...ui.context.menu.children].find(node => node.textContent === "Reply quoting selection");
+  }
+  const invoke = async item => {
+    item.click();
+    await new Promise(setImmediate);
+  };
+  const selected = openItem(true);
+  selection.removeAllRanges();
+  await invoke(selected);
+  assert.equal(ui.run("replySeeds[0].selectedReplyQuote"), "excerpt");
+  assert.equal(ui.run("replySeeds[0].sourceMessageId"), "one");
+
+  await invoke(openItem(false));
+  const stale = openItem(true);
+  ui.run('state.email = { ...state.email, id: "two" };');
+  await invoke(stale);
+  assert.equal(ui.run("replySeeds.length"), 1);
+  assert.equal(ui.run('feedback.filter(message => message.includes("Select text")).length'), 2);
+});
