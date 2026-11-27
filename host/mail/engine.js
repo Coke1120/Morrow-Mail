@@ -24,6 +24,7 @@ const attachmentTransfers = require("./attachment-cache");
 const attachmentCache = attachmentTransfers.createAttachmentCache();
 const attachmentRequests = require("./attachment-requests").createAttachmentRequests();
 const { createAttachmentSaveSessions } = require("./attachment-save-list");
+const attachmentFilename = require("../../shared/attachment-filename");
 const localFolders = require("./local-folders");
 const forwardOriginals = require("./forward-originals");
 const contextOwner = require("../../shared/mail-context-owner");
@@ -472,7 +473,7 @@ function localAnswer(channel, params, event) {
     if (["mail:readEmail", "mail:readCachedBody"].includes(channel)) return ok(channel === "mail:readCachedBody" ? { email: store.verify(id) } : store.verify(id));
     if (["mail:listThreadMessages", "mail:getLocalThreadMembers"].includes(channel)) return ok([]);
     if (channel === "mail:prepareForward") return updateGate.run(() => prepareForward(params, event?.sender));
-    if (["mail:downloadAttachment", "mail:downloadAttachmentsZip", "mail:fetchAttachmentBytes", "mail:openAttachmentExternally"].includes(channel)) return attachmentOperation(channel, params, event?.sender);
+    if (["mail:downloadAttachment", "mail:downloadAttachmentsZip", "mail:fetchAttachmentBytes", "mail:openAttachmentExternally"].includes(channel)) return attachmentOperation(channel, params, event?.sender, event?.senderFrame);
     if (channel === "mail:moveLocalMessage") {
       if (!["copy", "move"].includes(params.mode)) return fail("invalid", "Choose Copy or Move locally.");
       if (params.accountId !== localFolders.ACCOUNT_ID) return fail("invalid", "Choose Local Folders.");
@@ -4300,7 +4301,7 @@ function queueAttachmentWrite(signal, action) {
   });
 }
 
-async function attachmentOperation(channel, params, owner) {
+async function attachmentOperation(channel, params, owner, frame) {
   let request;
   try {
     request = attachmentRequests.begin(params, owner);
@@ -4308,9 +4309,25 @@ async function attachmentOperation(channel, params, owner) {
     const selection = attachmentSelection(params, zip);
     if (!selection || !selection.files.length) return fail("not-found", "That attachment is no longer available.");
     const { row, files } = selection;
+    const rename = Object.hasOwn(params || {}, "renameStem");
+    let namedSource, proposed;
+    if (rename) {
+      const page = frame?.url?.split("#", 1)[0];
+      if (channel !== "mail:downloadAttachment" || !owner || owner.isDestroyed() || !frame || frame !== owner.mainFrame
+          || (page !== attachmentReaderUrl && page !== attachmentReaderUrl + "?role=reader")) {
+        return fail("invalid", "Use Save as… in the message reader.");
+      }
+      namedSource = captureAttachmentSaveSource({ ...params, emailId: row.id });
+      proposed = attachmentFilename.proposed(params.renameStem, namedSource.filename);
+      if (!proposed) return fail("invalid", "Enter a valid filename without changing the original extension.");
+    }
     const snapshot = attachmentSnapshot(row);
     request.accountId = row.account_id;
-    const assertCurrent = () => { request.signal.throwIfAborted(); snapshot.assertSnapshot(); };
+    const assertCurrent = () => {
+      request.signal.throwIfAborted();
+      snapshot.assertSnapshot();
+      namedSource?.assertCurrent();
+    };
     const filename = zip ? zipBytes.zipDownloadName(textEncoding.repairMojibake(row.subject || ""))
       : params.filename || files[0].filename || "attachment";
     let target;
@@ -4318,13 +4335,17 @@ async function attachmentOperation(channel, params, owner) {
       request.report({ phase: "choosing" });
       const { dialog, BrowserWindow } = require("electron");
       const win = (owner && BrowserWindow.fromWebContents?.(owner)) || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-      const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: filename });
+      const picked = await dialog.showSaveDialog(win || undefined, { defaultPath: proposed || filename });
       assertCurrent();
       if (picked.canceled || !picked.filePath) throw attachmentTransfers.cancelled();
       target = picked.filePath;
+      if (namedSource && (!path.isAbsolute(target) || !attachmentFilename.nativeSelection(path.basename(target), namedSource.filename))) {
+        return fail("invalid", "The chosen filename is invalid or changes the original extension. Try Save as… again.");
+      }
     }
     assertCurrent();
-    const parts = await attachmentParts(row, files, { signal: request.signal, onProgress: value => request.report(value) });
+    const transfer = { signal: request.signal, onProgress: value => request.report(value) };
+    const parts = namedSource ? [{ data: await namedSource.read(transfer) }] : await attachmentParts(row, files, transfer);
     assertCurrent();
     if (zip) request.report({ phase: "packing" });
     const data = zip ? await zipBytes.zipFilesAsync(parts, { signal: request.signal }) : parts[0].data;
@@ -4342,7 +4363,7 @@ async function attachmentOperation(channel, params, owner) {
     await queueAttachmentWrite(request.signal, () => {
       assertCurrent();
       request.report({ phase: "writing" });
-      return fs.promises.writeFile(target, data, { mode: 0o600 });
+      return fs.promises.writeFile(target, data, { mode: 0o600, ...(namedSource ? { flag: "wx" } : {}) });
     });
     assertCurrent();
     if (channel === "mail:openAttachmentExternally") {
@@ -4353,6 +4374,9 @@ async function attachmentOperation(channel, params, owner) {
     return ok({ path: target });
   } catch (error) {
     if (request?.signal.aborted || error?.code === "cancelled" || error?.name === "AbortError") return fail("cancelled", "cancelled");
+    if (error?.code === "EEXIST" && Object.hasOwn(params || {}, "renameStem")) {
+      return fail("name-taken", "That name is already taken. The existing file was kept. Choose another name.");
+    }
     return fail(error?.code || "attachment", remote.explain(error));
   } finally { request?.finish(); }
 }
@@ -5960,7 +5984,7 @@ function answer(channel, args, event) {
     case "mail:downloadAttachmentsZip":
     case "mail:fetchAttachmentBytes":
     case "mail:openAttachmentExternally":
-      return attachmentOperation(channel, params || {}, event?.sender);
+      return attachmentOperation(channel, params || {}, event?.sender, event?.senderFrame);
     case "mail:listScheduled":
       return listScheduled(params);
     default:

@@ -55,7 +55,7 @@ async function run() {
       wire();
       state.accounts = [{ id: "fixture", email: "reader@example.invalid", platform: "imap", folders: { primary: [], more: [] } }];
       state.accountId = "fixture"; state.folderId = "Inbox"; state.prefs.images = false;
-      window.fixtureMail = { id: "fixture-mail", accountId: "fixture", subject: "Project records", from: "Alex <alex@example.invalid>", to: "reader@example.invalid", date: "2026-11-05T08:00:00Z", bodyComplete: true,
+      window.fixtureMail = { id: "fixture-mail", accountId: "fixture", folderId: "Inbox", bodyEpoch: 0, subject: "Project records", from: "Alex <alex@example.invalid>", to: "reader@example.invalid", date: "2026-11-05T08:00:00Z", bodyComplete: true,
         textBody: "Please review the attached records. Send the updated list when it is ready.\n\nThank you,\nAlex", attachments: [
           { id: "image-1", filename: "project-image.png", size: 94000 },
           { id: "image-2", filename: "image001.jpg", size: 7000 },
@@ -121,7 +121,43 @@ async function run() {
     await toggle().click();
     await page.evaluate(() => { state.email = { ...fixtureMail, textBody: fixtureMail.textBody + "\nUpdated." }; renderReader(false); });
     assert.equal(await toggle().getAttribute("aria-expanded"), "true");
-    await page.evaluate(() => showStatus(""));
+    const rename = page.getByRole("button", { name: "Save image001.jpg, attachment 3 of 8 under a different name", exact: true });
+    const nameReview = page.getByRole("dialog", { name: "Save attachment under a different name" });
+    const newName = nameReview.getByRole("textbox", { name: "New name (without .jpg)", exact: true });
+    const destination = nameReview.getByRole("button", { name: "Choose destination…" });
+    const saves = await requestCount("mail:downloadAttachment");
+    await rename.click();
+    assert.equal(await nameReview.isVisible(), true);
+    assert.equal(await newName.inputValue(), "image001");
+    assert.match(await nameReview.innerText(), /Original filename: image001.jpg/);
+    await newName.fill("../bad");
+    await destination.click();
+    assert.equal(await nameReview.isVisible(), true);
+    assert.match(await nameReview.locator("#confirm-validation").innerText(), /valid name/);
+    assert.equal(await requestCount("mail:downloadAttachment"), saves);
+    await newName.fill("Receipt photo");
+    await destination.click();
+    await page.waitForFunction(() => requests.some(row => row.payload?.renameStem === "Receipt photo"));
+    const picked = await page.evaluate(() => requests.find(row => row.payload?.renameStem === "Receipt photo"));
+    assert.equal(picked.channel, "mail:downloadAttachment");
+    assert.equal(picked.payload.attachmentId, "image-3");
+    assert.equal(picked.payload.accountId, "fixture");
+    assert.equal(picked.payload.emailId, "fixture-mail");
+    assert.equal(picked.payload.filename, "image001.jpg");
+    assert.equal(picked.payload.folderId, "Inbox");
+    assert.equal(picked.payload.bodyEpoch, 0);
+    assert.equal(await page.locator("#reader .attachment-name").nth(2).innerText(), "image001.jpg");
+    await rename.click();
+    await nameReview.getByRole("button", { name: "Cancel", exact: true }).click();
+    await nameReview.waitFor({ state: "hidden" });
+    assert.equal(await requestCount("mail:downloadAttachment"), saves + 1);
+    await rename.click();
+    await newName.fill("Old view");
+    await page.evaluate(() => { state.email = { ...fixtureMail, id: "other" }; });
+    await destination.click();
+    await page.waitForFunction(() => $("status").textContent.includes("attachment changed"));
+    assert.equal(await requestCount("mail:downloadAttachment"), saves + 1);
+    await page.evaluate(() => { state.email = { ...fixtureMail }; showStatus(""); });
 
     await page.addScriptTag({ url: "/axe.js" });
     for (const theme of ["light", "dark"]) {
@@ -160,6 +196,7 @@ async function run() {
     const help = page.locator("#features-catalog");
     assert.match(await help.textContent(), /Message attachments start collapsed/);
     assert.match(await help.textContent(), /Collapse does not cancel transfers/);
+    assert.match(await help.textContent(), /Save as… to name a local copy/);
     await shot("features-help");
     assert.deepEqual(network, [], "no external network was used");
     assert.deepEqual(errors, [], "no renderer errors");

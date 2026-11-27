@@ -6,6 +6,7 @@ const { PassThrough } = require("node:stream");
 const { createRequire } = require("node:module");
 const { createAttachmentCache, LIMITS } = require("../host/mail/attachment-cache");
 const { createAttachmentRequests } = require("../host/mail/attachment-requests");
+const attachmentFilename = require("../shared/attachment-filename");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function gate() { let release; const wait = new Promise(resolve => { release = resolve; }); return { wait, release }; }
 async function until(fn) { for (let i = 0; i < 80 && !fn(); i++) await tick(); assert(fn(), "synthetic phase must be reached"); }
@@ -101,7 +102,7 @@ function fixture(apiTransport = false) {
   const remote = load("host/mail/remote.js", { imapflow: { ImapFlow: Imap }, nodemailer: {}, "nodemailer/lib/mail-composer": class {}, mailparser: parser, "./gmail-session": gmail });
   const source = fs.readFileSync(path.join(__dirname, "../host/mail/engine.js"), "utf8");
   const cache = createAttachmentCache(), requests = createAttachmentRequests();
-  const context = { Buffer, crypto: require("node:crypto"), path, os: { tmpdir: () => "/synthetic-temp" }, db, remote,
+  const context = { attachmentFilename, attachmentReaderUrl: "file:///synthetic/renderer/index.html", Buffer, crypto: require("node:crypto"), path, os: { tmpdir: () => "/synthetic-temp" }, db, remote,
     localFolders: require("../host/mail/local-folders"),
     notifications: { invalidate() {} }, messageSummaries: { invalidateAccount() {} },
     attachmentCache: cache, attachmentRequests: requests, attachmentTransfers: require("../host/mail/attachment-cache"),
@@ -112,12 +113,17 @@ function fixture(apiTransport = false) {
         events.push("packed"); controls.onPacked?.(); if (controls.packed) await controls.packed.wait;
         return packed;
       } }, textEncoding: { repairMojibake: x => x },
-    fs: { mkdirSync() {}, promises: { async writeFile() {
+    fs: { mkdirSync() {}, promises: { async writeFile(...args) {
       events.push("write"); if (controls.write) await controls.write.wait;
       if (controls.writeError) throw new Error("synthetic write failure");
+      if (controls.diskWrites) return fs.promises.writeFile(...args);
     } } }, require(name) { assert.equal(name, "electron"); return {
       BrowserWindow: { getFocusedWindow() {}, getAllWindows: () => [] },
-      dialog: { showSaveDialog: async () => { events.push("dialog"); if (controls.dialog) await controls.dialog.wait; return { canceled: controls.cancelSave, filePath: "/synthetic-file" }; } },
+      dialog: { showSaveDialog: async (_window, options) => {
+        events.push("dialog"); controls.defaultPath = options.defaultPath;
+        if (controls.dialog) await controls.dialog.wait;
+        return { canceled: controls.cancelSave, filePath: controls.chosenFile || "/synthetic-file" };
+      } },
       shell: { openPath: async () => { events.push("open"); return ""; } },
     }; } };
   // This fixture isolates transfer/cache behavior; token ownership is covered separately.
@@ -126,6 +132,7 @@ function fixture(apiTransport = false) {
     + cut(source, "function removedAccountError()", "function dataFile()")
     + cut(source, "function laneFor(", "function broadcast(")
     + cut(source, "function invalidateAttachmentAccount(", "async function removeAccount(")
+    + cut(source, "function captureAttachmentSaveSource(", "async function attachmentSaveListAnswer(")
     + cut(source, "function attachmentSelection(", "function signatureText(")
     + "globalThis.host = { invoke: attachmentOperation, bytesFor, invalidateAttachmentAccount, exclusive, mailQueueForTest };", context);
   return { ...context.host, remote, events, controls, cache, requests, db, row, params: { emailId: row.id, attachmentId: apiTransport ? "gmail:1" : "2" },
@@ -304,6 +311,62 @@ async function extraChecks() {
   }
 }
 
+async function renameChecks() {
+  const policy = attachmentFilename;
+  assert.deepEqual(policy.parts("records.tar.gz"), { stem: "records", suffix: ".tar.gz" });
+  assert.equal(policy.proposed("支出明細", "file.PDF"), "支出明細.PDF");
+  assert.equal(policy.proposed("mail records", "README"), "mail records");
+  for (const bad of ["", "../wrong", "path\\name", "CON", "con.txt", "trailer.", "file.pdf", "leading ", "x\u202Ey", "稅".repeat(81)]) {
+    assert.equal(policy.proposed(bad, "file.pdf"), "", bad);
+  }
+  assert.equal(policy.nativeSelection("new-name.txt", "file.pdf"), false);
+  assert.equal(policy.nativeSelection("new-name.pdf", "file.pdf"), true);
+  const temp = await fs.promises.mkdtemp(path.join(require("node:os").tmpdir(), "attachment-rename-"));
+  try {
+    const f = fixture(), owner = f.owner();
+    owner.mainFrame = { url: "file:///synthetic/renderer/index.html?role=reader" };
+    const params = { ...f.params, requestId: "rename-file", accountId: "account", folderId: "INBOX", bodyEpoch: 0,
+      filename: "file.pdf", renameStem: "records" };
+    const save = (patch = {}, frame = owner.mainFrame, channel = "mail:downloadAttachment") =>
+      f.invoke(channel, { ...params, ...patch }, owner, frame);
+    assert.equal((await save({ renameStem: "../path" })).error.code, "invalid");
+    assert.equal((await save({}, { url: owner.mainFrame.url })).error.code, "invalid");
+    assert.equal((await save({}, owner.mainFrame, "mail:openAttachmentExternally")).error.code, "invalid");
+    assert.equal((await save({ filename: "different.pdf" })).error.code, "source-unavailable");
+    assert.equal((await save({ bodyEpoch: 1 })).error.code, "source-unavailable");
+    assert.equal((await save({ folderId: "Other" })).error.code, "source-unavailable");
+    assert.equal(count(f, "dialog"), 0, "invalid names/frames/source cannot reach picker");
+    f.controls.cancelSave = true;
+    assert.equal((await save()).error.code, "cancelled");
+    assert.equal(f.controls.defaultPath, "records.pdf");
+    assert.equal(count(f, "connect"), 0, "native dialog cancellation must not download");
+    f.controls.cancelSave = false;
+    f.controls.chosenFile = path.join(temp, "other.txt");
+    assert.equal((await save()).error.code, "invalid");
+    assert.equal(count(f, "connect"), 0, "changed extension must not download");
+    f.controls.chosenFile = path.join(temp, "final.pdf");
+    f.controls.diskWrites = true;
+    const originalMetadata = f.row.attachments_json;
+    assert.equal((await save()).success, true);
+    assert.deepEqual(await fs.promises.readFile(f.controls.chosenFile), f.controls.chunk);
+    assert.equal(f.row.attachments_json, originalMetadata, "source name stays untouched");
+    await fs.promises.writeFile(f.controls.chosenFile, "existing bytes");
+    const collision = await save();
+    assert.equal(collision.error.code, "name-taken");
+    assert.equal(await fs.promises.readFile(f.controls.chosenFile, "utf8"), "existing bytes");
+    f.controls.chosenFile = path.join(temp, "stale.pdf");
+    f.controls.dialog = gate();
+    const started = save();
+    await until(() => count(f, "dialog") === 5);
+    f.row.uid++;
+    f.controls.dialog.release();
+    assert.equal((await started).success, false);
+    assert.equal(fs.existsSync(f.controls.chosenFile), false, "changed source cannot write after picker");
+    assert.equal(f.requests.size(), 0);
+    f.cache.clear();
+  } finally { await fs.promises.rm(temp, { recursive: true, force: true }); }
+}
+
 async function uiChecks() {
   const { renderer } = require("./check-ux-workflows");
   class Node {
@@ -358,7 +421,7 @@ async function uiChecks() {
   console.log("attachment-ui-ok (real renderer functions, synthetic DOM: repeated actions, progress, preview close, independent Save)");
 }
 async function run() {
-  await cacheChecks(); await engineChecks(false); await engineChecks(true); await extraChecks(); await uiChecks();
+  await cacheChecks(); await engineChecks(false); await engineChecks(true); await extraChecks(); await renameChecks(); await uiChecks();
   console.log("attachment-transfers-ok (bounded cache/TTL/LRU, real provider/handler source, offline only)");
 }
 module.exports = { run };
