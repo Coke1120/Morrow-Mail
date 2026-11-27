@@ -919,6 +919,21 @@ assert.strictEqual(readerHeadless.width, 1000);
   reopenAfterResize(300, 1, true);
   reopenAfterResize(100, 1, false);
 }
+{
+  const state = require("../host/window-state");
+  const fallback = { width: 1200, height: 800 };
+  const desktop = (width, height) => [{ workArea: { x: 0, y: 0, width, height } }];
+  const collapsed = { x: 90, y: 90, width: 144, height: 30 };
+  const normal = state.place(collapsed, desktop(1920, 1080), fallback).bounds;
+  assert.deepStrictEqual(normal, { x: 90, y: 90, width: 1200, height: 800 });
+  assert.deepStrictEqual(state.shellMinimumSize(normal, "win32"), { minWidth: 640, minHeight: 480 });
+  const small = state.place({}, desktop(600, 420), fallback).bounds;
+  assert.deepStrictEqual(state.shellMinimumSize(small, "win32"), { minWidth: 600, minHeight: 420 });
+  assert.deepStrictEqual(state.shellMinimumSize(normal, "darwin"), {});
+  assert.deepStrictEqual(state.shellMinimumSize(normal, "linux"), {});
+  const host = fs.readFileSync(path.join(root, "host/main.js"), "utf8");
+  assert.ok(host.includes("...windowState.shellMinimumSize(placed.bounds, process.platform),"));
+}
 const readerState = require("../host/reader-window-state");
 {
   const os = require("os");
