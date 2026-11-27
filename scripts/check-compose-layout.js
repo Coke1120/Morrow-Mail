@@ -42,7 +42,8 @@ class Window extends EventEmitter {
     super(); this.options = options; this.destroyed = false;
     this.webContents = new EventEmitter();
     Object.assign(this.webContents, {
-      id: ++nextId, sent: [], isLoading: () => false,
+      id: ++nextId, sent: [], menuShortcutFilters: [], isLoading: () => false,
+      setIgnoreMenuShortcuts(value) { this.menuShortcutFilters.push(value); },
       setWindowOpenHandler() {}, send(channel) { this.sent.push(channel); },
     });
     windows.push(this);
@@ -72,8 +73,9 @@ const electron = {
   },
 };
 const moduleFixture = { exports: {} };
+const platformFixture = { platform: "darwin" };
 vm.runInNewContext(fs.readFileSync(path.join(root, "host/compose-window.js"), "utf8"), {
-  module: moduleFixture, URL,
+  module: moduleFixture, URL, process: platformFixture,
   require(name) {
     if (name === "electron") return electron;
     if (name === "./compose-editing-menu") return { installComposeEditingMenu() {} };
@@ -94,6 +96,16 @@ assert.equal(reply.options.width, 1200); assert.equal(reply.options.height, 688)
 assert.equal(reply.options.parent, undefined); assert.equal(reply.options.modal, undefined);
 assert.equal(reply.options.webPreferences.contextIsolation, true);
 assert.equal(reply.loaded.options.query.role, "compose");
+for (const input of [
+  { type: "keyDown", key: "h", meta: true },
+  { type: "keyUp", key: "h", meta: true },
+  { type: "keyDown", key: "z", meta: true },
+  { type: "keyDown", key: "H", meta: true, shift: true },
+  { type: "keyDown", key: "h", meta: true, control: true },
+  { type: "keyDown", key: "h", meta: true, alt: true },
+]) reply.webContents.emit("before-input-event", {}, input);
+assert.deepEqual(reply.webContents.menuShortcutFilters, [true, false, false, false, false, false],
+  "only exact macOS Cmd+H keydown bypasses the menu in Compose");
 seed.body = "Newer external edit";
 const pulled = handles.get("compose:pullSeed")({ sender: reply.webContents });
 assert.equal(pulled.body, "Saved reply"); assert.equal(pulled.cc, "participant@example.test"); assert.equal(pulled.bcc, "");
@@ -108,7 +120,8 @@ open({ isDestroyed: () => true });
 assert.equal(matches.at(-1).x, 100, "destroyed opener falls back to the live shell");
 parent = null; open(null);
 assert.ok(primaryReads > 0); fits(windows.at(-1).options, primary);
-screenUnavailable = true; open(null);
+screenUnavailable = true; platformFixture.platform = "win32"; open(null);
+assert.equal(windows.at(-1).webContents.listenerCount("before-input-event"), 0);
 assert.equal(windows.at(-1).options.width, 1200, "display lookup failure retains the default");
 
 // Disclosure preserves the guidance without collapsing live file feedback.
