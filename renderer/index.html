@@ -254,12 +254,13 @@
         <form id="timeline-form">
           <label for="timeline-mode">Timeline mode</label>
           <select id="timeline-mode"><option value="thread">This downloaded thread</option><option value="case">Case / client across threads</option></select>
+          <p id="timeline-thread-scope" class="hint"></p>
           <div id="timeline-case" hidden>
-            <p id="timeline-case-scope" class="hint"></p>
             <label for="timeline-case-title">Case title</label>
             <input id="timeline-case-title" type="text" maxlength="500" autocomplete="off" />
             <label for="timeline-search">Find related downloaded mail</label>
-            <div class="row"><input id="timeline-search" type="search" maxlength="1000" autocomplete="off" aria-describedby="timeline-search-help" /><button type="button" class="ghost" id="timeline-search-button">Search locally</button></div>
+            <p id="timeline-case-scope" class="hint"></p>
+            <div class="row"><input id="timeline-search" type="search" maxlength="1000" autocomplete="off" aria-describedby="timeline-case-scope timeline-search-help" /><button type="button" class="ghost" id="timeline-search-button">Search locally</button></div>
             <p id="timeline-search-help" class="hint">Every word must match a token prefix in subject, sender or indexed body. Up to 16 words. No Gmail query syntax or To/Cc search. The body index covers at most 200,000 characters per message. Search variants separately and select from each round. No server search or download. Results are limited to 100 per query; refine broad queries. Search is never proof of complete coverage.</p>
             <p id="timeline-search-status" role="status" aria-live="polite"></p>
             <div id="timeline-candidates"></div>

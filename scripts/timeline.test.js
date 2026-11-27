@@ -714,6 +714,28 @@ test("Timeline opens one local sheet with optional keywords and editable From/To
   assert.equal(fixture.calls.some(value => /generate|download|search/.test(value.channel)), false);
   fixture.dom.window.close();
 });
+test("Timeline shows the verified account and reviewed counts without an extra choice or AI request", async context => {
+  const f = integratedTimeline(context, { rows: [row(), row("partial", { body_complete: 0 })] });
+  await f.ui.mounted.open(f.ui.email);
+  assert.equal(f.node("timeline-thread-scope").textContent, "Scope: this downloaded thread · owner@example.org");
+  assert.match(f.node("timeline-preview").textContent, /Account: owner@example.org · 1 included \/ 2 selected/);
+  assert.equal(f.node("timeline-generate").disabled, true, "partial coverage still requires consent");
+  f.node("timeline-mode").value = "case";
+  f.node("timeline-mode").dispatchEvent(new f.ui.window.Event("change")); await settleTimeline();
+  assert.equal(f.node("timeline-thread-scope").hidden, true);
+  assert.match(f.node("timeline-case-scope").textContent, /Search in: owner@example.org · downloaded mail only/);
+  assert.match(f.node("timeline-search").getAttribute("aria-describedby"), /timeline-case-scope/);
+  assert.doesNotMatch(f.node("timeline-preview").textContent, /owner@example.org/, "old review clears when scope changes");
+  f.node("timeline-review-case").click(); await settleTimeline();
+  assert.match(f.node("timeline-preview").textContent, /Account: owner@example.org · 1 included \/ 2 selected/);
+  f.changeAccount();
+  f.ui.events.get("mail:accountsUpdated")(); await settleTimeline();
+  assert.equal(f.node("timeline-case-scope").textContent, "Search account not verified.");
+  assert.doesNotMatch(f.node("timeline-preview").textContent, /owner@example.org/);
+  assert.equal(f.node("timeline-generate").disabled, true);
+  assert.equal(f.calls.length, 0);
+});
+
 test("Timeline derives title, supported language and timezone without exposing settings", async () => {
   const fixture = rendererFixture();
   Object.defineProperty(fixture.window.navigator, "language", { value: "zh-HK" });
@@ -1788,6 +1810,7 @@ test("Case mode recovers from oversized thread capture using an account-bound co
     f.node("timeline-mode").value = "case"; f.node("timeline-mode").dispatchEvent(new f.ui.window.Event("change")); await settleTimeline();
     const contextCall = f.hostCalls.find(call => call.channel === "timeline:prepare" && call.input.contextOnly);
     assert(contextCall?.data, "a body-free context is captured independently of thread limits");
+    assert.match(f.node("timeline-case-scope").textContent, /Search in: owner@example.org/);
     await assert.rejects(f.service.invoke(1, "timeline:generate", { manifestToken: contextCall.data.manifestToken,
       optionsDigest: contextCall.data.optionsDigest, acceptPartial: true, reviewed: true }), { code: "timeline-input" });
     await assert.rejects(f.service.invoke(1, "timeline:download", { manifestToken: contextCall.data.manifestToken }), { code: "timeline-input" });
@@ -2055,6 +2078,44 @@ test("oversized thread sends exact repeated quotations only in the earlier compl
   assert.equal(renderer.calls.length, 0, "opening and reviewing the sheet sends nothing");
 });
 
+test("preflight packs ordinary and over-budget plain reply chains without losing unique mail evidence", async context => {
+  const original = Array.from({ length: 300 }, (_, i) => `Original evidence line ${i}: $125 due 14 November.`).join("\n");
+  const quote = original.split("\n").map(line => `> ${line}`).join("\n");
+  const rows = [row("base", { text_body: original }), ...Array.from({ length: 24 }, (_, i) => row(`reply-${String(i).padStart(2, "0")}`, {
+    text_body: `新內容 ${i}：同意保留 HK$88，20 November 再確認。\n${quote}`,
+    date_iso: "2026-11-02T10:00:00Z",
+  }))];
+  const fixture = integratedTimeline(context, { rows }, { id: "base" });
+  for (const count of [10, rows.length]) {
+    const selected = rows.slice(0, count);
+    const selection = { expandThreads: false, messages: selected.map(value => ({ accountId: value.account_id, messageId: value.id })) };
+    const snapshot = freezeSources(fixture.dependencies, selection);
+    assert.ok(snapshot.bodyBytes < LIMITS.sourceBytes);
+    const prepared = await fixture.service.invoke(1, "timeline:prepare", { selection, options });
+    assert.equal(prepared.budget, undefined);
+    assert.equal(prepared.processing.omittedRepeatBlocks, count - 1);
+    if (count === rows.length) assert.throws(() => preparePlan(snapshot.sources), error => error.budget?.kind === "chunk-count");
+    else {
+      const baseline = preparePlan(snapshot.sources);
+      assert.ok(prepared.chunks < baseline.chunks.length);
+      assert.ok(prepared.estimatedInputBytes < baseline.estimatedInputBytes / 3);
+    }
+    assert.equal(fixture.calls.length, 0);
+  }
+  await fixture.ui.mounted.open(fixture.ui.email);
+  const prepared = fixture.hostCalls.find(call => call.channel === "timeline:prepare").data;
+  assert.match(fixture.node("timeline-processing-counts").textContent, /24 exact repeated quote blocks/);
+  assert.match(fixture.node("timeline-processing-counts").textContent, /repeated body bytes stay local/);
+  fixture.node("timeline-generate").click(); await settleTimeline();
+  assert.equal(lastTerminal(fixture).phase, "completed");
+  const payloads = fixture.calls.flatMap(call => JSON.parse(call.messages[1].content));
+  const providerBody = payloads.map(part => part.text).join("");
+  assert.equal(providerBody.split("Original evidence line 42:").length, 2);
+  for (let i = 0; i < 24; i++) assert.ok(providerBody.includes(`新內容 ${i}：同意保留 HK$88，20 November 再確認。`));
+  assert.equal(fixture.calls.reduce((sum, call) => sum + Buffer.byteLength(JSON.stringify(call.messages)), 0), prepared.estimatedInputBytes);
+  assert.equal([...fixture.artifacts.values()][0].document.events.length, rows.length);
+});
+
 test("oversized quote fallback preserves edits, ambiguous matches, and quote-only messages", () => {
   const { reduceRepeatedQuotes } = require("../host/timeline/quotes");
   const body = "Distinct fictional terms and evidence. ".repeat(8);
@@ -2234,7 +2295,7 @@ test("HTML history also recovers a body-driven batch budget below the source byt
   const selection = { expandThreads: false, messages: rows.slice(0, 12).map(value => ({ accountId: value.account_id, messageId: value.id })) };
   const ordinary = await fixture.prepare(2, selection);
   assert.equal(ordinary.budget, undefined);
-  assert.equal(ordinary.processing.omittedRepeatBlocks, 0);
+  assert.equal(ordinary.processing.omittedRepeatBlocks, selection.messages.length - 1);
   const focusedOptions = { ...options, keywords: "項".repeat(900),
     contactEmails: Array.from({ length: 30 }, (_, i) => "contact" + i + "@example.invalid") };
   const focused = await fixture.service.invoke(2, "timeline:prepare", { selection, options: focusedOptions });

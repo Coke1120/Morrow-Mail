@@ -6,14 +6,18 @@ const fs = require("node:fs"), http = require("node:http"), path = require("node
 const root = path.join(__dirname, "..");
 const output = process.env.MORROW_UI_OUTPUT || path.join(os.tmpdir(), "morrow-timeline-processing");
 
-const { preparePlan, LIMITS } = require("../host/timeline/extract");
+const { LIMITS } = require("../host/timeline/extract");
+const { planCapturedSources } = require("../host/timeline/sources");
 const body = "The fictional project update records a date, an amount and uncertainty.\n".repeat(6).trimEnd();
 const common = { source_thread_id: "00000000-0000-4000-8000-000000000010", from: { name: "Ada", address: "ada@example.org" }, occurred_at: "2026-11-09T09:00:00Z", date_source: "header", attachments: [] };
-const sources = [body, "Review this.\n" + body.split("\n").map(line => "> " + line).join("\n"), "x".repeat(146586)].map((text, index) => ({ ...common, text, source_message_id: `00000000-0000-4000-8000-00000000000${index + 1}`, subject: index === 2 ? "S".repeat(500) : "Fictional project update" }));
-const plan = preparePlan(sources);
+const large = "x".repeat(146586);
+const sources = [body, "Review this.\n" + body.split("\n").map(line => "> " + line).join("\n"), large, `Keep the new deadline.\n> ${large}`].map((text, index) => ({ ...common, text, ...(index === 3 ? { occurred_at: "2026-11-10T09:00:00Z" } : {}), source_message_id: `00000000-0000-4000-8000-00000000000${index + 1}`, subject: index === 2 ? "S".repeat(500) : "Fictional project update" }));
+const plan = planCapturedSources({ sources, bodyBytes: sources.reduce((sum, source) => sum + Buffer.byteLength(source.text), 0) }, new Map(), {});
 assert.equal(plan.processing.sharedQuotes, 1);
+assert.equal(plan.processing.omittedRepeatBlocks, 1);
+assert.equal(plan.processing.omittedRepeatBytes, 146588);
 const prepared = { manifestToken: "synthetic-source-proof", optionsDigest: "synthetic-options", accounts: ["owner@example.org"], threads: 1,
-  coverage: { selected_message_count: 3, included_message_count: 3, omitted_message_count: 0 }, chunks: plan.chunks.length,
+  coverage: { selected_message_count: 4, included_message_count: 4, omitted_message_count: 0 }, chunks: plan.chunks.length,
   estimatedInputBytes: plan.estimatedInputBytes, processing: plan.processing, limits: LIMITS,
   provider: "Synthetic provider", destination: "https://ai.example.invalid/v1", model: "synthetic", allowed: true };
 
@@ -59,8 +63,11 @@ async function run() {
       await timeline.open(timelineEmail);
     }, prepared);
     assert.equal(await page.locator("#timeline-generate").isEnabled(), true);
-    assert.match(await page.locator("#timeline-processing-counts").textContent(), /147,\d{3} bytes/);
-    assert.equal(await page.locator("#timeline-processing-sources li").count(), 3);
+    assert.match(await page.locator("#timeline-thread-scope").textContent(), /this downloaded thread · owner@example.org/);
+    assert.match(await page.locator("#timeline-preview").textContent(), /Account: owner@example.org · 4 included \/ 4 selected/);
+    assert.match(await page.locator("#timeline-processing-counts").textContent(), /146,588 repeated body bytes stay local/);
+    assert.match(await page.locator("#timeline-processing-sources li").last().textContent(), /1 exact repeats not resent/);
+    assert.equal(await page.locator("#timeline-processing-sources li").count(), 4);
     await page.locator("#timeline-processing summary").click();
     for (const width of [1280, 720, 390]) for (const theme of ["light", "dark"]) {
       await page.setViewportSize({ width, height: 900 });
@@ -76,8 +83,10 @@ async function run() {
     assert.equal(await page.locator("#timeline-dialog").evaluate(dialog => dialog.open), false);
     await page.evaluate(() => timeline.open(timelineEmail));
     assert.equal(await page.locator("#timeline-processing").isVisible(), true);
-    assert.equal(await page.locator("#timeline-processing-sources li").count(), 3, "reopen replaces source rows");
+    assert.equal(await page.locator("#timeline-processing-sources li").count(), 4, "reopen replaces source rows");
     await page.locator("#timeline-mode").selectOption("case");
+    assert.equal(await page.locator("#timeline-thread-scope").isVisible(), false);
+    assert.match(await page.locator("#timeline-case-scope").textContent(), /Search in: owner@example.org/);
     assert.equal(await page.locator("#timeline-processing").isVisible(), false, "case selection requires a new review");
     assert.equal(await page.locator("#timeline-generate").isEnabled(), false);
     await page.keyboard.press("Escape");
@@ -91,7 +100,7 @@ async function run() {
     await feature.screenshot({ path: path.join(output, "timeline-features-720.png") });
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
-    const result = { checks: ["real planner byte/source counts", "wide/narrow/mobile light/dark layout", "inert long source metadata", "focus edit hides stale counts", "close/reopen replaces rows", "Case mode invalidates processing review", "Escape dismissal", "no generation or external requests"], errors, external };
+    const result = { checks: ["real planner byte/source counts and cross-request quote savings", "wide/narrow/mobile light/dark layout", "inert long source metadata", "focus edit hides stale counts", "close/reopen replaces rows", "Case mode invalidates processing review", "Escape dismissal", "no generation or external requests"], errors, external };
     fs.writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2));
     console.log("timeline-processing-browser-ok", JSON.stringify(result));
   } finally {
