@@ -611,7 +611,10 @@ assert.ok(html.includes('id="password-hint"') && appJs.includes("Generate app pa
 assert.ok(appJs.includes("mail:discoverMail") && preload.includes('"mail:discoverMail"'), "discovery IPC is registered");
 assert.ok(fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8").includes('loginMethod = "LOGIN"'), "Yahoo IMAP uses the LOGIN command");
 assert.strictEqual(pkg.name, "morrow-mail");
-assert.strictEqual(pkg.version, "1.0.0");
+assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "package version must be stable");
+const lock = require("../package-lock.json");
+assert.strictEqual(lock.version, pkg.version);
+assert.strictEqual(lock.packages[""].version, pkg.version);
 const composeHost = require("../host/compose-window");
 assert.deepEqual(composeHost.CHANNELS, ["compose:open", "compose:pullSeed", "compose:allowClose", "compose:setTitle"]);
 assert.strictEqual(composeHost.composeWindowTitle({ title: "  Reply  " }), "Reply — Morrow Mail");
@@ -919,6 +922,21 @@ assert.strictEqual(readerHeadless.width, 1000);
   reopenAfterResize(300, 1, true);
   reopenAfterResize(100, 1, false);
 }
+{
+  const state = require("../host/window-state");
+  const fallback = { width: 1200, height: 800 };
+  const desktop = (width, height) => [{ workArea: { x: 0, y: 0, width, height } }];
+  const collapsed = { x: 90, y: 90, width: 144, height: 30 };
+  const normal = state.place(collapsed, desktop(1920, 1080), fallback).bounds;
+  assert.deepStrictEqual(normal, { x: 90, y: 90, width: 1200, height: 800 });
+  assert.deepStrictEqual(state.shellMinimumSize(normal, "win32"), { minWidth: 640, minHeight: 480 });
+  const small = state.place({}, desktop(600, 420), fallback).bounds;
+  assert.deepStrictEqual(state.shellMinimumSize(small, "win32"), { minWidth: 600, minHeight: 420 });
+  assert.deepStrictEqual(state.shellMinimumSize(normal, "darwin"), {});
+  assert.deepStrictEqual(state.shellMinimumSize(normal, "linux"), {});
+  const host = fs.readFileSync(path.join(root, "host/main.js"), "utf8");
+  assert.ok(host.includes("...windowState.shellMinimumSize(placed.bounds, process.platform),"));
+}
 const readerState = require("../host/reader-window-state");
 {
   const os = require("os");
@@ -973,7 +991,6 @@ assert.ok(main.includes('require("./reader-window")'));
 assert.ok(main.includes("readerWindows.CHANNELS"));
 assert.ok(main.indexOf("createReaderHost") < main.lastIndexOf("attachIpc(preloadFile)"));
 assert.ok(preload.includes('"reader:open"') && preload.includes('"reader:pullSeed"') && preload.includes('"mail:searchSender"'));
-assert.strictEqual(pkg.version, "1.0.0");
 assert.ok(functionSource(appJs, "boot").includes("bootReaderWindow"));
 const readerBoot = functionSource(appJs, "bootReaderWindow");
 assert.ok(!readerBoot.includes("mail:setOnline"));
