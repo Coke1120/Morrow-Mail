@@ -92,12 +92,19 @@
       if (contactEmails.length > 100 || contactEmails.some(value => value.length > 254 || !/^[^\s@<>,;]+@[^\s@<>,;]+$/.test(value))) throw { code: "timeline-contacts" };
       return { ...defaults, ...(caseMode() ? { mode: "case", title: node("timeline-case-title").value.trim() || defaults.title } : {}), keywords: node("timeline-keywords").value.trim(), contactEmails };
     }
+    function accountScope(accounts = []) {
+      const account = accounts.length === 1 ? accounts[0] : null;
+      node("timeline-thread-scope").textContent = account ? `Scope: this downloaded thread · ${account}` : "Scope: this downloaded thread · account not verified";
+      node("timeline-case-scope").textContent = account ? `Search in: ${account} · downloaded mail only. Other accounts are not searched.` : "Search account not verified.";
+    }
     function preview(value) {
+      accountScope(value.accounts);
       const previous = prepared?.coverage;
       prepared = value;
       const coverage = value.coverage;
       if (!previous || previous.selected_message_count !== coverage.selected_message_count || previous.omitted_message_count !== coverage.omitted_message_count) node("timeline-partial").checked = false;
-      node("timeline-preview").textContent = `${coverage.included_message_count} included / ${coverage.selected_message_count} selected · ${value.threads} threads · ${coverage.omitted_message_count} omitted (missing, incomplete or unsupported). AI: ${value.provider} · ${value.destination} · ${value.model}. ${caseMode() ? "Case overview adds synthesis requests under the same run limits; the estimate covers initial extraction only. " : ""}AI receives body text (including quoted history; verified repeats may be left in their earlier source instead of sent again), subject, sender, mail dates/provenance, attachment names and optional focus. To/Cc remain local evidence; body text and focus can still contain recipient addresses. No attachment file contents. ${value.locality || ""} ${value.providerTerms || ""}`;
+      const account = value.accounts?.length === 1 ? `Account: ${value.accounts[0]} · ` : "";
+      node("timeline-preview").textContent = `${account}${coverage.included_message_count} included / ${coverage.selected_message_count} selected · ${value.threads} threads · ${coverage.omitted_message_count} omitted (missing, incomplete or unsupported). AI: ${value.provider} · ${value.destination} · ${value.model}. ${caseMode() ? "Case overview adds synthesis requests under the same run limits; the estimate covers initial extraction only. " : ""}AI receives body text (including quoted history; verified repeats may be left in their earlier source instead of sent again), subject, sender, mail dates/provenance, attachment names and optional focus. To/Cc remain local evidence; body text and focus can still contain recipient addresses. No attachment file contents. ${value.locality || ""} ${value.providerTerms || ""}`;
       const processing = value.processing;
       node("timeline-processing").hidden = !processing;
       const bodyCounts = processing ? `Email body text: ${processing.sourceBytes.toLocaleString()} bytes / ${(value.limits.captureBytes ?? value.limits.sourceBytes).toLocaleString()}-byte local scan limit.` : "";
@@ -116,14 +123,16 @@
       try { value = await invoke("timeline:prepare", { selection: source, options: options(), ...(sourceToken ? { manifestToken: sourceToken } : {}) }); }
       catch (error) {
         if (serial === current) preparationFailed = true;
-        if (serial === current && ["timeline-source-changed", "timeline-manifest"].includes(error.code)) source = null;
+        if (serial === current && ["timeline-source-changed", "timeline-manifest"].includes(error.code)) {
+          source = null; accountScope(); node("timeline-preview").textContent = "";
+        }
         throw error;
       }
       if (serial !== current) return null;
       preparationFailed = false;
       sourceToken = value.manifestToken;
       try { await invoke("timeline:check", { manifestToken: sourceToken }); }
-      catch (error) { if (serial === current) source = null; throw error; }
+      catch (error) { if (serial === current) { source = null; accountScope(); node("timeline-preview").textContent = ""; } throw error; }
       if (serial !== current) return null;
       preview(value);
       return value;
@@ -227,6 +236,9 @@
       selected = new Map(); candidates = []; searchSerial++; evidenceSerial++;
       node("timeline-processing").hidden = true;
       node("timeline-mode").value = "thread";
+      node("timeline-thread-scope").hidden = false;
+      accountScope();
+      node("timeline-preview").textContent = "";
       node("timeline-case").hidden = true;
       node("timeline-case-confirm").checked = false;
       node("timeline-search").value = "";
@@ -249,7 +261,6 @@
         if (value) {
           origin.seedMessages = value.messages || [{ messageId: email.id, accountId: email.accountId, subject: email.subject, from: email.from, date: email.date, complete: true, phase: "main" }];
           selected = new Map(origin.seedMessages.map(mail => [mail.messageId, { ...mail, phase: "main" }]));
-          node("timeline-case-scope").textContent = `Account: ${value.accounts.join(", ")}. Only local downloaded data from this account. Other mailboxes, calls and undownloaded mail are outside coverage.`;
         }
         if (value?.allowed && !value.budget && value.coverage.included_message_count) status("Choose Generate to send these downloaded messages and your focus to the saved AI destination.");
       } catch (error) { if (serial === current) report({ ...error, calls: 0 }); }
@@ -379,6 +390,7 @@
       if (!origin || working || starting || jobId) return;
       const current = ++serial; searchSerial++; evidenceSerial++; node("timeline-source").hidden = true;
       node("timeline-case").hidden = !caseMode();
+      node("timeline-thread-scope").hidden = caseMode();
       node("timeline-description").textContent = caseMode() ? "Build a case from selected downloaded messages across threads. Review sources before AI transmission." : "Use this message and its downloaded thread. No older mail is fetched.";
       source = caseMode() ? selectionSource() : origin.source;
       invalidateCase();
@@ -393,10 +405,10 @@
             sourceToken = value.manifestToken;
             await invoke("timeline:check", { manifestToken: sourceToken });
             if (serial !== current) return;
-            node("timeline-case-scope").textContent = `Account: ${value.accounts.join(", ")}. Only local downloaded data from this account. Other mailboxes, calls and undownloaded mail are outside coverage.`;
+            accountScope(value.accounts);
           }
           paintSelection(); status("Search variants and choose Main / Background sources, then review the selected mail. No AI request is made.");
-        } catch (error) { if (serial === current) { sourceToken = null; preparationFailed = true; report({ ...error, calls: 0 }); } }
+        } catch (error) { if (serial === current) { sourceToken = null; preparationFailed = true; accountScope(); report({ ...error, calls: 0 }); } }
         finally { if (serial === current) { working = false; buttons(); } }
         return;
       }
@@ -471,6 +483,7 @@
         invoke("timeline:check", { manifestToken: snapshot }).catch(error => {
           if (serial !== current || sourceToken !== snapshot) return;
           serial++; prepared = null; source = null; working = false;
+          accountScope(); node("timeline-preview").textContent = "";
           node("timeline-processing").hidden = true;
           report(error); buttons();
         });

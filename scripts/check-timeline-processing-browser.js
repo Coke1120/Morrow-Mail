@@ -59,6 +59,8 @@ async function run() {
       await timeline.open(timelineEmail);
     }, prepared);
     assert.equal(await page.locator("#timeline-generate").isEnabled(), true);
+    assert.match(await page.locator("#timeline-thread-scope").textContent(), /this downloaded thread · owner@example.org/);
+    assert.match(await page.locator("#timeline-preview").textContent(), /Account: owner@example.org · 3 included \/ 3 selected/);
     assert.match(await page.locator("#timeline-processing-counts").textContent(), /147,\d{3} bytes/);
     assert.equal(await page.locator("#timeline-processing-sources li").count(), 3);
     await page.locator("#timeline-processing summary").click();
@@ -78,6 +80,8 @@ async function run() {
     assert.equal(await page.locator("#timeline-processing").isVisible(), true);
     assert.equal(await page.locator("#timeline-processing-sources li").count(), 3, "reopen replaces source rows");
     await page.locator("#timeline-mode").selectOption("case");
+    assert.equal(await page.locator("#timeline-thread-scope").isVisible(), false);
+    assert.match(await page.locator("#timeline-case-scope").textContent(), /Search in: owner@example.org/);
     assert.equal(await page.locator("#timeline-processing").isVisible(), false, "case selection requires a new review");
     assert.equal(await page.locator("#timeline-generate").isEnabled(), false);
     await page.keyboard.press("Escape");
