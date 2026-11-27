@@ -14,6 +14,7 @@ const { init: initMail, answer: mailAnswer, startBackgroundSync, resolveResumedD
   localMessageLinkProof, readLocalMessageLink, dataFile: mailDataFile } = require("./mail/engine");
 const { SCHEME: MESSAGE_LINK_SCHEME, createLocalMessageLinks } = require("./local-message-link");
 const COPY_LOCAL_MESSAGE_LINK = "reader:copyLocalMessageLink";
+const PRIVATE_READER_CHECKLIST = "reader:privateChecklist";
 const CLEAR_LOCAL_MESSAGE_LINK = "reader:clearLocalMessageLink";
 const { startupFailureDialog, startupStatusHtml, startupProgressScript, isStartupExternalUrl } = require("./startup-error");
 const { answer: brainAnswer } = require("./brain");
@@ -275,6 +276,7 @@ function attachIpc(preloadFile) {
   for (const name of readerWindows.CHANNELS) directHost.add(name);
   directHost.add("reader:openFailed");
   directHost.add(COPY_LOCAL_MESSAGE_LINK);
+  directHost.add(PRIVATE_READER_CHECKLIST);
   directHost.add(CLEAR_LOCAL_MESSAGE_LINK);
   for (const name of translateWindows.CHANNELS) directHost.add(name);
   for (const channel of channels) {
@@ -1084,9 +1086,11 @@ app.whenReady().then(async () => {
       isShellFrame: event => shellSession?.mode === "bundled" && fromShellFrame(shellWindow, event) &&
         event.senderFrame.url === require("node:url").pathToFileURL(FIRST_PARTY_HTML).href,
       copyLocalLink: copyLocalMessageLink,
+      privateChecklist: (source, params) => updateGate.run(() => require("./mail/engine").privateChecklist(source, params)),
     });
     readerHost.register();
     ipcMain.handle(COPY_LOCAL_MESSAGE_LINK, readerHost.copyLocalLink);
+    ipcMain.handle(PRIVATE_READER_CHECKLIST, readerHost.privateChecklist);
     ipcMain.handle(CLEAR_LOCAL_MESSAGE_LINK, readerHost.clearShellLocalLink);
     if (mode === "bundled") {
       try {
