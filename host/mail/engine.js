@@ -3,6 +3,7 @@ const { AsyncLocalStorage } = require("node:async_hooks");
 const crypto = require("crypto");
 const deliveryReceipt = require("./delivery-receipt");
 const sentFollowup = require("./sent-followup");
+const { readerChecklist } = require("./reader-checklist");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -6018,6 +6019,10 @@ actions.install({ exclusive, secretFor, withMailClient, emitAccounts, broadcast,
   assertContextOwner: owner => assertMessageContextOwner(owner, false) });
 
 module.exports = {
+  privateChecklist(source, params) {
+    if (!ready || !db.isReady()) throw new Error("Local mail is still opening.");
+    return readerChecklist(db, source, params, accountId => accountEpochs.get(accountId) || 0);
+  },
   closeMailboxCopyForTest() {
     if (mailboxCopyService?.active || mailboxMoveService?.active) throw new Error("Finish mailbox transfers before closing recovery storage.");
     mailboxCopyJournal?.close(); mailboxCopyJournal = null; mailboxCopyService = null; mailboxCopyStorageFailed = false;

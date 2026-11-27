@@ -341,6 +341,13 @@ function migrate() {
     account_id TEXT NOT NULL, rfc_id TEXT NOT NULL, due_at INTEGER NOT NULL, source_json TEXT NOT NULL,
     PRIMARY KEY (account_id, rfc_id)
   )`);
+  run(`CREATE TABLE IF NOT EXISTS reader_private_checklist (
+    account_id TEXT NOT NULL, message_id TEXT NOT NULL, source_identity TEXT NOT NULL,
+    item_id TEXT NOT NULL, excerpt TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, message_id, source_identity, item_id)
+  )`);
+  run(`CREATE TRIGGER IF NOT EXISTS reader_private_checklist_forget_message AFTER DELETE ON messages
+    BEGIN DELETE FROM reader_private_checklist WHERE account_id = old.account_id AND message_id = old.id; END`);
   run("CREATE INDEX IF NOT EXISTS messages_gmail ON messages(account_id, gmail_id, folder_path)");
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
@@ -744,7 +751,7 @@ function removeAccount(id) {
     run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM inbox_rules WHERE account_id = ?", [id]);
     run("DELETE FROM mail_actions WHERE account_id = ?", [id]);
-    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions", "imap_dispositions", "sent_followups"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
+    for (const table of ["gmail_messages", "gmail_aliases", "gmail_sync", "mail_notification_state", "gmail_dispositions", "imap_dispositions", "sent_followups", "reader_private_checklist"]) run(`DELETE FROM ${table} WHERE account_id = ?`, [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -1661,6 +1668,26 @@ function sentFollowupReplies(accountId, rfcId, bareId) {
   return all(`SELECT id, account_id, folder_path, uid, uid_validity, gmail_id, is_draft, draft_pending,
     from_addr, from_address, in_reply_to, recipient_headers_json, dsn_redraft_json
     FROM messages WHERE account_id = ? AND in_reply_to IN (?, ?) AND is_draft = 0 LIMIT 201`, [accountId, rfcId, bareId]);
+}
+
+const readerChecklistOwner = "account_id = ? AND message_id = ? AND source_identity = ?";
+function readerChecklistItems(owner, limit) {
+  return all(`SELECT item_id, excerpt, done FROM reader_private_checklist WHERE ${readerChecklistOwner}
+    ORDER BY rowid LIMIT ?`, [...owner, limit]);
+}
+
+function addReaderChecklistItem(owner, id, text) {
+  transaction(() => run(`INSERT INTO reader_private_checklist
+    (account_id, message_id, source_identity, item_id, excerpt) VALUES (?, ?, ?, ?, ?)`, [...owner, id, text]));
+}
+
+function setReaderChecklistItem(owner, id, done) {
+  transaction(() => run(`UPDATE reader_private_checklist SET done = ? WHERE ${readerChecklistOwner} AND item_id = ?`,
+    [Number(done), ...owner, id]));
+}
+
+function removeReaderChecklistItem(owner, id) {
+  transaction(() => run(`DELETE FROM reader_private_checklist WHERE ${readerChecklistOwner} AND item_id = ?`, [...owner, id]));
 }
 
 function allSentFollowups() {
@@ -3173,6 +3200,10 @@ module.exports = {
   messageByUid,
   messageByRfc,
   uniqueSentByRfc,
+  readerChecklistItems,
+  addReaderChecklistItem,
+  setReaderChecklistItem,
+  removeReaderChecklistItem,
   sentFollowupSources,
   sentFollowupReplies,
   allSentFollowups,

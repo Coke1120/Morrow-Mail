@@ -10612,6 +10612,18 @@ function renderBody(pane, email, refresh) {
   }
   pane.appendChild(body);
   paint();
+  if (pane.id === "reader" && typeof window !== "undefined" && window.morrowReaderChecklist && api?.invoke && readerChecklistEligible(email)) {
+    window.morrowReaderChecklist?.mount(pane, body,
+      { accountId: email.accountId, messageId: email.id, bodyEpoch: email.bodyEpoch }, {
+        invoke: params => api.invoke("reader:privateChecklist", params),
+        current: () => !pendingOpenId && sameReaderLocalTimeSource(state.email, email),
+      });
+  }
+}
+
+function readerChecklistEligible(email) {
+  return email?.bodyComplete === true && !email.bodyWarning && !email.isDraft && !email.outbox
+    && !isLocalMail(email) && Number.isSafeInteger(email.bodyEpoch) && !!(email.htmlBody || email.textBody?.trim());
 }
 
 function renderRemoteGate(pane, email, repaint) {
@@ -14139,6 +14151,13 @@ function appendReaderBodyActions(menu, email, body) {
   // Menu focus can change the selection. Save it while the body still owns it.
   const selection = window.morrowReplySelection;
   const text = selection?.read(body);
+  if (window.morrowReaderChecklist && readerChecklistEligible(email)) {
+    appendMenuAction(menu, "Add selection to private checklist", () => {
+      if (!currentMessage()) return showStatus("Reopen the message, then select the text again.", true);
+      if (!text || text.trim().length > 512) return showStatus("Select visible message text of 1–512 characters.", true);
+      return window.morrowReaderChecklist.add($("reader"), text);
+    });
+  }
   if (window.morrowReaderLocalTime) {
     const time = appendMenuAction(menu, "Show local time", () => guard(() => {
       const current = currentMessage();
@@ -14754,7 +14773,7 @@ function readerContextTarget(event) {
 function onReaderContext(event) {
   if (!state.email || state.email.outbox) return;
   const target = readerContextTarget(event);
-  if (target?.closest?.(".sender-address, input, textarea, select, a")) return;
+  if (target?.closest?.(".sender-address, .reader-checklist, input, textarea, select, a")) return;
   const body = $("reader").querySelector(".body");
   const clickedBody = body?.contains(target) ? body : null;
   event.preventDefault();
