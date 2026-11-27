@@ -19259,6 +19259,7 @@ async function openCompose(seed) {
     kind: fields.kind || "new",
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
+    attachmentReviewUnverified: !!(fields.draftId || fields.recoveredSnapshot || fields.botDraft || fields.partialReceipt || fields.htmlBody),
   };
   state.composeQuote = quoteStateFromSeed(fields);
   state.composeAttachments = composeAttachmentList(fields.attachments);
@@ -20027,6 +20028,42 @@ function paintComposePreviewLinks(body) {
   if (focused) review.firstElementChild.focus({ preventScroll: true });
 }
 
+function composeAttachmentReviewText() {
+  // Some loaded drafts already contain history without reliable quote markers.
+  if (state.composeMeta?.attachmentReviewUnverified) return "";
+  const editor = $("compose-editor");
+  if (composeEditorLive() && editor.innerHTML.length > 96000) return "";
+  if (!composeEditorLive() || blankComposeHtml(editor.innerHTML)) {
+    return splitComposeSignature($("compose-body").value, state.signatureText).message;
+  }
+  const copy = editor.cloneNode(true);
+  const ignored = "[data-compose-reply-quote], [data-compose-signature], blockquote, [type=cite], .gmail_quote, .yahoo_quoted, [hidden], [aria-hidden=true]";
+  for (const node of copy.querySelectorAll(ignored + ", [style]")) {
+    if (node.matches(ignored) || node.style.display === "none" || node.style.visibility === "hidden" || node.style.opacity === "0") {
+      node.replaceWith(document.createElement("br"));
+    }
+  }
+  try { return plainFromComposeHtml(sanitizeComposeHtml(copy.innerHTML)); }
+  catch { return ""; }
+}
+
+function paintComposeAttachmentReview(findings = []) {
+  const section = $("compose-preview-attachment-review");
+  const list = $("compose-preview-attachment-review-items");
+  if (!section || !list) return;
+  list.replaceChildren();
+  for (const finding of findings) {
+    const item = document.createElement("li");
+    const name = document.createElement("strong");
+    name.textContent = finding.filename;
+    const context = document.createElement("span");
+    context.textContent = finding.line;
+    item.append(name, context);
+    list.appendChild(item);
+  }
+  section.hidden = !findings.length;
+}
+
 function paintPreview(draft) {
   const schedule = draft && draft.kind === "schedule";
   const payload = draft.payload || draft;
@@ -20056,6 +20093,7 @@ function paintPreview(draft) {
     fileRow.hidden = !files.length;
     fileText.textContent = previewFilesText(files);
   }
+  paintComposeAttachmentReview(draft.attachmentReview);
   const body = $("compose-preview-body");
   body.replaceChildren();
   const content = appendSendPreviewBody(body, draft.payload ? { htmlBody: payload.body || "" } : { textBody: draft.body || "" });
@@ -20070,12 +20108,13 @@ function openComposePreview(when) {
   const quote = state.composeQuote;
   if (quote && quote.inEditor) fields.body = plainFromComposeHtml(readComposeEditorHtml());
   const draft = previewDraft(fields, quote && !quote.inEditor && quote.text, when, state.composeAttachments);
-  previewDraftState = { ...draft, payload: JSON.parse(JSON.stringify(composePayload(composeAccount()))),
-    session: state.composeSession, snapshot: composeSnapshot() };
+  const payload = JSON.parse(JSON.stringify(composePayload(composeAccount())));
+  const attachmentReview = window.morrowComposeAttachmentReview?.missing(composeAttachmentReviewText(), payload.attachments) || [];
+  previewDraftState = { ...draft, payload, attachmentReview, session: state.composeSession, snapshot: composeSnapshot() };
   paintPreview(previewDraftState);
   openDialog("compose-preview");
-  const confirm = $("compose-preview-confirm");
-  if (confirm && typeof confirm.focus === "function") confirm.focus();
+  const focus = attachmentReview.length ? $("compose-preview-attachment-review") : $("compose-preview-confirm");
+  if (focus && typeof focus.focus === "function") focus.focus();
   return true;
 }
 
@@ -20107,6 +20146,7 @@ async function confirmComposePreview() {
   const draft = previewDraftState;
   if (!draft) return false;
   previewDraftState = null;
+  paintComposeAttachmentReview();
   window.morrowComposeBccRoster?.reset();
   await closeDialog("compose-preview");
   if (draft.session !== state.composeSession || draft.snapshot !== composeSnapshot() || state.draftWrite?.pending || composeFilesPending()) {
@@ -20120,6 +20160,7 @@ async function confirmComposePreview() {
 
 function cancelComposePreview() {
   previewDraftState = null;
+  paintComposeAttachmentReview();
   resetComposePreviewLinks();
   window.morrowComposeBccRoster?.reset();
   closeDialog("compose-preview");
@@ -31333,6 +31374,7 @@ function wire() {
   $("compose-preview").addEventListener("close", (event) => {
     if (event.currentTarget.open) return;
     previewDraftState = null;
+    paintComposeAttachmentReview();
     resetComposePreviewLinks();
     window.morrowComposeBccRoster?.reset();
   });
