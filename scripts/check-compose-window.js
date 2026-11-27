@@ -1,6 +1,6 @@
 // Compose opens in its own window. The mail shell stays usable.
-// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing | --draft-window-labels | --find-replace]
-const { app, BrowserWindow, ipcMain, screen, Menu } = require("electron");
+// xvfb-run -a npx electron --no-sandbox scripts/check-compose-window.js [--editing | --draft-window-labels | --find-replace | --translation-selection]
+const { app, BrowserWindow, ipcMain, screen, Menu, session } = require("electron");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -515,15 +515,137 @@ async function checkFindReplace(host, shell) {
   console.log("compose-find-replace-ok:", process.platform, "keyboard entry, scope, formatting, one-step undo/redo, save/reopen and rendered help");
 }
 
+const translationFixture = { calls: [], menus: [], connection: "fixture-connection", network: [] };
+const translationService = require("../host/compose-translation").createComposeTranslation({
+  status: () => ({ token: translationFixture.connection, ready: true, label: "Synthetic saved endpoint",
+    destination: "https://synthetic.invalid/v1/chat/completions", model: "fixture-model" }),
+  complete: (messages, options) => new Promise(resolve => translationFixture.calls.push({ messages, options, resolve })),
+});
+
+async function checkSelectionTranslation(host, shell) {
+  const seed = { kind: "new", accountId: account.id, to: "recipient@example.invalid", subject: "Private subject", body: "Fresh draft" };
+  const { id } = host.open(seed);
+  const win = host.records.get(id).win;
+  const run = code => win.webContents.executeJavaScript(code, true);
+  await waitFor(win, '!state.composeInitializing && $("compose").open', "fresh Compose ready");
+  const editorMarkup = '<p><i>Private prefix.</i> <b>Enter at 17:30 with ref AB-0146; budget USD 85.00.</b> <u>Private suffix.</u></p>' +
+    '<blockquote data-compose-reply-quote="1"><b>Private quote.</b></blockquote>' +
+    '<div data-compose-signature="1"><b>Private signature.</b></div>';
+  const passage = "Enter at 17:30 with ref AB-0146; budget USD 85.00.";
+  await run(`$("compose-editor").innerHTML = ${JSON.stringify(editorMarkup)}; syncComposePlainFromEditor()`);
+  const select = selector => run(`(() => {
+    const editor = $("compose-editor");
+    editor.focus(); const node = editor.querySelector(${JSON.stringify(selector)}).firstChild;
+    const range = document.createRange(); range.selectNodeContents(node);
+    const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+  })()`);
+  const menu = async () => {
+    const before = translationFixture.menus.length, contents = win.webContents;
+    contents.emit("context-menu", { preventDefault() {} }, { frame: contents.mainFrame, isEditable: true, menuSourceType: "keyboard", editFlags: { canCopy: true } });
+    for (let i = 0; i < 40 && translationFixture.menus.length === before; i++) await sleep(20);
+    return translationFixture.menus.at(-1)?.find(item => item.label === "Translate selection…");
+  };
+  for (const excluded of ["blockquote b", "[data-compose-signature] b"]) {
+    await select(excluded);
+    assert.equal(await menu(), undefined);
+  }
+  const open = async () => {
+    await select("p b");
+    const item = await menu();
+    assert.ok(item, "native menu offers translation for authored text");
+    await item.click();
+    await waitFor(win, '$("compose-translation").open && !$("compose-translation-send").disabled', "review before request");
+  };
+  await open();
+  assert.equal(await run('$("compose-translation-source").textContent'), passage);
+  assert.match(await run('$("compose-translation-destination").textContent'), /https:\/\/synthetic\.invalid/);
+  assert.equal(translationFixture.calls.length, 0);
+  await run(`for (const [id, value] of [["source", "en"], ["target", "de"]]) {
+    const choice = $("compose-translation-"+id+"-language"); choice.value = value; choice.dispatchEvent(new Event("change"));
+  }`);
+  await waitFor(win, '!$("compose-translation-send").disabled', "review English to German");
+  await run('$("compose-translation-send").click()');
+  for (let i = 0; i < 40 && !translationFixture.calls.length; i++) await sleep(20);
+  const call = translationFixture.calls[0];
+  assert.ok(call);
+  assert.equal(call.messages[1].content, passage);
+  assert.match(call.messages[0].content, /English into German/);
+  assert.doesNotMatch(JSON.stringify(call.messages), /Private|recipient@example.invalid/);
+  call.resolve("Kommen Sie bitte um 18:00.");
+  await waitFor(win, '!$("compose-translation-replace").disabled', "translation review");
+  assert.equal(await run('$("compose-editor").innerHTML'), editorMarkup);
+  assert.deepEqual(await run('Array.from($("compose-translation-source").querySelectorAll("mark")).map(mark => mark.textContent)'),
+    ["17:30", "AB-0146", "USD 85.00"]);
+  const corrected = "Einlass um 17:30 mit Referenz AB-0146. Budget USD 85.00.";
+  await run(`$("compose-translation-output").value = ${JSON.stringify(corrected)};
+    $("compose-translation-output").dispatchEvent(new Event("input")); $("compose-translation-replace").click()`);
+  await waitFor(win, '!$("compose-translation").open', "explicit replacement");
+  const rich = await run('$("compose-editor").innerHTML');
+  for (const retained of ["<i>Private prefix.</i>", "<u>Private suffix.</u>", "<b>Private quote.</b>", "<b>Private signature.</b>", "<b>"+corrected+"</b>"]) assert.ok(rich.includes(retained), rich);
+  await run('$("compose-send").click()');
+  await waitFor(win, '$("compose-preview").open', "Preview Send");
+  assert.match(await run('$("compose-preview-body").textContent'), /Budget USD 85\.00/);
+  await run('$("compose-preview-cancel").click()');
+  await waitFor(win, '!$("compose-preview").open', "Preview Send closed");
+  await run('$("compose-editor").focus()');
+  win.webContents.undo();
+  await waitFor(win, `$("compose-editor").innerHTML === ${JSON.stringify(editorMarkup)}`, "native Undo");
+
+  const awaitProvider = async count => {
+    for (let i = 0; i < 40 && translationFixture.calls.length < count; i++) await sleep(20);
+    const next = translationFixture.calls[count - 1]; assert.ok(next); return next;
+  };
+  await open();
+  await run('$("compose-translation-send").click()');
+  const canceled = await awaitProvider(2);
+  await run('$("compose-translation-cancel").click()');
+  for (let i = 0; i < 40 && !canceled.options.signal.aborted; i++) await sleep(20);
+  assert.equal(canceled.options.signal.aborted, true);
+  canceled.resolve("A result that will not be applied.");
+  assert.equal(await run('$("compose-editor").innerHTML'), editorMarkup);
+
+  await open();
+  await run('$("compose-translation-send").click()');
+  const stale = await awaitProvider(3);
+  await run('state.composeMeta.accountId = "not-the-reviewed-mailbox"');
+  stale.resolve("A result from a stale review.");
+  await waitFor(win, '$("compose-translation-status").textContent.includes("changed")', "stale account");
+  assert.equal(await run('$("compose-editor").innerHTML'), editorMarkup);
+  await run('state.composeMeta.accountId = "acct-ada"; $("compose-translation-cancel").click()');
+
+  await open();
+  await run('$("compose-translation-send").click()');
+  const changed = await awaitProvider(4);
+  changed.resolve(corrected);
+  await waitFor(win, '!$("compose-translation-replace").disabled', "result before connection change");
+  translationFixture.connection = "changed-provider";
+  await run('$("compose-translation-replace").click()');
+  await waitFor(win, '$("compose-translation-status").textContent.includes("changed")', "saved destination changed");
+  assert.equal(await run('$("compose-editor").innerHTML'), editorMarkup);
+  assert.equal(await shell.webContents.executeJavaScript(`api.invoke("compose:translateSelection", { action: "prepare", text: "not Compose", source:"en", target:"fr" }).then(result => result.ok)`), false);
+  await shell.webContents.executeJavaScript("paintFeatureCatalog()");
+  assert.match(await shell.webContents.executeJavaScript('$("features-catalog").textContent'), /Review a selected draft translation/);
+  assert.equal(sentChannels.some(channel => channel === "mail:send" || channel === "mail:scheduleSend"), false);
+  assert.deepEqual(translationFixture.network, []);
+  console.log("compose-selection-translation-electron-ok:", process.platform, "reviewed scope, editable output, value hints, native Undo, stale guards, zero network or sends");
+}
+
 app.disableHardwareAcceleration();
 app.setPath("userData", fs.mkdtempSync(path.join(process.env.MORROW_SMOKE_TMP || os.tmpdir(), "morrow-compose-window-")));
 
 const consoleNotes = [];
 
 app.whenReady().then(async () => {
+  const translationTest = process.argv.includes("--translation-selection");
+  if (translationTest) {
+    Menu.buildFromTemplate = items => ({ popup() { translationFixture.menus.push(items); } });
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] },
+      (request, done) => { translationFixture.network.push(request.url); done({ cancel: true }); });
+  }
   let shellWin;
   const host = composeWindows.createComposeHost({
     getParent: () => shellWin,
+    selectionTranslation: translationTest ? translationService : null,
     preloadFile: () => preloadFile,
     mode: () => "bundled",
     htmlFile,
@@ -570,6 +692,11 @@ app.whenReady().then(async () => {
   const shellRole = await shellWin.webContents.executeJavaScript(`document.documentElement.dataset.window || ""`, true);
   assert.equal(shellRole, "");
 
+  if (translationTest) {
+    await checkSelectionTranslation(host, shellWin);
+    app.exit(0);
+    return;
+  }
   if (process.argv.includes("--find-replace")) {
     await checkFindReplace(host, shellWin);
     app.exit(0);
