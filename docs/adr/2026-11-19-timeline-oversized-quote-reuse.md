@@ -35,3 +35,15 @@ request, input, call, token and duration limits keep their original values.
 Ordinary plannable captures retain the previous request-local behavior.
 Prepare shows local scan counts and exact quote savings before Generate. Case
 selection remains available for unique or very large mail.
+
+## Follow-up: use exact quote savings before a selection hits a limit
+
+Normal preflight now compares the ordinary request-local quote plan with an
+alternative using the same exact plain-text and HTML proofs. It chooses the
+alternative if the ordinary plan exceeds the batch or planned-input budget, or
+if the alternative sends strictly fewer serialized bytes with no extra requests
+and saves at least one request or 1,024 input bytes. This keeps direct quote
+context when compaction would only buy a small saving. No fuzzy selection,
+unique text truncation, prompt compression model or extra AI call is introduced.
+The reviewed plan and its per-source savings are visible before Generate; the
+original bodies remain authoritative for opening sources and Case validation.

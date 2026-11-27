@@ -118,18 +118,41 @@ function freezeSources({ db, stamp, identities }, selection, mode = "thread", ht
   return snapshot;
 }
 
-// Only retry an actual size-limited plan. The selected language, focus and Case
-// reservation must be identical on both attempts. Raw HTML stays out of the manifest.
+// Compare the actual provider payloads before committing to an extraction plan.
+// Raw HTML and the alternative plans stay local; only the winner is generated.
 function planCapturedSources(snapshot, htmlForQuotes, options) {
-  try { return preparePlan(snapshot.sources, options); }
+  if (snapshot.bodyBytes > LIMITS.sourceBytes) return preparePlan(snapshot.sources, options);
+  let baseline, blocked;
+  try { baseline = preparePlan(snapshot.sources, options); }
   catch (error) {
-    if (snapshot.bodyBytes > LIMITS.sourceBytes || !htmlForQuotes.size
-        || !["chunk-count", "planned-input-bytes"].includes(error.budget?.kind)) throw error;
-    const reduced = reduceHtmlQuotes(snapshot.sources, htmlForQuotes);
-    if (!reduced.some((source, i) => source !== snapshot.sources[i])) throw error;
-    snapshot.sources = reduced;
-    return preparePlan(reduced, options);
+    if (!["chunk-count", "planned-input-bytes"].includes(error.budget?.kind)) throw error;
+    blocked = error;
   }
+  const hasPlainQuotes = snapshot.sources.some(source => /^>/m.test(source.text));
+  if (!hasPlainQuotes && !htmlForQuotes.size) {
+    if (blocked) throw blocked;
+    return baseline;
+  }
+  let reduced = hasPlainQuotes ? reduceRepeatedQuotes(snapshot.sources) : snapshot.sources;
+  if (htmlForQuotes.size) reduced = reduceHtmlQuotes(reduced, htmlForQuotes);
+  if (reduced.some((source, i) => source !== snapshot.sources[i])) {
+    let alternative;
+    try { alternative = preparePlan(reduced, options); }
+    catch (error) {
+      if (error.code !== "timeline-budget") throw error;
+      if (!baseline) throw error;
+    }
+    // Keep directly referenced context when removing it would save very little.
+    if (alternative && (!baseline || (alternative.chunks.length <= baseline.chunks.length
+        && alternative.estimatedInputBytes < baseline.estimatedInputBytes
+        && (alternative.chunks.length < baseline.chunks.length
+          || baseline.estimatedInputBytes - alternative.estimatedInputBytes >= 1024)))) {
+      snapshot.sources = reduced;
+      return alternative;
+    }
+  }
+  if (blocked) throw blocked;
+  return baseline;
 }
 
 function metadataOf(row, account, store, threadId) {
