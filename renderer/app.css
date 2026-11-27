@@ -3027,6 +3027,16 @@ button.agenda-item {
 .calendar-detail-line .is-empty { color: var(--muted); }
 
 #calendar-event-dialog { width: min(480px, calc(100vw - 24px)); }
+#calendar-reader-source {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}
+#calendar-reader-excerpt { margin: 6px 0; }
+#calendar-reader-timing { margin: 0 0 4px; }
+
 
 #calendar-event-dialog #calendar-create input:not([type="checkbox"]),
 #calendar-event-dialog #calendar-create select,

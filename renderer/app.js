@@ -14155,6 +14155,19 @@ function appendReaderBodyActions(menu, email, body) {
       return openReaderCompose("reply", current, text);
     }));
   }
+  if (!isReaderWindow() && !isLocalMail(email) && window.morrowReaderCalendarSelection) {
+    const connection = contextAccountProof(email.accountId);
+    const event = appendMenuAction(menu, "Prepare calendar event…", () => guard(() => {
+      const current = currentMessage();
+      if (!current || !text || text.length > window.morrowReaderCalendarSelection.MAX_TEXT
+          || !connection || contextAccountProof(email.accountId) !== connection) {
+        return showStatus("Select up to 512 characters of appointment text in this message and try again.", true);
+      }
+      openCalendarEditorFromSelection(current, text, () => !!currentMessage()
+        && contextAccountProof(email.accountId) === connection);
+    }));
+    event.setAttribute("aria-haspopup", "dialog");
+  }
   const unavailable = "That local message link is unavailable.";
   appendMenuAction(menu, "Copy local link to this message", () => guard(async () => {
     const current = currentMessage();
@@ -28114,6 +28127,8 @@ function checkedCalendarEvents(events) {
 let calendarDetailKey = "";
 let calendarEditingId = "";
 let calendarEditingIdentity = null;
+let calendarReaderDraft = null;
+const calendarSourceConnections = new WeakMap();
 let calendarTimedSnapshot = null;
 let calendarCreateAttempt = null;
 const calendarAuthFailures = new Set();
@@ -28582,6 +28597,64 @@ function syncAllDayInputs() {
   }
 }
 
+function readerCalendarDestination(accountId) {
+  const account = calendarAccount();
+  const payload = state.calendarPayload;
+  const connection = contextAccountProof(accountId);
+  if (!account || account.id !== accountId || payload?.accountId !== accountId
+      || payload.api !== true || calendarAuthFailures.has(accountId)
+      || !connection || calendarSourceConnections.get(payload) !== connection) return null;
+  const view = calendarView(payload);
+  return view.showForm ? { account, calendars: view.calendars } : null;
+}
+
+function clearCalendarReaderDraft() {
+  calendarReaderDraft = null;
+  const context = $("calendar-reader-source");
+  if (context) {
+    context.hidden = true;
+    $("calendar-reader-mailbox").textContent = "";
+    $("calendar-reader-excerpt").textContent = "";
+    $("calendar-reader-timing").textContent = "";
+  }
+}
+
+function openCalendarEditorFromSelection(email, text, current) {
+  const destination = readerCalendarDestination(email.accountId);
+  if (!destination) {
+    return showStatus("Open Calendar for this message’s mailbox and load its calendars, then return to Mail and try again.", true);
+  }
+  if (!current() || calendarWritePending || $("calendar-event-dialog")?.open) return;
+  fillCalendarPick(destination.calendars);
+  openCalendarEditor(null);
+  calendarReaderDraft = { accountId: email.accountId, current };
+  const parsed = window.morrowReaderCalendarSelection.parse(text);
+  let start = "", end = "";
+  if (parsed) {
+    const localStart = toDateTimeLocal(parsed.start);
+    const localEnd = toDateTimeLocal(parsed.end);
+    // datetime-local cannot represent which side of a clock change was chosen.
+    // Prove that the normal editor will submit the same explicit instants.
+    const roundTrip = calendarDraft({ accountId: email.accountId, calendarId: destination.calendars[0].id,
+      start: localStart, end: localEnd }, true);
+    if (!roundTrip.error && roundTrip.start === parsed.start && roundTrip.end === parsed.end) {
+      start = localStart;
+      end = localEnd;
+    }
+    $("calendar-event-title").value = parsed.title;
+    $("calendar-location").value = parsed.location;
+  }
+  $("calendar-start").value = start;
+  $("calendar-end").value = end;
+  $("calendar-reader-mailbox").textContent = destination.account.email || email.accountId;
+  $("calendar-reader-excerpt").textContent = text;
+  $("calendar-reader-timing").textContent = start && end
+    ? `Review the start and end in this device’s local time (${Intl.DateTimeFormat().resolvedOptions().timeZone}). The original date and offset are shown above.`
+    : "No unambiguous start and end could be prefilled. Enter and verify both times yourself.";
+  $("calendar-reader-source").hidden = false;
+  $("calendar-reader-source").focus();
+}
+
 function openCalendarEditor(event, dayStamp) {
   const account = calendarAccount();
   if (event?.id && state.calendarPayload?.accountId && state.calendarPayload.accountId !== account?.id) {
@@ -28589,6 +28662,7 @@ function openCalendarEditor(event, dayStamp) {
     return;
   }
   calendarEditorGeneration += 1;
+  clearCalendarReaderDraft();
   calendarTimedSnapshot = null;
   calendarCreateAttempt = null;
   const dialogTitle = $("calendar-dialog-title");
@@ -28888,10 +28962,16 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
         if (calendarPending.get(key) === pending) calendarPending.delete(key);
       });
       calendarPending.set(key, pending);
+      calendarSourceConnections.set(pending, contextAccountProof(account.id));
     }
-    const payload = await calendarPending.get(key);
+    const pending = calendarPending.get(key);
+    const payload = await pending;
     if (gen !== calendarGen || calendarAccount()?.id !== account.id || revision !== (calendarRevisions.get(account.id) || 0)) return;
-    if (payload?.api) calendarAuthFailures.delete(account.id);
+    if (payload?.api) {
+      calendarAuthFailures.delete(account.id);
+      const proof = calendarSourceConnections.get(pending);
+      if (proof && contextAccountProof(account.id) === proof) calendarSourceConnections.set(payload, proof);
+    }
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarIds), payload);
@@ -28975,6 +29055,16 @@ async function submitCalendarEvent(event) {
   const editing = calendarEditingId;
   const identity = calendarEditingIdentity;
   const generation = calendarEditorGeneration;
+  if (calendarReaderDraft) {
+    const { accountId, current } = calendarReaderDraft;
+    const destination = readerCalendarDestination(accountId);
+    if (!current() || !destination || account?.id !== accountId) {
+      throw new Error("The source message or calendar mailbox changed. Cancel and prepare the event again.");
+    }
+    if (!destination.calendars.some(row => row.id === $("calendar-pick")?.value)) {
+      throw new Error("Choose a calendar from the source mailbox.");
+    }
+  }
   if (editing && (!identity || identity.id !== editing || identity.accountId !== account?.id)) {
     throw new Error("The calendar account changed. Reopen the event before saving it.");
   }
@@ -29060,6 +29150,7 @@ async function submitCalendarEvent(event) {
   }
   calendarEditingId = "";
   calendarEditingIdentity = null;
+  clearCalendarReaderDraft();
   closeDialog("calendar-event-dialog");
   showStatus("Event saved on the calendar.");
   await loadCalendar({ fresh: true });
@@ -30804,12 +30895,14 @@ function wire() {
   $("calendar-cancel").addEventListener("click", () => {
     calendarEditingId = "";
     calendarEditingIdentity = null;
+    clearCalendarReaderDraft();
     closeDialog("calendar-event-dialog");
   });
   $("calendar-event-dialog").addEventListener("close", () => {
     if ($("calendar-event-dialog").open) return; // ignore a queued close from a previous editor
     calendarEditingId = "";
     calendarEditingIdentity = null;
+    clearCalendarReaderDraft();
     calendarEditorGeneration += 1;
   });
   $("calendar-account").addEventListener("change", () => {

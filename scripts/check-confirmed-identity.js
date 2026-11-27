@@ -146,7 +146,7 @@ async function calendarChecks() {
     showStatus:text=>messages.push(text),openDialog:()=>{openCount++;},closeDialog:()=>{closeCount++;},askConfirm:async()=>({ok:true}),
     call:async(channel,payload)=>{calls.push({channel,payload});if(pending)await pending.promise;return{};}});
   const declarations=source.slice(source.indexOf('let calendarDetailKey ='),source.indexOf('function calendarDetailLine('));
-  vm.runInContext(declarations+["localDateStamp","plusDays","toDateTimeLocal","calendarDraft","syncAllDayInputs","openCalendarEditor","invalidateCalendarAccount","submitCalendarEvent","deleteCalendarEvent"].map(extract).join("\n"),context);
+  vm.runInContext(declarations+["localDateStamp","plusDays","toDateTimeLocal","calendarDraft","syncAllDayInputs","clearCalendarReaderDraft","openCalendarEditor","invalidateCalendarAccount","submitCalendarEvent","deleteCalendarEvent"].map(extract).join("\n"),context);
   const run=code=>vm.runInContext(code,context);
   context.event={id:"abcde12345",calendarId:"a",title:"Original A",description:"Preview only",location:"Old room",start:"2026-10-24T09:00:00Z",end:"2026-10-24T10:00:00Z"};
   run("openCalendarEditor(event)");assert.equal(fields["calendar-pick"].disabled,true);

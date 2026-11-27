@@ -348,6 +348,12 @@
     <dialog id="calendar-event-dialog" aria-labelledby="calendar-dialog-title">
       <form id="calendar-create" aria-describedby="calendar-save-note">
         <h2 id="calendar-dialog-title">Add event</h2>
+        <section id="calendar-reader-source" aria-label="Selected appointment text" tabindex="-1" hidden>
+          <p class="hint">Source mailbox: <strong id="calendar-reader-mailbox"></strong></p>
+          <p id="calendar-reader-excerpt" class="preserve-lines"></p>
+          <p id="calendar-reader-timing" class="hint"></p>
+          <p class="hint">This excerpt stays in the review. Only the event fields are saved. No guests are added.</p>
+        </section>
         <label for="calendar-event-title">Title</label>
         <input id="calendar-event-title" type="text" maxlength="200" aria-describedby="calendar-title-note" />
         <p id="calendar-title-note" class="hint" hidden>This title is longer than this editor supports. Edit it with the calendar provider; other field edits preserve the complete title.</p>
@@ -2242,6 +2248,7 @@
     <script src="./reader-table-columns.js"></script>
     <script src="./reply-selection.js"></script>
     <script src="./reader-local-time.js"></script>
+    <script src="./reader-calendar-selection.js"></script>
     <script src="./compose-bcc-roster.js"></script>
     <script src="./compose-attachment-review.js"></script>
     <script src="./sent-followup.js"></script>
