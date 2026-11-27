@@ -3991,6 +3991,13 @@ function submitConfirm() {
     $("confirm-name").focus();
     return;
   }
+  const invalidName = confirmCopy?.validateName?.(name);
+  if (invalidName) {
+    $("confirm-validation").textContent = invalidName;
+    $("confirm-validation").hidden = false;
+    $("confirm-name").focus();
+    return;
+  }
   finishConfirm({ ok: true, name: name });
 }
 
@@ -11168,11 +11175,11 @@ function cancelAttachmentTask(task) {
   });
 }
 
-function startAttachmentTask(channel, email, files, label, accountId) {
+function startAttachmentTask(channel, email, files, label, accountId, rename) {
   const zip = channel === "mail:downloadAttachmentsZip", draft = channel === "mail:prepareDraft", forward = channel === "mail:prepareForward";
   const prepare = draft || forward;
   const ids = zip || prepare ? files.map(file => file.id) : files[0].id;
-  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids, accountId]);
+  const viewKey = attachmentTaskKey(email, zip ? "zip" : ids), key = JSON.stringify([channel, viewKey, ids, accountId, ...(rename ? [rename.stem] : [])]);
   const existing = attachmentTasks.get(key);
   if (existing && !existing.cancelRequested) return existing;
   const task = { requestId: crypto.randomUUID(), viewKey, label, filename: prepare ? (forward ? "Forward attachments" : "Draft attachments") : zip ? "Attachments ZIP" : files[0].filename || "Attachment", phase: "queued", done: false, key };
@@ -11185,6 +11192,8 @@ function startAttachmentTask(channel, email, files, label, accountId) {
   const params = { emailId: email.id, messageId: email.id, requestId: task.requestId,
     ...(accountId ? { accountId } : {}),
     ...(draft ? { draftRevision: email.draftRevision } : forward ? { accountId: email.accountId, attachmentIds: ids } : zip ? { attachmentIds: ids } : { attachmentId: files[0].id, filename: files[0].filename }) };
+  if (rename) Object.assign(params, { renameStem: rename.stem, folderId: rename.folderId, bodyEpoch: rename.bodyEpoch,
+    attachmentId: String(files[0].id), filename: files[0].filename || "attachment" });
   task.promise = call(channel, params).finally(() => {
     task.done = true; off?.(); if (attachmentTasks.get(key) === task) attachmentTasks.delete(key); paintAttachmentTasks();
   });
@@ -11582,6 +11591,37 @@ const attachmentDisclosures = new WeakMap();
 let attachmentDisclosureId = 0;
 let readerAttachmentSaveList;
 
+async function saveAttachmentAs(email, file, isCurrent) {
+  const policy = window.morrowAttachmentFilename;
+  const identity = bodyIdentity(email);
+  if (!policy || !identity || !email.folderId || !isCurrent()) {
+    throw new Error("This attachment changed. Reopen the message before saving it.");
+  }
+  const original = file.filename || "attachment";
+  const { stem, suffix } = policy.parts(original);
+  const visibleName = original.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "�");
+  const answer = await askConfirm({
+    title: "Save attachment under a different name",
+    body: "Original filename: " + visibleName + "\nOnly the saved copy will use the new name. Existing files are kept.",
+    needsName: true, name: stem, fieldLabel: suffix ? "New name (without " + suffix + ")" : "New name",
+    confirm: "Choose destination…",
+    validateName: name => policy.proposed(name, original) ? "" : "Enter a valid name without a path or the original extension.",
+  });
+  if (!answer.ok) return;
+  await confirmSettled();
+  if (!isCurrent() || bodyIdentity(email)?.bodyEpoch !== identity.bodyEpoch) {
+    throw new Error("This attachment changed. Reopen the message before saving it.");
+  }
+  try {
+    await startAttachmentTask("mail:downloadAttachment", email, [file], "Save as", email.accountId,
+      { stem: answer.name, folderId: email.folderId, bodyEpoch: identity.bodyEpoch }).promise;
+  } catch (error) {
+    if (error?.message !== "cancelled") throw error;
+    return;
+  }
+  showStatus("Saved attachment copy.");
+}
+
 function renderAttachments(pane, email) {
   const key = JSON.stringify([email.accountId || "", email.id || ""]);
   let disclosure = attachmentDisclosures.get(pane);
@@ -11690,6 +11730,11 @@ function renderAttachments(pane, email) {
       actions.className = "attachment-actions";
       if (kind) actions.appendChild(attachmentGhost("Preview", "Preview " + actionLabel, preview));
       actions.appendChild(attachmentGhost("Save", "Save " + actionLabel, () => attachmentAction(save)));
+      if (pane === $("reader") && window.morrowAttachmentFilename) {
+        actions.appendChild(attachmentGhost("Save as…", "Save " + actionLabel + " under a different name",
+          () => attachmentAction(() => saveAttachmentAs(email, file, () => item.isConnected && pane.contains(item)
+            && state.email?.id === email.id && state.email?.accountId === email.accountId))));
+      }
       actions.appendChild(attachmentGhost("Open", "Open " + actionLabel, () => attachmentAction(() => useAttachment("mail:openAttachmentExternally", email, file))));
       if (pane === $("reader") && readerAttachmentSaveList) {
         actions.appendChild(attachmentGhost("Add to save list", "Add " + actionLabel + " to save list",
