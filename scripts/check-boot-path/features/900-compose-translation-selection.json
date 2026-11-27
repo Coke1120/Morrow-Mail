@@ -1,0 +1,6 @@
+[
+  "compose-translation-selection",
+  "Review a selected draft translation",
+  "Compose",
+  "In a new draft or reply, select authored text within one paragraph and right-click to choose Translate selection. Review the passage, source and target languages and saved AI destination before pressing Translate. Only the selected text and language instructions go to AI. Review the source and editable translation side by side; local hints flag supported exact times, prices and reference codes missing from the result, not translation accuracy. Choose Replace selection explicitly to update that passage, or close without editing. Native Undo restores the original. Unverified previously saved drafts, quotes and signatures are excluded. Changing the draft, selection or connection retires the review. Cancel stops pending work but cannot recall text already sent to the provider."
+]

@@ -94,6 +94,7 @@ const INVOKE = [
   "host:aiConsentStatus",
   "host:aiConsentGrant",
   "host:aiConsentRevoke",
+  "compose:translateSelection",
   "mail:listAccounts",
   "mail:localFolders",
   "mail:mboxPick",

@@ -1148,6 +1148,7 @@
           <p class="hint">Use A− and A+ to change font size one step at a time. Text color opens common colors, Default text color, and Custom…. Formatting applies to selected text or the next text you type. Use Command+Z on Mac or Ctrl+Z on Windows to undo an edit.</p>
           <p class="hint">Find &amp; Replace searches your editable message text, not its signature, quoted history or other fields. It ignores case and treats symbols literally. Use Command+F or Command+H on Mac, or Ctrl+F or Ctrl+H on Windows/Linux. An empty replacement deletes matching text. Undo reverses one replacement action.</p>
           <p class="hint" id="compose-calendar-slots-help" hidden>In Reply or Reply All, choose Offer two times… and add two available half-hours from one or two dates. The options use the checked calendars for the From mailbox. Insert times adds the two lines at your message caret. Cancel leaves your draft as it was.</p>
+          <p class="hint">In a new draft or reply, select an authored passage and right-click to choose Translate selection…. Review the languages, exact passage and saved AI destination before Translate. Review and edit the result before Replace selection. Undo restores the original text.</p>
           <p class="hint">Right-click an editable compose field, or use the context-menu key, for available spelling corrections and editing actions. Spelling depends on system dictionaries; no AI or automatic dictionary changes are used.</p>
           <p class="hint">Forward includes the original files after preparation. Review or remove them here before sending. Preparation failures keep the original unchanged; retry from the message.</p>
           <p class="hint">In a resumed draft, choose Attach from Inbox to select local files from the same mailbox. Check the source and recipients before adding. Older and Newer clear unconfirmed checks. Choose Add and view older files to add the checked files and keep browsing, or Add selected files to return to the editor. Cancel or Escape keeps files already added to the editor. Choose Save draft to keep your changes. If a recently downloaded file has expired, preview it in the reader and reopen the picker.</p>
@@ -1202,6 +1203,28 @@
         <div class="row">
           <button type="button" class="primary" id="compose-calendar-slots-insert" disabled>Insert times</button>
           <button type="button" class="ghost" id="compose-calendar-slots-cancel">Cancel</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="compose-translation" aria-labelledby="compose-translation-heading">
+      <div class="dialog-body">
+        <h2 id="compose-translation-heading">Translate selection</h2>
+        <p class="hint">Only the passage and language instructions below go to the displayed AI destination when you choose Translate. Cancel stops work that has not already reached the provider.</p>
+        <div class="compose-translation-columns">
+          <div><label for="compose-translation-source-language">Source language</label><select id="compose-translation-source-language"><option value="auto">Detect from text</option></select></div>
+          <div><label for="compose-translation-target-language">Target language</label><select id="compose-translation-target-language"></select></div>
+        </div>
+        <p id="compose-translation-destination" class="hint"></p>
+        <div class="compose-translation-columns">
+          <section aria-labelledby="compose-translation-source-heading"><h3 id="compose-translation-source-heading">Selected draft text</h3><pre id="compose-translation-source" tabindex="0"></pre></section>
+          <section><label for="compose-translation-output">Translation to review and edit</label><textarea id="compose-translation-output" rows="7" maxlength="8000" disabled></textarea></section>
+        </div>
+        <p id="compose-translation-hints" class="hint" role="status"></p>
+        <p id="compose-translation-status" class="hint" role="status"></p>
+        <div class="row">
+          <button type="button" class="ghost" id="compose-translation-cancel">Close</button>
+          <button type="button" class="ghost" id="compose-translation-send" disabled>Translate</button>
+          <button type="button" class="primary" id="compose-translation-replace" disabled>Replace selection</button>
         </div>
       </div>
     </dialog>
@@ -2254,6 +2277,7 @@
     <script src="./sent-followup.js"></script>
     <script src="./compose-find.js"></script>
     <script src="./reader-checklist.js"></script>
+    <script src="./compose-translation.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

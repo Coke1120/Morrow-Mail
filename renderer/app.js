@@ -30756,6 +30756,17 @@ function wire() {
   });
   wireRecipientSuggest();
   wireComposeFormat();
+  if (isComposeWindow()) window.morrowComposeTranslation?.mount({
+    editor: $("compose-editor"), invoke: params => api.invoke("compose:translateSelection", params), sync: syncComposePlainFromEditor,
+    notify: message => setComposeStatus(message, true),
+    owner: () => {
+      const account = composeAccount(), meta = state.composeMeta;
+      if (!$("compose").open || !$("compose-editor").isContentEditable || !account || !meta || meta.attachmentReviewUnverified
+          || state.composeInitializing || state.composePending || state.composeQueued || state.draftWrite?.pending || state.composeIdentityError) return "";
+      return JSON.stringify([state.composeSession, state.draftId, state.draftRevision, state.composeInputVersions, account.id,
+        account.bodyEpoch, meta.fromAddress, $("compose-to").value, $("compose-cc").value, $("compose-bcc").value, $("compose-subject").value]);
+    },
+  });
   window.morrowComposeFind?.mount({
     dialog: $("compose"), editor: $("compose-editor"),
     available: () => topOpenDialog()?.id === "compose" && !state.composeInitializing
