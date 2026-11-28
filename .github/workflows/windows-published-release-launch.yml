@@ -1,0 +1,78 @@
+name: Windows published release launch
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-published-release-launch.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    name: Published v1.0.0 / ${{ matrix.mode }}
+    runs-on: windows-2022
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [installer, portable]
+    env:
+      TEST_MODE: ${{ matrix.mode }}
+    steps:
+      - name: Download and verify the published x64 executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = @{
+            installer = @('Morrow-Mail-Setup.exe', '47a23715a5205bcd21d72eac55fc727c6c2595d5579d117318095f432e733bc0')
+            portable = @('Morrow-Mail.exe', '32b8f309ab39cacb86836716ae529c5fff1f1beed5f95dc0ef53361867cf3824')
+          }[$env:TEST_MODE]
+          $file = Join-Path $env:RUNNER_TEMP $fixture[0]
+          $url = 'https://github.com/Coke1120/Morrow-Mail/releases/download/v1.0.0/' + $fixture[0]
+          Invoke-WebRequest -Uri $url -OutFile $file -TimeoutSec 180
+          if ((Get-FileHash -Algorithm SHA256 $file).Hash -ne $fixture[1]) {
+            throw 'Published executable hash does not match the pinned release.'
+          }
+          Write-Host "Authenticode: $((Get-AuthenticodeSignature -LiteralPath $file).Status)"
+          "MORROW_SMOKE_EXECUTABLE=$file" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Launch the published app with a fresh synthetic profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'morrow-windows-smoke'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $exe = $env:MORROW_SMOKE_EXECUTABLE
+          $bootFile = Join-Path $env:USERPROFILE '.hermes/tmp/morrow-mail/boot.json'
+          if (Test-Path -LiteralPath $bootFile) { throw 'A clean runner is required.' }
+          if ($env:TEST_MODE -eq 'installer') {
+            $installed = Join-Path $root 'installed'
+            $setup = Start-Process -FilePath $exe -ArgumentList "/S /D=$installed" -PassThru
+            if (-not $setup.WaitForExit(120000)) { throw 'Silent installer did not exit within 120 seconds.' }
+            if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)." }
+            $exe = Join-Path $installed 'Morrow Mail.exe'
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+              throw 'Installer returned success but did not install Morrow Mail.exe in the requested directory.'
+            }
+          }
+          $env:MORROW_BOOT_EXIT = '1'
+          $app = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddSeconds(100)
+          do {
+            Start-Sleep -Seconds 1
+            if (Test-Path -LiteralPath $bootFile) {
+              $snapshot = Get-Content -LiteralPath $bootFile -Raw | ConvertFrom-Json
+              if ($snapshot.href -notmatch '^file:' -or $snapshot.title -notmatch 'Morrow' -or -not $snapshot.text) {
+                throw 'Startup probe did not capture the Morrow application shell.'
+              }
+              Write-Host 'Published executable reached the Morrow application shell.'
+              exit 0
+            }
+            $app.Refresh()
+            if ($app.HasExited -and $env:TEST_MODE -eq 'installer') {
+              throw "Installed app exited before rendering the shell (exit $($app.ExitCode))."
+            }
+          } until ((Get-Date) -ge $deadline)
+          $exit = if ($app.HasExited) { $app.ExitCode } else { 'still running' }
+          throw "No rendered application shell within 100 seconds (launcher: $exit)."
