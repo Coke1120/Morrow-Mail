@@ -1,0 +1,45 @@
+{
+  "upstream": "https://github.com/google/skills",
+  "revision": "10c799ee69bcdb10b82836403d1531bfcc3d9d24",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "scope": "Repository-local skill under .agents/skills/migrate-to-rust/ (sourced from skills/developers/migrate-to-rust); static unmodified copy, telemetry script not executed",
+  "unmodified_files": [
+    {
+      "path": "LICENSE",
+      "source": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size_bytes": 11358
+    },
+    {
+      "path": "SKILL.md",
+      "source": "skills/developers/migrate-to-rust/SKILL.md",
+      "sha256": "efebb12db9b64816c96d5813a288100c256d3a1d68094cb93ea4e603a8a513ec",
+      "size_bytes": 12536
+    },
+    {
+      "path": "references/infographic_template.html",
+      "source": "skills/developers/migrate-to-rust/references/infographic_template.html",
+      "sha256": "800ad2b1ca1f0dca6e509919183f69e887e70f24c303a1084df1354c3f343292",
+      "size_bytes": 63070
+    },
+    {
+      "path": "references/pgo_and_telemetry_guide.md",
+      "source": "skills/developers/migrate-to-rust/references/pgo_and_telemetry_guide.md",
+      "sha256": "5443b6bc4008afe89404277b22cb8e1eca22e769e5089b376421bfdadf342a9e",
+      "size_bytes": 17673
+    },
+    {
+      "path": "scripts/telemetry.py",
+      "source": "skills/developers/migrate-to-rust/scripts/telemetry.py",
+      "sha256": "180f0e4e6398474228584393ca2cb1080d72a9336108749edefecab3f1204f06",
+      "size_bytes": 42399
+    }
+  ],
+  "excluded": [
+    "Other skills in google/skills outside skills/developers/migrate-to-rust",
+    "External target repositories cloned at runtime",
+    "Global or personal agent settings",
+    "Rust toolchain installation or runtime execution artifacts"
+  ]
+}
